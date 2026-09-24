@@ -39,6 +39,8 @@ the plugin directory sees them, so `sha256sum -c` verifies a copy.
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green.
 
+The screen text is in Russian; there is no other language yet.
+
 ## Freshness is a load-bearing requirement
 
 A pinned dashboard with a dead updater looks exactly like a calm system. Therefore:
