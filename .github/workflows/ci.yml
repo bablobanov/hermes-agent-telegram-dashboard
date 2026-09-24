@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install "pytest>=8,<10" tzdata
+      # No engine on the runner: tests that need Hermes objects skip, every other test runs.
+      # The header of the run names the tree under test.
+      - name: Offline test suite
+        run: PYTHONPATH=. python -m pytest tests -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: python -m pip install "ruff>=0.8,<1" "mypy>=1.11,<2" tzdata
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy --strict
+        run: mypy --strict telegram_dashboard
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # SHA256SUMS describes the deployable plugin folder; a manifest that does not match the
+      # tree is worse than none.
+      - name: SHA256SUMS matches the tree
+        run: |
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/telegram_dashboard_probe/telegram_dashboard"
+          cp plugin/telegram_dashboard_probe/__init__.py plugin/telegram_dashboard_probe/plugin.yaml "$tmp/telegram_dashboard_probe/"
+          cp telegram_dashboard/*.py telegram_dashboard/compat_matrix.json "$tmp/telegram_dashboard_probe/telegram_dashboard/"
+          cd "$tmp" && sha256sum -c "$GITHUB_WORKSPACE/SHA256SUMS"
+          test "$(wc -l < "$GITHUB_WORKSPACE/SHA256SUMS")" = "$(find . -type f | wc -l)"

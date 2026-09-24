@@ -1,0 +1,8 @@
+name: telegram_dashboard_probe
+version: 0.3.0
+description: >-
+  Read-only Hermes dashboard as one pinned Telegram message edited in place on every tick by a
+  task inside the gateway: status, freshness, coverage, last backup, account limits, config
+  drift, up to five events. Plain text; a tick that cannot build the screen still edits the
+  message.
+author: Ilya Balobanov

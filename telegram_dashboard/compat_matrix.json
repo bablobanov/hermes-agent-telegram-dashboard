@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "updated": "2026-09-24",
+  "note": "Per source: how it is probed at runtime, and on which Hermes versions it was verified and how. 'read-by-code' means the engine source was read, not executed; 'live' means observed on a running installation. Missing version = not verified, the dashboard still runs and reports reduced coverage.",
+  "floors": {
+    "delivery_plugin": {
+      "minimum_version": "0.21.1",
+      "reason": "PluginContext.register_platform_handler and BasePlatformAdapter._wire_plugin_handlers do not exist before 0.21; verified absent on 0.20.5 (install at 16c67248d4). Below the floor the plugin loads nothing and delivers nothing; only the fallback cron tick with its own bot token works there",
+      "verified": "0.20.5 read-by-code (absent), 0.21.1 executed in-process (tests/test_probe_plugin.py)"
+    },
+    "sources": {
+      "minimum_version": null,
+      "reason": "gateway_state, limits and drift are probed at runtime and degrade to unsupported; no floor, only reduced coverage"
+    }
+  },
+  "sources": {
+    "gateway_state": {
+      "probe": "file HERMES_HOME/gateway_state.json parses as JSON with updated_at and platforms",
+      "reads": ["gateway_state", "updated_at", "pid", "platforms.<name>.state", "platforms.<name>.error_code", "platforms.<name>.needs_attention"],
+      "never_reads": ["platforms.<name>.error_message", "argv"],
+      "verified": {
+        "0.20.5": "read-by-code, desktop install; same file name and record keys (gateway/status.py)",
+        "0.21.1": "read-by-code, engine clone at 2237be3559 (gateway/status.py write_runtime_status)"
+      },
+      "stale_after_seconds": 120,
+      "stale_rule_origin": "gateway/status.py _RUNTIME_STATUS_STALE_TTL_S = 120 in 0.21.1",
+      "caveat": "liveness is os.kill(pid, 0) only (POSIX; Windows = unknown). A reused pid belonging to another process revives a stale gateway_state.json as running/connected. Not closed yet: the fix is to check /proc/<pid>/cmdline for the gateway and the process start time against updated_at (Codex review 2026-09-10, finding on collect.py:165)"
+    },
+    "limits": {
+      "probe": "in-process import of agent.account_usage.fetch_account_usage at call time, inside the gateway interpreter; import failure = unsupported, a provider failure = that provider unavailable",
+      "contract": "called the way gateway /usage calls it: asyncio.to_thread off the event loop, deadline, failures never propagate (limits.py); providers claude=anthropic, codex=openai-codex; grok and kimi are read by their own rows below on their own cadence; gemini has no confirmed source and is always unsupported",
+      "named_exception": "the only engine import in the dashboard: one public function with the same signature on both verified versions; a second process was rejected because _resolve_codex_usage_credentials may refresh the OAuth token and two processes would race for it",
+      "verified": {
+        "0.20.5": "read-by-code plus live import probe (no network) on the desktop install: fetch_account_usage(provider, *, base_url=None, api_key=None); 902-line module",
+        "0.21.1": "read-by-code, engine clone at 2237be3559: same signature, 573-line module, fetchers keyed in _USAGE_FETCHERS; gateway/slash_commands_status.py:537-538 is the to_thread call this mirrors"
+      },
+      "caveat": "the facade performs network calls with the account's own OAuth credentials inside the engine; the dashboard never reads or stores those credentials; a deadline hit leaves the worker thread running until the facade returns, as in /usage"
+    },
+    "plugin_platform_handler": {
+      "probe": "PluginContext has register_platform_handler and spawn_task; the Telegram adapter calls _wire_plugin_handlers(app) from connect()",
+      "contract": "ctx.register_platform_handler('telegram', factory) -> factory(native, adapter) at every connect(), including reconnects with a NEW adapter instance; ctx.spawn_task(coro) supervised, cancelled on unload; adapter.send/edit_message return SendResult; edit_message does NOT forward to the replacement adapter, so the live adapter is re-resolved per tick via adapter.gateway_runner.adapters and only used when is_connected; edit_message(chat, id, text) without finalize sends PLAIN text (no parse_mode; the PTB Application is built without Defaults) and truncates an over-long payload in place, while finalize=True converts to MarkdownV2 and splits an over-long escaped payload into NEW continuation messages, so the dashboard always edits without finalize and renders headings as upper-case lines; parse_mode=HTML is not reachable through the public adapter",
+      "verified": {
+        "0.20.5": "read-by-code, desktop install at 16c67248d4: ABSENT — no register_platform_handler, no register_telegram_handler, no _wire_plugin_handlers anywhere; spawn_task and PluginState exist. The plugin path cannot run on 0.20.x",
+        "0.21.1": "executed in-process against the engine clone at 2237be3559 with python-telegram-bot 22.8 installed: real PluginManager/PluginContext/TelegramAdapter/PluginState, PTB Bot object mocked (tests/test_probe_plugin.py); reconnect simulated by tearing down the first adapter and wiring a second one. NOT executed against live Telegram, NOT executed inside a running gateway. Text mode read-by-code at plugins/platforms/telegram/adapter.py:3420 (_edit_text) and :3439 (edit_message), builder chain at :2932 has no .defaults(); the plain edit executed in-process with parse_mode absent from the Bot call (tests/test_probe_plugin.py)"
+      },
+      "caveat": "user plugins are opt-in: the plugin key must be listed in plugins.enabled (hermes_cli/plugins_discovery.py gate_manifest), and the factory fires before the Bot is initialised, so the first tick waits for is_connected",
+      "deployment": "the engine imports a directory plugin as package hermes_plugins.<slug> with __path__ = the plugin dir (hermes_cli/plugins_loader.py _load_directory_module), so telegram_dashboard/ copied INTO the plugin folder resolves as a relative package; verified through the real PluginManager.discover_and_load in tests/test_probe_plugin.py"
+    },
+    "drift": {
+      "probe": "configured report file exists, or configured argv is runnable",
+      "contract": "stdout of deploy/config/check_drift.py: lines '[1]..[4] ...: N' and 'ключей N'; exit 0 clean, 1 drift, 2 error",
+      "verified": {
+        "own-script": "read-by-code, agent/deploy/config/check_drift.py (185 lines); output format parsed by collect.parse_drift_output"
+      }
+    },
+    "grok_quota": {
+      "probe": "in-process import of hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials at call time; import failure or no grant = unavailable with the reason (limits block on = the row is attempted)",
+      "contract": "GET https://cli-chat-proxy.grok.com/v1/billing?format=credits with the engine's xai-oauth access token and the Grok CLI client header; config.currentPeriod.type == USAGE_PERIOD_TYPE_WEEKLY, creditUsagePercent 0..100, end date; plan name from /v1/settings optional. Undocumented by xAI; the number is the provider's own (grok.py). One attempt per limits_refresh_seconds, cache in the plugin record, a number never older than the interval",
+      "verified": {
+        "0.21.1": "live on the pilot installation 2026-09-12 (HTTP 200, weekly pool, tier SuperGrok); parser pinned to that answer in tests/test_grok.py"
+      },
+      "caveat": "a changed answer shape is 'нет данных (форма ответа: ...)', never a number; the inference host api.x.ai answers 404 for this path, the CLI proxy host is required"
+    },
+    "kimi_quota": {
+      "probe": "in-process import of hermes_cli.auth.resolve_api_key_provider_credentials('kimi-coding') at call time: the key and base URL by the runtime's own rules (.env, then the credential pool, then the sk-kimi- prefix redirect); import failure or no key = unavailable with the reason",
+      "contract": "GET <base URL without /v1>/v1/usages on the host the engine already uses for Kimi inference, Authorization: Bearer <key>, the client header the engine sends to that host; usages.{limit_5h,limit_7d,limit_month_total} with used_ratio 0..1 and reset_time (the shape the official client parses: MoonshotAI/kimi-code packages/oauth/src/managed-usage.ts). Not in Kimi's docs; the number is the provider's own (kimi.py). Same cache policy as grok_quota",
+      "verified": {
+        "0.21.3": "read-by-code, engine clone at v2026.9.14: resolver signature and the kimi-coding registry row (hermes_cli/auth.py); parser pinned to the shapes third-party clients reported (tests/test_kimi.py). NOT yet observed live: the pilot probe waits for the owner's go-ahead"
+      },
+      "caveat": "the request never goes through the credential pool's rotation, so a failed request cannot mark the pool exhausted; which windows the account has (weekly on legacy plans, monthly on new ones) is the provider's answer, not a setting"
+    },
+    "backup": {
+      "probe": "configured status file exists (backup_status); not configured = unsupported, configured but missing = unavailable with an event",
+      "contract": "JSON written by the backup timer's root step on every run: ok, phase, reason, integrity, finished_epoch (finished_at as fallback); the dashboard reads the file only, never the database or the copy; stale after 26 h like the watchdog module that reads the same file",
+      "verified": {
+        "own-script": "read-by-code, agent/deploy/state-db-backup/state_db_publish.py (publish and record status shapes) and deploy/state-db-fts-check/fts_health_check.py check_backup (the 26 h threshold); rendered lines pinned in tests/test_backup.py"
+      }
+    },
+    "hermes_send": {
+      "probe": "not probed in MVP; alert path candidate",
+      "contract": "hermes send --to platform:chat_id:thread_id --json; sends a NEW message, cannot edit or pin",
+      "verified": {
+        "0.20.5": "read-by-code, hermes_cli/send_cmd.py present",
+        "0.21.1": "read-by-code, hermes_cli/send_cmd.py present, same flags"
+      }
+    },
+    "cron_script": {
+      "probe": "not probed; deployment surface",
+      "contract": "cron job with script=<path under HERMES_HOME/scripts/> and no_agent=true runs the script in the gateway interpreter, own process group, timeout from cron.script_timeout_seconds; stdout is delivered verbatim as a NEW message",
+      "verified": {
+        "0.20.5": "read-by-code, desktop install: cron/jobs.py has no_agent (35 mentions), no scheduler_script.py split yet",
+        "0.21.1": "read-by-code, engine clone: cron/scheduler_script.py, path guard inside HERMES_HOME/scripts/"
+      }
+    }
+  }
+}
