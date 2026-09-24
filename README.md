@@ -14,16 +14,19 @@ the plugin API.
 
 ## Install
 
-One line puts the plugin and its vendored package into the gateway's plugin directory:
+The plugin folder `plugin/telegram_dashboard_probe/` is self-contained: the `telegram_dashboard`
+package lives inside it (module paths below, like `telegram_dashboard/grok.py`, are relative to
+that folder). One line puts it into the gateway's plugin directory:
 
 ```bash
-git clone https://github.com/bablobanov/hermes-agent-telegram-dashboard.git && cd hermes-agent-telegram-dashboard && install -d "${HERMES_HOME:-$HOME/.hermes}/plugins/telegram_dashboard_probe" && cp -r plugin/telegram_dashboard_probe/. telegram_dashboard "${HERMES_HOME:-$HOME/.hermes}/plugins/telegram_dashboard_probe/"
+git clone https://github.com/bablobanov/hermes-agent-telegram-dashboard.git && cd hermes-agent-telegram-dashboard && install -d "${HERMES_HOME:-$HOME/.hermes}/plugins" && cp -r plugin/telegram_dashboard_probe "${HERMES_HOME:-$HOME/.hermes}/plugins/"
 ```
 
 Then enable it in `config.yaml` (`plugins.enabled`, the `chat_id` setting; the table under
 "Deploying on a gateway" below), restart the gateway, pin the message it sends. Nothing is
-installed into the engine's environment; `SHA256SUMS` in the repository root lists the files as
-the plugin directory sees them, so `sha256sum -c` verifies a copy.
+installed into the engine's environment; `SHA256SUMS` in the repository root lists every file of
+the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the gateway's
+`plugins/` directory) verifies a copy.
 
 ## What the message shows
 
@@ -131,13 +134,12 @@ deadlines (`collect_all_async`), so a slow provider never stalls the Telegram ev
 
 Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
 
-1. copy `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`
-   **and** `telegram_dashboard/` into that same folder
-   (`$HERMES_HOME/plugins/telegram_dashboard_probe/telegram_dashboard/`). The engine loads a
-   directory plugin as a package with `__path__`, so the copy beside the plugin is imported as a
-   relative package and nothing is installed into the engine's environment. A `telegram_dashboard`
-   installed in the interpreter is the fallback; with neither the message says so instead of
-   showing a screen
+1. copy `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`,
+   with the `telegram_dashboard/` package inside it as the repository keeps it. The engine loads a
+   directory plugin as a package with `__path__`, so the package beside the plugin is imported as
+   a relative package and nothing is installed into the engine's environment. A
+   `telegram_dashboard` installed in the interpreter is the fallback; with neither the message
+   says so instead of showing a screen
 2. in `config.yaml`: add `telegram_dashboard_probe` to `plugins.enabled` and set
    `plugins.entries.telegram_dashboard_probe.settings`:
 
@@ -288,7 +290,10 @@ dispatch), not only a manual run that prints.
 
 ## Running the fallback tick
 
+The package runs from the plugin folder; point Python at it (or at a deployed copy):
+
 ```bash
+export PYTHONPATH=plugin/telegram_dashboard_probe
 python -m telegram_dashboard --demo 2                 # render static verification state 2
 python -m telegram_dashboard --config c.json --dry-run
 python -m telegram_dashboard --config c.json          # edit the pinned message
@@ -320,13 +325,16 @@ gateway's own); elsewhere they degrade to `unsupported`.
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest tests -q          # plus `pip install tzdata` on Windows
-ruff check . && ruff format --check . && mypy --strict telegram_dashboard
+python -m pytest tests -q          # plus `pip install tzdata` on Windows
+ruff check . && ruff format --check . && mypy --strict -p telegram_dashboard
 ```
 
-Every run prints `telegram_dashboard.__file__` in the header: a green run that does not say which
-tree it tested proves nothing. No test reaches a provider: the Grok and Kimi attempts are stubbed
-by an autouse fixture in `tests/conftest.py` unless a test passes its own fake. `tests/test_probe_plugin.py` skips unless the Hermes engine is
+`pyproject.toml` points pytest and mypy at the package inside the plugin folder. Every run prints
+`telegram_dashboard.__file__` in the header: a green run that does not say which tree it tested
+proves nothing. No test reaches a provider: the Grok and Kimi attempts are stubbed by an autouse
+fixture in `tests/conftest.py` unless a test passes its own fake; a plugin loaded by the test
+helpers takes that same patched package, not a second copy of it under the plugin's name
+(`tests/probe_fakes.py`, `load_plugin`). `tests/test_probe_plugin.py` skips unless the Hermes engine is
 importable; to run it, use an interpreter with the engine and `python-telegram-bot` installed
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).

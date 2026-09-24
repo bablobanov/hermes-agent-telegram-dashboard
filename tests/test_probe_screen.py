@@ -324,13 +324,12 @@ def test_settings_fall_back_to_the_environment_and_to_the_engine_default_home(
 
 
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
-    """The deployment copies ``telegram_dashboard/`` into the plugin folder; the engine loads a
-    directory plugin as a package with ``__path__``, so the copy resolves as a relative import."""
+    """The package lives inside the plugin folder; the engine loads a directory plugin as a
+    package with ``__path__``, so the copy resolves as a relative import."""
     plugin_dir = tmp_path / "telegram_dashboard_probe"
-    shutil.copytree(PLUGIN_DIR, plugin_dir)
-    shutil.copytree(PLUGIN_DIR.parents[1] / "telegram_dashboard", plugin_dir / "telegram_dashboard")
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
 
-    plugin = load_plugin("hermes_plugins.vendored_probe", plugin_dir)
+    plugin = load_plugin("hermes_plugins.vendored_probe", plugin_dir, vendored=True)
     dashboard = plugin.import_dashboard()
 
     assert dashboard is not None

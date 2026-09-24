@@ -186,18 +186,15 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
 
 def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkeypatch) -> None:
     """The real loader: plugin.yaml under <home>/plugins, opt-in via plugins.enabled, settings from
-    plugins.entries.<id>.settings, and the ``telegram_dashboard`` package copied INTO the plugin
-    folder. This is the deployment shape, not a hand-built context."""
+    plugins.entries.<id>.settings, and the ``telegram_dashboard`` package INSIDE the plugin
+    folder, as the repository keeps it. This is the deployment shape, not a hand-built context."""
     import shutil
 
     import yaml
 
     home = tmp_path / "home"
     plugin_home = home / "plugins" / "telegram_dashboard_probe"
-    shutil.copytree(PLUGIN_DIR, plugin_home)
-    shutil.copytree(
-        PLUGIN_DIR.parents[1] / "telegram_dashboard", plugin_home / "telegram_dashboard"
-    )
+    shutil.copytree(PLUGIN_DIR, plugin_home, ignore=shutil.ignore_patterns("__pycache__"))
     (home / "config.yaml").write_text(
         yaml.safe_dump(
             {

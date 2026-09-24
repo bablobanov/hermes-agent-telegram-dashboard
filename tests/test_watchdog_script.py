@@ -22,6 +22,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "watchdog" / "dashboard_probe_check.py"
+PACKAGE = ROOT / "plugin" / "telegram_dashboard_probe" / "telegram_dashboard"
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
 PERIOD = 300
 INTERVAL = 300
@@ -185,7 +186,7 @@ def _cut(where: Path) -> Path:
     package = where / "telegram_dashboard"
     package.mkdir()
     for name in watchdog.PACKAGE_MODULES:
-        shutil.copy(ROOT / "telegram_dashboard" / name, package / name)
+        shutil.copy(PACKAGE / name, package / name)
     return shutil.copy(SCRIPT, where / SCRIPT.name)
 
 

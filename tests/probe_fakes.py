@@ -20,7 +20,18 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugin" / "telegram_dashboar
 CHAT = "-1001000000001"  # fixture value, not a real chat
 
 
-def load_plugin(name: str = "probe_on_fakes", plugin_dir: Path = PLUGIN_DIR) -> ModuleType:
+def load_plugin(
+    name: str = "probe_on_fakes", plugin_dir: Path = PLUGIN_DIR, *, vendored: bool = False
+) -> ModuleType:
+    """The plugin as the engine loads it: a package named ``name`` from ``plugin_dir``.
+
+    The package sits beside the plugin in the repository too (the deployment shape), but the tests
+    patch it under the name they import, ``telegram_dashboard`` (conftest's network stub among
+    them). A plugin that took the copy beside it would run the same files under a second module
+    name that no patch reaches. So by default the plugin gets an empty ``__path__`` (the list
+    imports search for submodules; an empty ``submodule_search_locations`` would not do, importlib
+    fills it with the file's folder) and takes the installed package, which is those very files;
+    ``vendored=True`` lets it see the copy."""
     init_file = plugin_dir / "__init__.py"
     for cached in [key for key in sys.modules if key == name or key.startswith(f"{name}.")]:
         del sys.modules[cached]
@@ -30,7 +41,7 @@ def load_plugin(name: str = "probe_on_fakes", plugin_dir: Path = PLUGIN_DIR) -> 
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     module.__package__ = name
-    module.__path__ = [str(plugin_dir)]
+    module.__path__ = [str(plugin_dir)] if vendored else []
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
