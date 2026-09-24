@@ -15,7 +15,14 @@ from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .policy import sanitize_public_text
-from .schema import BackupSummary, DashboardSnapshot, DriftSummary, GatewaySummary, QuotaMetric
+from .schema import (
+    BackupSummary,
+    DashboardSnapshot,
+    DriftSummary,
+    GatewaySummary,
+    QuotaMetric,
+    QuotaWindow,
+)
 from .timeparse import age_seconds, format_in_zone, is_from_the_future, parse_timestamp
 
 TELEGRAM_TEXT_LIMIT = 4096
@@ -240,25 +247,30 @@ def _quota_lines(quota: QuotaMetric, zone: tzinfo) -> list[str]:
 def _windows_text(quota: QuotaMetric, zone: tzinfo) -> str:
     """One window: ``label N% · сброс <date>``. Several windows: each carries its own reset in
     brackets, because one date after two percentages says nothing about which window it ends."""
-    used = [
-        "?" if window.used_percent is None else f"{window.used_percent:.0f}%"
-        for window in quota.windows
-    ]
     if len(quota.windows) == 1:
         window = quota.windows[0]
-        text = f"{window.label} {used[0]}"
+        text = _window_head(window)
         if window.reset_at:
             reset = format_in_zone(window.reset_at, zone, "%d.%m %H:%M %Z")
             text += f" · сброс {reset}" if reset else " · сброс: дата нечитаема"
         return text
     parts = []
-    for window, used_text in zip(quota.windows, used, strict=True):
-        part = f"{window.label} {used_text}"
+    for window in quota.windows:
+        part = _window_head(window)
         if window.reset_at:
             reset = format_in_zone(window.reset_at, zone, "%d.%m %H:%M")
             part += f" (сброс {reset})" if reset else " (сброс: дата нечитаема)"
         parts.append(part)
     return " · ".join(parts)
+
+
+def _window_head(window: QuotaWindow) -> str:
+    """``label N%``; the provider's state in words when it gave no number; ``?`` otherwise."""
+    if window.used_percent is not None:
+        return f"{window.label} {window.used_percent:.0f}%"
+    if window.note:
+        return f"{window.label}: {window.note}"
+    return f"{window.label} ?"
 
 
 def _drift_line(drift: DriftSummary, zone: tzinfo) -> str:

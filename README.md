@@ -209,8 +209,13 @@ inference host `api.x.ai` answers 404 for this path, so the proxy host is requir
 one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "нет данных"
 with its reason until the next interval; a cached number older than the interval is not shown.
 The shape is checked strictly (`currentPeriod.type == USAGE_PERIOD_TYPE_WEEKLY`, a finite
-percent in 0..100, a readable end date); anything else is named, not guessed. Grok is its own
-source on the coverage line (`квота Grok`).
+percent in 0..100, a readable end date); anything else is named, not guessed. One answer is a
+state rather than a changed shape: right after the weekly reset the proxy leaves
+`creditUsagePercent` out altogether until the first request of the new period (probed
+2026-09-25). The line then reads `неделя: расход не начат` with the reset date, never a zero,
+and only while the period is the current one and on-demand spend is an explicit zero; a percent
+missing under any other conditions is named (`нет creditUsagePercent`). Grok is its own source
+on the coverage line (`квота Grok`).
 
 **Kimi** (`telegram_dashboard/kimi.py`): the windows of the Kimi Code subscription, read from
 `<base URL>/v1/usages` on the very host the engine uses for Kimi inference. The key and the base

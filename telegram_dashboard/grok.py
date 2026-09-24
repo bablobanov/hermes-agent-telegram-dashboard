@@ -42,6 +42,7 @@ HTTP_TIMEOUT_SECONDS = 10.0
 # The worker deadline covers both requests plus thread start-up.
 TICK_TIMEOUT_SECONDS = 25.0
 WINDOW_LABEL = "неделя"
+NOT_STARTED_NOTE = "расход не начат"
 
 TokenResolver = Callable[[], str]
 HttpGet = Callable[[str, dict[str, str]], tuple[int, str]]
@@ -77,26 +78,63 @@ def http_get(url: str, headers: dict[str, str]) -> tuple[int, str]:
 # ----------------------------------------------------------------------------- parsing
 
 
-def parse_weekly(payload: object) -> dict[str, Any]:
-    """The weekly window as a payload item window; ``ShapeError`` names what is missing."""
+def parse_weekly(payload: object, *, now: datetime) -> dict[str, Any]:
+    """The weekly window as a payload item window; ``ShapeError`` names what is missing.
+
+    Right after the weekly reset the proxy leaves ``creditUsagePercent`` out altogether until the
+    first request of the new period (probe of 2026-09-25). That answer is a state, not a number:
+    the window says so in words (``note``, no percent), and only while every other sign agrees
+    (``_not_started``). A zero would be a number the provider never gave."""
     config = payload.get("config") if isinstance(payload, dict) else None
     if not isinstance(config, dict):
         raise ShapeError("ответ без config")
     period = config.get("currentPeriod")
-    period_type = period.get("type") if isinstance(period, dict) else None
-    if period_type != WEEKLY_PERIOD:
+    if not isinstance(period, dict) or period.get("type") != WEEKLY_PERIOD:
+        period_type = period.get("type") if isinstance(period, dict) else None
         raise ShapeError(f"период не недельный: {sanitize_public_text(str(period_type), limit=32)}")
-    used = config.get("creditUsagePercent")
+    window: dict[str, Any] = {"label": WINDOW_LABEL}
+    if "creditUsagePercent" in config:
+        window["used_percent"] = _percent(config["creditUsagePercent"])
+    elif _not_started(config, period, now):
+        window.update(used_percent=None, note=NOT_STARTED_NOTE)
+    else:
+        raise ShapeError("нет creditUsagePercent")
+    window["reset_at"] = _reset_date(config, period)
+    return window
+
+
+def _percent(used: object) -> float:
     if isinstance(used, bool) or not isinstance(used, int | float) or not math.isfinite(used):
         raise ShapeError("creditUsagePercent не число")
     if not 0 <= used <= 100:
         raise ShapeError(f"creditUsagePercent вне 0..100: {used:g}")
-    end = period.get("end") if isinstance(period, dict) else None
+    return float(used)
+
+
+def _not_started(config: dict[str, Any], period: dict[str, Any], now: datetime) -> bool:
+    """The week nobody has spent from yet: the period is the current one and on-demand spend is
+    an explicit zero. Anything less and the missing percent is a changed shape, named as such."""
+    start = _bound(period.get("start"), config.get("billingPeriodStart"))
+    end = _bound(period.get("end"), config.get("billingPeriodEnd"))
+    spent = config.get("onDemandUsed")
+    spent_value: object = spent.get("val") if isinstance(spent, dict) else None
+    if start is None or end is None or not start <= now < end:
+        return False
+    return spent_value == 0 and not isinstance(spent_value, bool)
+
+
+def _bound(own: object, billing: object) -> datetime | None:
+    """A period bound from ``currentPeriod``, else from the billing period it mirrors."""
+    return parse_timestamp(own) or parse_timestamp(billing)
+
+
+def _reset_date(config: dict[str, Any], period: dict[str, Any]) -> str:
+    end = period.get("end")
     if parse_timestamp(end) is None:
         end = config.get("billingPeriodEnd")
     if parse_timestamp(end) is None:
         raise ShapeError("дата сброса нечитаема")
-    return {"label": WINDOW_LABEL, "used_percent": float(used), "reset_at": end}
+    return str(end)
 
 
 def parse_tier(payload: object) -> str | None:
@@ -141,7 +179,7 @@ def fetch_item(
         item["reason"] = f"HTTP {status}"
         return item
     try:
-        window = parse_weekly(json.loads(body))
+        window = parse_weekly(json.loads(body), now=now)
     except ValueError as exc:  # ShapeError and a body that is not JSON
         item["reason"] = f"форма ответа: {_public(exc) or 'не JSON'}"
         return item

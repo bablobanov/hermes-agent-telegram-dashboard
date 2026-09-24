@@ -83,7 +83,7 @@ def _token() -> str:
 
 
 def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date() -> None:
-    window = grok.parse_weekly(BILLING)
+    window = grok.parse_weekly(BILLING, now=NOW)
 
     assert window == {"label": "неделя", "used_percent": 27.0, "reset_at": END}
     assert grok.parse_tier(SETTINGS) == "SuperGrok"
@@ -97,7 +97,10 @@ def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date()
             {"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_MONTHLY"}}},
             "период не недельный",
         ),
-        ({"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY"}}}, "не число"),
+        (
+            {"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY"}}},
+            "нет creditUsagePercent",
+        ),
         (
             {
                 "config": {
@@ -129,7 +132,7 @@ def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date()
 )
 def test_a_changed_shape_is_named_not_guessed(payload: object, reason: str) -> None:
     with pytest.raises(grok.ShapeError, match=reason):
-        grok.parse_weekly(payload)
+        grok.parse_weekly(payload, now=NOW)
 
 
 def test_the_reset_date_falls_back_to_the_billing_period_end() -> None:
@@ -141,7 +144,71 @@ def test_the_reset_date_falls_back_to_the_billing_period_end() -> None:
         }
     }
 
-    assert grok.parse_weekly(payload)["reset_at"] == END
+    assert grok.parse_weekly(payload, now=NOW)["reset_at"] == END
+
+
+# What the proxy answered on 2026-09-25, right after the weekly reset and before the first request
+# of the new period: no ``creditUsagePercent`` key at all (not null), on-demand spend zero.
+AFTER_RESET_AT = datetime(2026, 9, 25, 0, 10, tzinfo=UTC)
+NEXT_START = "2026-09-24T19:25:30.689096+00:00"
+NEXT_END = "2026-10-01T19:25:30.689096+00:00"
+AFTER_RESET_CONFIG: dict[str, Any] = {
+    "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": NEXT_START, "end": NEXT_END},
+    "onDemandCap": {"val": 0},
+    "onDemandUsed": {"val": 0},
+    "isUnifiedBillingUser": True,
+    "prepaidBalance": {"val": 0},
+    "topUpMethod": "TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+    "billingPeriodStart": NEXT_START,
+    "billingPeriodEnd": NEXT_END,
+}
+AFTER_RESET = {"config": AFTER_RESET_CONFIG}
+NOT_STARTED_WINDOW = {
+    "label": "неделя",
+    "used_percent": None,
+    "note": "расход не начат",
+    "reset_at": NEXT_END,
+}
+
+
+def _after_reset(**config: object) -> dict[str, Any]:
+    return {"config": {**AFTER_RESET_CONFIG, **config}}
+
+
+def test_right_after_the_weekly_reset_the_pool_says_it_has_not_started_in_words_not_a_zero() -> (
+    None
+):
+    assert grok.parse_weekly(AFTER_RESET, now=AFTER_RESET_AT) == NOT_STARTED_WINDOW
+
+
+@pytest.mark.parametrize(
+    ("payload", "now", "reason"),
+    [
+        # The key is there but empty: a changed shape, not the counter that is not created yet.
+        (_after_reset(creditUsagePercent=None), AFTER_RESET_AT, "не число"),
+        # The period is not the current one: the answer is stale or early, not a fresh week.
+        (AFTER_RESET, AFTER_RESET_AT + timedelta(days=7), "нет creditUsagePercent"),
+        (AFTER_RESET, AFTER_RESET_AT - timedelta(days=1), "нет creditUsagePercent"),
+        # Something was spent: the percent must be there.
+        (_after_reset(onDemandUsed={"val": 3}), AFTER_RESET_AT, "нет creditUsagePercent"),
+        (_after_reset(onDemandUsed={"val": False}), AFTER_RESET_AT, "нет creditUsagePercent"),
+        (_after_reset(onDemandUsed=None), AFTER_RESET_AT, "нет creditUsagePercent"),
+        # Without a readable start the period cannot be shown to be the current one.
+        (
+            _after_reset(
+                currentPeriod={"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": NEXT_END},
+                billingPeriodStart="soon",
+            ),
+            AFTER_RESET_AT,
+            "нет creditUsagePercent",
+        ),
+    ],
+)
+def test_a_missing_percent_is_a_state_only_when_every_sign_agrees(
+    payload: object, now: datetime, reason: str
+) -> None:
+    with pytest.raises(grok.ShapeError, match=reason):
+        grok.parse_weekly(payload, now=now)
 
 
 # ----------------------------------------------------------------------------- one attempt
@@ -159,6 +226,15 @@ def test_one_attempt_reads_the_pool_with_the_cli_client_header_and_never_logs_th
     assert headers["x-xai-token-auth"] == "xai-grok-cli"
     assert headers["Authorization"] == f"Bearer {_token()}"
     assert _token() not in json.dumps(item)
+
+
+def test_a_week_not_started_is_an_answer_with_its_reset_date_and_the_plan_name() -> None:
+    http = _http(BILLING_URL=(200, json.dumps(AFTER_RESET)))
+
+    item = grok.fetch_item(now=AFTER_RESET_AT, resolve=_token, get=http)
+
+    assert item["status"] == "available" and item["fetched_at"] == AFTER_RESET_AT.isoformat()
+    assert item["windows"] == [{**NOT_STARTED_WINDOW, "label": "SuperGrok неделя"}]
 
 
 def test_the_tier_is_optional_and_its_absence_never_costs_the_number() -> None:
@@ -287,6 +363,22 @@ def test_the_grok_line_has_its_own_source_with_its_own_freshness() -> None:
     assert failed_source.state == "unavailable" and failed_source.detail == "HTTP 503"
 
 
+NOT_STARTED = {**AVAILABLE, "windows": [NOT_STARTED_WINDOW]}
+
+
+def test_a_week_not_started_is_a_fresh_source_and_its_words_survive_the_cache() -> None:
+    cache: dict[str, Any] = {}
+
+    metric, source = collect_grok(
+        cache, now=NOW, interval_seconds=900, fetch=CountingFetch(NOT_STARTED)
+    )
+    json.loads(json.dumps(cache))  # the state file keeps the cache as JSON
+
+    assert metric.kind == "official"
+    assert metric.windows == (QuotaWindow("неделя", None, NEXT_END, note="расход не начат"),)
+    assert source.state == "fresh"
+
+
 # ----------------------------------------------------------------------------- the screen
 
 
@@ -332,6 +424,23 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     assert "- Codex: Session 14% · сброс 19.09 08:12 UTC · данные 13:38" in text
     assert "- Grok: SuperGrok неделя 27% · сброс 17.09 19:25 UTC · данные 13:25" in text
     assert "- Gemini: нет данных (источник не подтверждён)" in text
+
+
+def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as_a_zero() -> None:
+    window = QuotaWindow("SuperGrok неделя", None, NEXT_END, note="расход не начат")
+    capacity = CapacitySummary(
+        (
+            QuotaMetric(
+                "Grok", "official", windows=(window,), fetched_at="2026-09-12T13:25:00+00:00"
+            ),
+        )
+    )
+
+    line = next(line for line in _render(capacity).splitlines() if "Grok:" in line)
+
+    assert (
+        line == "- Grok: SuperGrok неделя: расход не начат · сброс 01.10 19:25 UTC · данные 13:25"
+    )
 
 
 def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> None:
@@ -444,6 +553,26 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     seen = [s for s in second.sources if s.state in ("fresh", "stale")]
     assert "grok_quota" in [s.name for s in seen]
     assert f"Охват источников: {len(seen)}/6" in text  # six sources, Grok counted
+
+
+def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
+    tmp_path: Path,
+) -> None:
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            Runner(),
+            now=NOW,
+            resolve_limits=_facade,
+            grok_cache={},
+            grok_fetch=CountingFetch(NOT_STARTED),
+        )
+    )
+
+    text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
+    assert "- Grok: неделя: расход не начат · сброс 01.10 19:25 UTC · данные 13:40" in text
+    assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "fresh"
+    assert "creditUsagePercent" not in text
 
 
 def test_with_limits_off_grok_is_off_too_and_says_why(tmp_path: Path) -> None:

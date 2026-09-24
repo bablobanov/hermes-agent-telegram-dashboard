@@ -61,6 +61,9 @@ class QuotaWindow:
     label: str
     used_percent: float | None = None
     reset_at: str | None = None
+    # The provider's state in words when it gives no number (Grok's week before the first
+    # request); shown instead of the percent, never turned into one.
+    note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

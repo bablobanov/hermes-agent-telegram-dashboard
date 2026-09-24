@@ -473,11 +473,13 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
         used = raw.get("used_percent")
         used_value = float(used) if isinstance(used, (int, float)) and 0 <= used <= 100 else None
         reset = raw.get("reset_at")
+        note = raw.get("note")
         windows.append(
             QuotaWindow(
                 sanitize_public_text(str(raw.get("label") or "окно"), limit=24),
                 used_value,
                 reset if isinstance(reset, str) else None,
+                note=sanitize_public_text(note, limit=24) if isinstance(note, str) else None,
             )
         )
     source = item.get("source")
