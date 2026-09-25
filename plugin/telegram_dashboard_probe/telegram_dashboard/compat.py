@@ -101,9 +101,9 @@ def verification_for(matrix: Mapping[str, Any], source: str, version: str) -> st
     """Human-readable verification status of ``source`` on ``version``; honest when unknown."""
     entry = matrix.get("sources", {}).get(source)
     if not isinstance(entry, dict):
-        return "источник не описан в матрице"
+        return "source not described in the matrix"
     verified = entry.get("verified", {})
     if isinstance(verified, dict) and version in verified:
-        return f"проверено на {version}: {verified[version]}"
-    known = ", ".join(sorted(verified)) if isinstance(verified, dict) and verified else "нигде"
-    return f"на {version} не проверено (проверено: {known})"
+        return f"verified on {version}: {verified[version]}"
+    known = ", ".join(sorted(verified)) if isinstance(verified, dict) and verified else "nowhere"
+    return f"not verified on {version} (verified: {known})"

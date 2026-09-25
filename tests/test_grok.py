@@ -421,14 +421,14 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     text = _render(capacity)
     lines = text.splitlines()
 
-    assert "Claude · нет данных" in lines
+    assert "Claude · no data" in lines
     assert "Codex ▓░░░░ 14%" in lines
     assert "Grok ▓░░░░ 27%" in lines
-    assert "Gemini · нет данных" in lines
+    assert "Gemini · no data" in lines
     # The details carry what the line does not: each number's own minute when it differs from
     # the screen's, each reset, each reason.
-    assert "> Данные 13:40 · Codex 13:38 · Grok 13:25" in lines
-    assert "> Codex 19.09" in lines and "> Grok 17.09" in lines
+    assert "> Data 13:40 · Codex 13:38 · Grok 13:25" in lines
+    assert "> Codex Sep 19" in lines and "> Grok Sep 17" in lines
     assert "> Claude: no account token" in lines
     assert "> Gemini: source not confirmed" in lines
 
@@ -447,8 +447,8 @@ def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as
     line = next(line for line in lines if line.startswith("Grok"))
 
     assert line == "Grok · usage not started"  # words, no bar, no percent
-    assert "> Grok 01.10" in lines
-    assert "> Данные 13:40 · Grok 13:25" in lines
+    assert "> Grok Oct 1" in lines
+    assert "> Data 13:40 · Grok 13:25" in lines
 
 
 def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> None:
@@ -558,13 +558,13 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     text = render_dashboard(second, now=NOW, zone=UTC, period_seconds=300)
     lines = text.splitlines()
     assert "Grok ▓░░░░ 27%" in lines
-    assert "> Grok 17.09" in lines
+    assert "> Grok Sep 17" in lines
     # Both cached numbers keep their own minute next to the screen's.
-    assert "> Данные 13:45 · Codex 13:40 · Grok 13:40" in lines
-    assert "Claude · нет данных" in lines and "> Claude: no account token" in lines
+    assert "> Data 13:45 · Codex 13:40 · Grok 13:40" in lines
+    assert "Claude · no data" in lines and "> Claude: no account token" in lines
     seen = [s for s in second.sources if s.state in ("fresh", "stale")]
     assert "grok_quota" in [s.name for s in seen]
-    assert f"источники {len(seen)}/6" in text  # six sources, Grok counted
+    assert f"sources {len(seen)}/6" in text  # six sources, Grok counted
 
 
 def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
@@ -583,7 +583,7 @@ def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
 
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
     assert "Grok · usage not started" in text.splitlines()
-    assert "> Grok 01.10" in text.splitlines()
+    assert "> Grok Oct 1" in text.splitlines()
     assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "fresh"
     assert "creditUsagePercent" not in text
 

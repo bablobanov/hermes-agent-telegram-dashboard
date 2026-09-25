@@ -187,18 +187,18 @@ def message_banner(
     if freshness == "confirmed":
         return None
     if freshness == "never":
-        return "⚠️ Сообщение ещё ни разу не подтверждено Telegram"
+        return "⚠️ Message never yet confirmed by Telegram"
     if freshness == "lost":
-        seen = format_in_zone(record.lost_at, now.tzinfo or UTC, "%H:%M %Z") or "время неизвестно"
-        tail = "создано заново" if record.recreated_at else "НЕ восстановлено"
-        return f"🔴 Закреплённое сообщение пропало ({seen}), {tail}"
+        seen = format_in_zone(record.lost_at, now.tzinfo or UTC, "%H:%M %Z") or "time unknown"
+        tail = "recreated" if record.recreated_at else "NOT restored"
+        return f"🔴 Pinned message lost ({seen}), {tail}"
     confirmed = parse_timestamp(record.last_confirmed_at)
     age = age_seconds(confirmed, now) if confirmed is not None else None
     if is_from_the_future(age):
-        ahead = f"{int(-age // 60)} мин" if age is not None else "неизвестно на сколько"
-        return f"🔴 ДАШБОРД УСТАРЕЛ: подтверждение датировано будущим ({ahead} вперёд)"
-    minutes = "неизвестно сколько" if age is None else f"{int(age // 60)} мин"
-    threshold = f"{(2 * period_seconds) // 60} мин"
+        ahead = f"{int(-age // 60)} min" if age is not None else "unknown by how much"
+        return f"🔴 DASHBOARD STALE: confirmation dated in the future ({ahead} ahead)"
+    minutes = "unknown how long" if age is None else f"{int(age // 60)} min"
+    threshold = f"{(2 * period_seconds) // 60} min"
     if freshness == "lagging":
-        return f"🟡 Обновление запаздывает: последнее подтверждение {minutes} назад"
-    return f"🔴 ДАШБОРД УСТАРЕЛ: последнее подтверждение {minutes} назад, порог {threshold}"
+        return f"🟡 Update lagging: last confirmation {minutes} ago"
+    return f"🔴 DASHBOARD STALE: last confirmation {minutes} ago, threshold {threshold}"

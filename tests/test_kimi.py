@@ -318,9 +318,9 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
     assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
     assert "Grok ▓░░░░ 27%" in text.splitlines()
     # Resets and stamps live in the details: a reset today is a time, a later one a date.
-    assert "> Kimi 5h 16:32 · week 26.09" in text.splitlines()
-    assert "> Grok 24.09" in text.splitlines()
-    assert "> Данные 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
+    assert "> Kimi 5h 16:32 · week Sep 26" in text.splitlines()
+    assert "> Grok Sep 24" in text.splitlines()
+    assert "> Data 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
 
 
 def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
@@ -337,7 +337,7 @@ def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
     text = _render(capacity)
 
     assert "Kimi ▓░░░░ 12% 5h · month 8%" in text.splitlines()
-    assert "> Kimi month 22.10" in text.splitlines()  # only the window that has a reset
+    assert "> Kimi month Oct 22" in text.splitlines()  # only the window that has a reset
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -405,11 +405,11 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
     assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
-    assert "> Kimi 5h 16:32 · week 26.09" in text.splitlines()
-    assert "Данные 13:40" not in text  # read at the screen's own minute: nothing to add
+    assert "> Kimi 5h 16:32 · week Sep 26" in text.splitlines()
+    assert "Data 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]
-    assert f"источники {len(seen)}/6" in text
+    assert f"sources {len(seen)}/6" in text
 
 
 def test_with_limits_off_kimi_is_off_too_and_says_why(tmp_path: Path) -> None:

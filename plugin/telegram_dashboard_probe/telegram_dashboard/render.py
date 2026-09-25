@@ -2,7 +2,7 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "Лимиты", and everything that explains a line (reasons, reset times, per-source
+provider under "Limits", and everything that explains a line (reasons, reset times, per-source
 stamps, coverage) in a details block that Telegram shows collapsed. Nothing is dropped, only
 moved: a line without a number still names its reason, in the details. Work and automation
 blocks render only when the snapshot carries them; ``None`` means the block is not observed on
@@ -31,7 +31,16 @@ from .schema import (
     QuotaMetric,
     QuotaWindow,
 )
-from .timeparse import age_seconds, format_in_zone, is_from_the_future, parse_timestamp, to_zone
+from .timeparse import (
+    age_seconds,
+    day_words,
+    format_day_time,
+    format_in_zone,
+    format_stamp,
+    is_from_the_future,
+    parse_timestamp,
+    to_zone,
+)
 
 TELEGRAM_TEXT_LIMIT = 4096
 _SAFE_LIMIT = 3900
@@ -52,47 +61,52 @@ _STAMP_SLACK_SECONDS = 60.0
 _DETAILS_PREFIX = "> "
 
 _STATUS_LABELS = {
-    "normal": "🟢 Норма",
-    "warning": "🟡 Требует внимания",
-    "critical": "🔴 Требует внимания",
-    "unknown": "⚪ Состояние неизвестно",
+    "normal": "🟢 Healthy",
+    "warning": "🟡 Warning",
+    "critical": "🔴 Critical",
+    "unknown": "⚪ Unknown",
 }
 _SCHEDULER_LABELS = {
-    "healthy": "норма",
-    "degraded": "деградация",
-    "unknown": "неизвестно",
+    "healthy": "normal",
+    "degraded": "degraded",
+    "unknown": "unknown",
 }
 _PROCESS_LABELS = {
     "running": OK_MARK,
-    "stopped": "остановлен",
-    "unknown": "неизвестно",
-    "unsupported": "не наблюдается",
+    "stopped": "stopped",
+    "unknown": "unknown",
+    "unsupported": "not observed",
 }
 _PLATFORM_LABELS = {
     "connected": OK_MARK,
-    "degraded": "ошибка",
-    "disconnected": "не подключён",
-    "unknown": "неизвестно",
-    "unsupported": "не наблюдается",
+    "degraded": "error",
+    "disconnected": "disconnected",
+    "unknown": "unknown",
+    "unsupported": "not observed",
 }
 _DRIFT_LABELS = {
-    "unknown": "неизвестно",
-    "unsupported": "не наблюдается",
+    "unknown": "unknown",
+    "unsupported": "not observed",
 }
 _SOURCE_LABELS = {
     "gateway_state": "gateway",
-    "limits": "лимиты",
-    "grok_quota": "квота Grok",
-    "kimi_quota": "квота Kimi",
-    "drift": "дрейф",
-    "backup": "бэкап",
+    "limits": "limits",
+    "grok_quota": "Grok quota",
+    "kimi_quota": "Kimi quota",
+    "drift": "drift",
+    "backup": "backup",
 }
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    """``1 key``, ``3 keys``, ``120,000 tokens``: the number with its noun."""
+    return f"{count:,} {one if count == 1 else many}"
 
 
 @dataclass
 class _Details:
     """What the collapsed block says, grouped: the screen itself, backup and drift, resets,
-    reasons for every "нет данных"."""
+    reasons for every "no data"."""
 
     confirmed: str | None = None
     data: str | None = None
@@ -107,8 +121,8 @@ class _Details:
         groups = [
             screen,
             self.state,
-            ["## Сбросы", *self.resets] if self.resets else [],
-            ["## Нет данных", *self.missing] if self.missing else [],
+            ["## Resets", *self.resets] if self.resets else [],
+            ["## No data", *self.missing] if self.missing else [],
         ]
         body: list[str] = []
         for group in groups:
@@ -121,7 +135,7 @@ class _Details:
             return []
         return [
             "",
-            *(_DETAILS_PREFIX + line if line else ">" for line in ["## Подробности", *body]),
+            *(_DETAILS_PREFIX + line if line else ">" for line in ["## Details", *body]),
         ]
 
 
@@ -138,7 +152,7 @@ def render_dashboard(
     banner = _freshness(details, delivery, now, period_seconds, zone)
     # The message-staleness banner is the first line: it must be visible above the status label.
     lines = [banner] if banner else []
-    data_stamp = format_in_zone(snapshot.observed_at, zone, "%d.%m %H:%M %Z") or "время неизвестно"
+    data_stamp = format_stamp(snapshot.observed_at, zone) or "time unknown"
     lines.append(f"{_STATUS_LABELS[snapshot.overall]} · {data_stamp}")
     if snapshot.gateway is not None:
         lines.append(_gateway_line(snapshot.gateway))
@@ -148,12 +162,12 @@ def render_dashboard(
         lines.append(_drift_line(snapshot.drift, zone, details))
     lines.extend(_coverage_lines(snapshot, details))
     if snapshot.incidents:
-        lines.extend(["", "## Требует внимания"])
+        lines.extend(["", "## Needs attention"])
         lines.extend(
             f"- {sanitize_public_text(incident.title)}" for incident in snapshot.incidents[:5]
         )
     if snapshot.capacity.quotas:
-        lines.extend(["", "## Лимиты"])
+        lines.extend(["", "## Limits"])
         for quota in snapshot.capacity.quotas:
             lines.append(_quota_line(quota, reference, zone, details))
         details.data = _data_stamps(snapshot, zone)
@@ -162,13 +176,13 @@ def render_dashboard(
         lines.extend(
             [
                 "",
-                "## Работа",
+                "## Work",
                 (
-                    f"- Выполняется: {work.executing} · "
-                    f"В очереди: {work.queued} · "
-                    f"Ждёт человека: {work.waiting_human}"
+                    f"- Running: {work.executing} · "
+                    f"Queued: {work.queued} · "
+                    f"Waiting for a human: {work.waiting_human}"
                 ),
-                f"- Ошибки: {work.failed} · Неизвестно: {work.unknown}",
+                f"- Failed: {work.failed} · Unknown: {work.unknown}",
             ]
         )
     if snapshot.automation is not None:
@@ -176,12 +190,12 @@ def render_dashboard(
         lines.extend(
             [
                 "",
-                "## Автоматика",
+                "## Automation",
                 f"- Scheduler: {_SCHEDULER_LABELS[automation.scheduler]}",
                 (
-                    f"- Ошибки запусков: {automation.failed_runs} · "
-                    f"Пропущено: {automation.missed_runs} · "
-                    f"Ошибки доставки: {automation.delivery_failed}"
+                    f"- Failed runs: {automation.failed_runs} · "
+                    f"Missed: {automation.missed_runs} · "
+                    f"Delivery failed: {automation.delivery_failed}"
                 ),
             ]
         )
@@ -197,12 +211,12 @@ def _freshness(
     zone: tzinfo,
 ) -> str | None:
     if period_seconds:
-        details.period = f"Период {max(1, period_seconds // 60)} мин"
+        details.period = f"Period {max(1, period_seconds // 60)} min"
     if now is None or delivery is None or not period_seconds:
         return None
     freshness = classify_message_freshness(delivery, now=now, period_seconds=period_seconds)
     confirmed = format_in_zone(delivery.last_confirmed_at, zone, "%H:%M")
-    details.confirmed = f"Подтверждено {confirmed}" if confirmed else "Подтверждено: ещё нет"
+    details.confirmed = f"Confirmed {confirmed}" if confirmed else "Confirmed: not yet"
     return message_banner(freshness, delivery, now=now, period_seconds=period_seconds)
 
 
@@ -212,30 +226,30 @@ def _coverage_lines(snapshot: DashboardSnapshot, details: _Details) -> list[str]
     parts: list[str] = []
     coverage = snapshot.coverage
     if coverage.expected_profiles:
-        parts.append(f"профили {coverage.observed_profiles}/{coverage.expected_profiles}")
+        parts.append(f"profiles {coverage.observed_profiles}/{coverage.expected_profiles}")
         if coverage.observed_profiles != coverage.expected_profiles:
             lines.append(
-                f"Охват профилей {coverage.observed_profiles}/{coverage.expected_profiles}"
+                f"Profile coverage {coverage.observed_profiles}/{coverage.expected_profiles}"
             )
     if coverage.failed_sources:
-        lines.append(f"Недоступно источников: {len(coverage.failed_sources)}")
+        lines.append(f"Sources unavailable: {len(coverage.failed_sources)}")
     if snapshot.sources:
         seen = [source for source in snapshot.sources if source.state in ("fresh", "stale")]
-        parts.append(f"источники {len(seen)}/{len(snapshot.sources)}")
+        parts.append(f"sources {len(seen)}/{len(snapshot.sources)}")
         missing = [
             f"{_SOURCE_LABELS.get(source.name, source.name)} ({_source_reason(source.state)})"
             for source in snapshot.sources
             if source.state not in ("fresh", "stale")
         ]
         if missing:
-            lines.append("Не наблюдается: " + ", ".join(missing))
+            lines.append("Not observed: " + ", ".join(missing))
         stale = [
             _SOURCE_LABELS.get(source.name, source.name)
             for source in snapshot.sources
             if source.state == "stale"
         ]
         if stale:
-            lines.append("Устарело: " + ", ".join(stale))
+            lines.append("Stale: " + ", ".join(stale))
     if parts:
         joined = " · ".join(parts)
         details.coverage = joined[0].upper() + joined[1:]
@@ -243,7 +257,7 @@ def _coverage_lines(snapshot: DashboardSnapshot, details: _Details) -> list[str]
 
 
 def _source_reason(state: str) -> str:
-    return "нет на этой установке" if state == "unsupported" else "недоступно"
+    return "not on this installation" if state == "unsupported" else "unavailable"
 
 
 def _gateway_line(gateway: GatewaySummary) -> str:
@@ -258,29 +272,29 @@ def _backup_line(
     """The verdict and the age in words on the screen; the absolute time, the integrity verdict
     and any reason in the details. Shown in every state; a state without a number names why."""
     if backup.state == "unsupported":
-        reason = sanitize_public_text(backup.detail or "источник не настроен", limit=60)
-        details.state.append(f"Бэкап: {reason}")
-        return "Бэкап: не наблюдается"
+        reason = sanitize_public_text(backup.detail or "source not configured", limit=60)
+        details.state.append(f"Backup: {reason}")
+        return "Backup: not observed"
     if backup.state == "unknown":
-        reason = sanitize_public_text(backup.detail or "статус не прочитан", limit=60)
-        details.state.append(f"Бэкап: {reason}")
-        return "Бэкап: нет данных"
-    stamp = format_in_zone(backup.finished_at, zone, "%d.%m %H:%M") or "время нечитаемо"
+        reason = sanitize_public_text(backup.detail or "status not read", limit=60)
+        details.state.append(f"Backup: {reason}")
+        return "Backup: no data"
+    stamp = format_day_time(backup.finished_at, zone) or "time unreadable"
     finished = parse_timestamp(backup.finished_at)
     age = None
     if finished is not None and reference is not None:
         age = age_seconds(finished, reference)
     if age is None or is_from_the_future(age):
-        age_words = "возраст неизвестен"
+        age_words = "age unknown"
     else:
         age_words = describe_age(max(age, 0.0))
     if backup.state == "failed":
-        detail = sanitize_public_text(backup.detail or "причина не записана", limit=120)
-        details.state.append(f"Бэкап {stamp} · {detail}")
-        return f"Бэкап {WARN_MARK} не состоялся {age_words}"
-    verdict = sanitize_public_text(backup.integrity or "неизвестно", limit=24)
-    details.state.append(f"Бэкап {stamp} · integrity {verdict}")
-    line = f"Бэкап {OK_MARK} {age_words}"
+        detail = sanitize_public_text(backup.detail or "reason not recorded", limit=120)
+        details.state.append(f"Backup {stamp} · {detail}")
+        return f"Backup {WARN_MARK} failed {age_words}"
+    verdict = sanitize_public_text(backup.integrity or "unknown", limit=24)
+    details.state.append(f"Backup {stamp} · integrity {verdict}")
+    line = f"Backup {OK_MARK} {age_words}"
     if age is not None and age > BACKUP_STALE_SECONDS:
         line += f" {WARN_MARK} {BACKUP_STALE_WORDS}"
     return line
@@ -288,20 +302,23 @@ def _backup_line(
 
 def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
     checked = format_in_zone(drift.checked_at, zone, "%H:%M") if drift.checked_at else None
-    checked_words = f"Дрейф проверен {checked}" if checked else "Дрейф: время проверки неизвестно"
+    checked_words = f"Drift checked {checked}" if checked else "Drift: check time unknown"
     if drift.state in ("clean", "drift") and drift.changed_keys is not None:
-        total = f" из {drift.total_keys}" if drift.total_keys is not None else " ключей"
+        if drift.total_keys is not None:
+            count = f"{drift.changed_keys} of {drift.total_keys}"
+        else:
+            count = _plural(drift.changed_keys, "key", "keys")
         marker = OK_MARK if drift.state == "clean" else WARN_MARK
         details.state.append(checked_words)
-        return f"Дрейф {marker} {drift.changed_keys}{total}"
+        return f"Drift {marker} {count}"
     label = _DRIFT_LABELS.get(drift.state, drift.state)
     if drift.detail:
         # Why there is no number; a check that never finished has no check time to show.
         reason = sanitize_public_text(drift.detail, limit=80)
-        details.state.append(f"Дрейф: {reason}" + (f" · проверен {checked}" if checked else ""))
+        details.state.append(f"Drift: {reason}" + (f" · checked {checked}" if checked else ""))
     else:
         details.state.append(checked_words)
-    return f"Дрейф: {label}"
+    return f"Drift: {label}"
 
 
 def _quota_line(
@@ -309,19 +326,18 @@ def _quota_line(
 ) -> str:
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
-        used = f"{quota.used or 0:,}".replace(",", " ")
-        details.missing.append(f"{provider}: остаток неизвестно, учтено локально")
-        return f"{provider} · локально {used} токенов"
-    # "нет данных" always names its reason: the collector's own words, never a default that
+        details.missing.append(f"{provider}: remaining unknown, counted locally")
+        return f"{provider} · locally {_plural(quota.used or 0, 'token', 'tokens')}"
+    # "no data" always names its reason: the collector's own words, never a default that
     # reads as "we did not finish" when the truth is "the installation has no credential".
     if quota.kind == "unsupported":
-        reason = sanitize_public_text(quota.detail or "источник не найден", limit=60)
+        reason = sanitize_public_text(quota.detail or "source not found", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return f"{provider} · нет данных"
+        return f"{provider} · no data"
     if quota.kind == "unavailable":
-        reason = sanitize_public_text(quota.detail or "источник недоступен", limit=60)
+        reason = sanitize_public_text(quota.detail or "source unavailable", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return f"{provider} · нет данных"
+        return f"{provider} · no data"
     if quota.windows:
         _note_resets(provider, quota.windows, reference, zone, details)
         return _windows_line(provider, quota.windows)
@@ -329,8 +345,8 @@ def _quota_line(
         if quota.reset_at:
             details.resets.append(f"{provider} {_reset_words(quota.reset_at, reference, zone)}")
         return _bar_line(provider, round((quota.used / quota.limit) * 100))
-    details.missing.append(f"{provider}: окна не получены")
-    return f"{provider} · нет данных"
+    details.missing.append(f"{provider}: windows not received")
+    return f"{provider} · no data"
 
 
 def _windows_line(provider: str, windows: tuple[QuotaWindow, ...]) -> str:
@@ -390,24 +406,24 @@ def _note_resets(
 
 
 def _reset_words(value: object, reference: datetime | None, zone: tzinfo) -> str:
-    """A reset on the reference day is a time, the next day is ``завтра HH:MM``, anything
+    """A reset on the reference day is a time, the next day is ``tomorrow HH:MM``, anything
     else is a date: a phone line has no room for both when the reader can tell the day."""
     moment = parse_timestamp(value)
     local = to_zone(moment, zone) if moment is not None else None
     if local is None:
-        return "дата нечитаема"
+        return "date unreadable"
     reference_local = to_zone(reference, zone) if reference is not None else None
     if reference_local is None:
-        return local.strftime("%d.%m %H:%M")
+        return f"{day_words(local)} {local:%H:%M}"
     if local.date() == reference_local.date():
-        return local.strftime("%H:%M")
+        return f"{local:%H:%M}"
     if local.date() == reference_local.date() + timedelta(days=1):
-        return "завтра " + local.strftime("%H:%M")
-    return local.strftime("%d.%m")
+        return f"tomorrow {local:%H:%M}"
+    return day_words(local)
 
 
 def _data_stamps(snapshot: DashboardSnapshot, zone: tzinfo) -> str | None:
-    """``Данные HH:MM · Kimi HH:MM``: the screen's data time and every number read at another
+    """``Data HH:MM · Kimi HH:MM``: the screen's data time and every number read at another
     minute. A number read on its own cadence must not borrow the screen's stamp; when every
     stamp matches, the first line already says it and the details stay silent."""
     observed = parse_timestamp(snapshot.observed_at)
@@ -419,15 +435,15 @@ def _data_stamps(snapshot: DashboardSnapshot, zone: tzinfo) -> str | None:
         provider = sanitize_public_text(quota.provider, limit=40)
         fetched = parse_timestamp(quota.fetched_at)
         if fetched is None:
-            exceptions.append(f"{provider} время нечитаемо")
+            exceptions.append(f"{provider} time unreadable")
             continue
         gap = age_seconds(fetched, observed) if observed is not None else None
         if gap is None or abs(gap) >= _STAMP_SLACK_SECONDS:
             exceptions.append(f"{provider} {format_in_zone(fetched, zone, '%H:%M')}")
     if not exceptions:
         return None
-    screen = format_in_zone(snapshot.observed_at, zone, "%H:%M") or "время неизвестно"
-    return f"Данные {screen} · " + " · ".join(exceptions)
+    screen = format_in_zone(snapshot.observed_at, zone, "%H:%M") or "time unknown"
+    return f"Data {screen} · " + " · ".join(exceptions)
 
 
 def bound_text(text: str, limit: int = _SAFE_LIMIT) -> str:

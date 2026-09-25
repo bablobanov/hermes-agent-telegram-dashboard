@@ -221,9 +221,8 @@ def test_the_line_carries_the_time_the_age_in_words_and_the_verdict() -> None:
     lines = _render(summary).splitlines()
 
     # The verdict and the age on the screen; the absolute time and integrity in the details.
-    # The line words are the renderer's and go English in the render commit.
-    assert "Бэкап ✓ 6 h ago" in lines
-    assert "> Бэкап 21.09 15:56 · integrity ok" in lines
+    assert "Backup ✓ 6 h ago" in lines
+    assert "> Backup Sep 21 15:56 · integrity ok" in lines
 
 
 def test_the_line_is_in_the_reader_s_zone() -> None:
@@ -231,8 +230,8 @@ def test_the_line_is_in_the_reader_s_zone() -> None:
 
     lines = _render(summary, zone=ZoneInfo("Asia/Tokyo")).splitlines()
 
-    assert "Бэкап ✓ 6 h ago" in lines
-    assert "> Бэкап 22.09 00:56 · integrity ok" in lines  # the zone is on the first line
+    assert "Backup ✓ 6 h ago" in lines
+    assert "> Backup Sep 22 00:56 · integrity ok" in lines  # the zone is on the first line
 
 
 def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
@@ -241,8 +240,8 @@ def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
 
     lines = _render(summary).splitlines()
 
-    assert "Бэкап ✓ 30 h ago ⚠️ older than 26 h" in lines
-    assert "> Бэкап 20.09 15:56 · integrity ok" in lines
+    assert "Backup ✓ 30 h ago ⚠️ older than 26 h" in lines
+    assert "> Backup Sep 20 15:56 · integrity ok" in lines
 
 
 def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> None:
@@ -250,8 +249,8 @@ def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> No
 
     lines = _render(summary).splitlines()
 
-    assert "Бэкап ⚠️ не состоялся 6 h ago" in lines
-    assert f"> Бэкап 21.09 15:56 · snapshot: {FAILED_REASON}" in lines
+    assert "Backup ⚠️ failed 6 h ago" in lines
+    assert f"> Backup Sep 21 15:56 · snapshot: {FAILED_REASON}" in lines
 
 
 def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None:
@@ -263,10 +262,10 @@ def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None
     missing_lines = _render(missing).splitlines()
     unconfigured_lines = _render(unconfigured).splitlines()
 
-    assert "Бэкап: нет данных" in missing_lines
-    assert "> Бэкап: status file missing" in missing_lines
-    assert "Бэкап: не наблюдается" in unconfigured_lines
-    assert "> Бэкап: backup source not configured" in unconfigured_lines
+    assert "Backup: no data" in missing_lines
+    assert "> Backup: status file missing" in missing_lines
+    assert "Backup: not observed" in unconfigured_lines
+    assert "> Backup: backup source not configured" in unconfigured_lines
 
 
 def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
@@ -286,7 +285,7 @@ def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
     lines = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300).splitlines()
 
     gateway = next(i for i, line in enumerate(lines) if line.startswith("Gateway "))
-    assert lines[gateway + 1].startswith("Бэкап ")
+    assert lines[gateway + 1].startswith("Backup ")
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -308,9 +307,9 @@ def test_the_tick_reads_the_status_file_and_counts_the_source(tmp_path: Path) ->
     source = next(s for s in snapshot.sources if s.name == "backup")
     assert source.state == "fresh"
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Бэкап ✓ 6 h ago" in text.splitlines()
-    assert "> Бэкап 21.09 15:56 · integrity ok" in text.splitlines()
-    assert "бэкап" not in text.split("Не наблюдается:")[-1].split("\n")[0]
+    assert "Backup ✓ 6 h ago" in text.splitlines()
+    assert "> Backup Sep 21 15:56 · integrity ok" in text.splitlines()
+    assert "backup" not in text.split("Not observed:")[-1].split("\n")[0]
 
 
 def test_without_a_configured_source_the_tick_still_names_it(tmp_path: Path) -> None:
@@ -322,7 +321,7 @@ def test_without_a_configured_source_the_tick_still_names_it(tmp_path: Path) -> 
 
     assert snapshot.backup is not None and snapshot.backup.state == "unsupported"
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "бэкап (нет на этой установке)" in text
+    assert "backup (not on this installation)" in text
 
 
 # ----------------------------------------------------------------------------- the plugin

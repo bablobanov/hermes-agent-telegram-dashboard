@@ -49,19 +49,19 @@ def _limits_ok() -> CapacitySummary:
                 "Claude",
                 "official",
                 windows=(
-                    QuotaWindow("5 ч", 37.0, "2026-09-10T00:00:00+00:00"),
-                    QuotaWindow("7 дн", 12.0, "2026-09-14T00:00:00+00:00"),
+                    QuotaWindow("5h", 37.0, "2026-09-10T00:00:00+00:00"),
+                    QuotaWindow("7d", 12.0, "2026-09-14T00:00:00+00:00"),
                 ),
                 detail="official",
             ),
             QuotaMetric(
                 "Codex",
                 "official",
-                windows=(QuotaWindow("5 ч", 61.0, "2026-09-09T23:30:00+00:00"),),
+                windows=(QuotaWindow("5h", 61.0, "2026-09-09T23:30:00+00:00"),),
                 detail="official",
             ),
-            QuotaMetric("Gemini", "unsupported", detail="источник не подтверждён"),
-            QuotaMetric("Grok", "unsupported", detail="источник не подтверждён"),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
+            QuotaMetric("Grok", "unsupported", detail="source not confirmed"),
         )
     )
 
@@ -105,17 +105,17 @@ def _snapshot(
 
 def all_states() -> tuple[State, ...]:
     return (
-        State(1, "Всё нормально", _snapshot("normal"), _delivery_ok(), "normal"),
+        State(1, "All normal", _snapshot("normal"), _delivery_ok(), "normal"),
         State(
             2,
-            "Gateway жив, но Telegram polling не работает",
+            "Gateway alive, Telegram polling down",
             _snapshot(
                 "critical",
                 incidents=(
                     Incident(
                         "telegram:polling",
                         "critical",
-                        "Gateway работает, но Telegram не подключён (conflict)",
+                        "Gateway running, but Telegram disconnected (conflict)",
                     ),
                 ),
                 gateway=GatewaySummary("running", "degraded", _T_MINUS_2M, detail="conflict"),
@@ -125,25 +125,21 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             3,
-            "Job выполнен, delivery failed",
+            "Job done, delivery failed",
             _snapshot(
                 "critical",
-                incidents=(
-                    Incident("cron:delivery", "critical", "Не доставлен результат cron-задачи"),
-                ),
+                incidents=(Incident("cron:delivery", "critical", "cron job result not delivered"),),
             ),
             _delivery_ok(),
             "critical",
         ),
         State(
             4,
-            "Одна сессия ждёт согласования",
+            "One session waits for approval",
             _snapshot(
                 "warning",
                 incidents=(
-                    Incident(
-                        "session:approval", "warning", "Одна сессия ждёт согласования человека"
-                    ),
+                    Incident("session:approval", "warning", "One session waits for human approval"),
                 ),
             ),
             _delivery_ok(),
@@ -151,24 +147,24 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             5,
-            "Одна сессия выше 80% контекста",
+            "One session above 80% context",
             _snapshot(
                 "warning",
-                incidents=(Incident("context:risk", "warning", "Одна сессия выше 80% контекста"),),
+                incidents=(Incident("context:risk", "warning", "One session above 80% context"),),
             ),
             _delivery_ok(),
             "warning",
         ),
         State(
             6,
-            "Session override плюс фактический fallback",
+            "Session override plus an actual fallback",
             _snapshot(
                 "warning",
                 incidents=(
                     Incident(
                         "routing:fallback",
                         "warning",
-                        "Сработал fallback модели при override сессии",
+                        "Model fallback fired under a session override",
                     ),
                 ),
             ),
@@ -177,14 +173,14 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             7,
-            "Memory provider недоступен, включился built-in",
+            "Memory provider down, built-in took over",
             _snapshot(
                 "warning",
                 incidents=(
                     Incident(
                         "memory:provider",
                         "warning",
-                        "Внешний memory provider недоступен, работает встроенный",
+                        "External memory provider unavailable, the built-in one is working",
                     ),
                 ),
             ),
@@ -193,11 +189,11 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             8,
-            "На копии state.db обнаружено повреждение",
+            "Corruption found in the state.db copy",
             _snapshot(
                 "critical",
                 incidents=(
-                    Incident("state:integrity", "critical", "Повреждение в копии state.db"),
+                    Incident("state:integrity", "critical", "Corruption in the state.db copy"),
                 ),
             ),
             _delivery_ok(),
@@ -205,10 +201,10 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             9,
-            "Config отличается от утверждённого baseline",
+            "Config differs from the approved baseline",
             _snapshot(
                 "warning",
-                incidents=(Incident("config:drift", "warning", "Дрейф конфига: 3 из 474 ключей"),),
+                incidents=(Incident("config:drift", "warning", "Config drift: 3 of 474 keys"),),
                 drift=DriftSummary("drift", 3, 474, _DRIFT_08),
             ),
             _delivery_ok(),
@@ -216,7 +212,7 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             10,
-            "Один источник давно не опрашивался",
+            "One source not polled for a long time",
             _snapshot(
                 "unknown",
                 sources=_sources(limits="stale"),
@@ -226,7 +222,7 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             11,
-            "Наше: сообщение не подтверждалось дольше двух периодов",
+            "Ours: message unconfirmed for over two periods",
             _snapshot("normal"),
             DeliveryRecord(
                 message_id=4242,
@@ -238,7 +234,7 @@ def all_states() -> tuple[State, ...]:
         ),
         State(
             12,
-            "Наше: закреплённое сообщение пропало",
+            "Ours: the pinned message is lost",
             _snapshot("normal"),
             DeliveryRecord(
                 message_id=4242,

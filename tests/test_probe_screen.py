@@ -34,10 +34,10 @@ from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
 from telegram_dashboard.states import all_states
 
 _STATUS_LABELS = {
-    "normal": "🟢 Норма",
-    "warning": "🟡 Требует внимания",
-    "critical": "🔴 Требует внимания",
-    "unknown": "⚪ Состояние неизвестно",
+    "normal": "🟢 Healthy",
+    "warning": "🟡 Warning",
+    "critical": "🔴 Critical",
+    "unknown": "⚪ Unknown",
 }
 STATUS_MARKS = ("🟢", "🟡", "🔴", "⚪")
 STATES = all_states()
@@ -111,9 +111,9 @@ def test_the_tick_delivers_the_screen_not_a_counter(monkeypatch, tmp_path: Path)
     text, parse_mode = adapter.html_edits[-1]
     assert parse_mode == "HTML"
     assert text.splitlines()[0].startswith(STATUS_MARKS) and " · " in text.splitlines()[0]
-    assert "<b>Лимиты</b>" in text and "нет данных" in text  # limits disabled: named, never zero
-    assert "<blockquote expandable><b>Подробности</b>" in text
-    assert "> Период" not in text and "Период 1 мин" in text
+    assert "<b>Limits</b>" in text and "no data" in text  # limits disabled: named, never zero
+    assert "<blockquote expandable><b>Details</b>" in text
+    assert "> Period" not in text and "Period 1 min" in text
     assert "dashboard probe · tick" not in text
     assert "#" not in text
     assert _utf16_units(text) <= TELEGRAM_TEXT_LIMIT
@@ -221,11 +221,11 @@ def test_each_research_state_reaches_telegram_through_the_tick(
     lines = text.splitlines()
     assert parse_mode == "HTML"
     assert lines[0].startswith(_STATUS_LABELS[state.expect_overall] + " · ")
-    assert lines[0].endswith("09.09 21:00 UTC")
+    assert lines[0].endswith("Sep 9 21:00 UTC")
     for incident in state.snapshot.incidents:
         assert html.escape(incident.title) in text
     if state.expect_overall != "normal":
-        assert "🟢 Норма" not in text
+        assert "🟢 Healthy" not in text
     assert "#" not in text and "> " not in text
     assert "<blockquote expandable>" in text
     assert _utf16_units(text) <= TELEGRAM_TEXT_LIMIT
@@ -261,8 +261,8 @@ def test_state_11_a_record_not_confirmed_for_two_periods_banners_the_first_line(
     _run(runtime, adapter, scenario)
 
     text = adapter.texts[-1]
-    assert text.startswith("🔴 ДАШБОРД УСТАРЕЛ")
-    assert "🟢 Норма" in text  # the data is fine; the message is the problem, and both are said
+    assert text.startswith("🔴 DASHBOARD STALE")
+    assert "🟢 Healthy" in text  # the data is fine; the message is the problem, and both are said
     assert not adapter.sent  # the remembered message was edited, not replaced
 
 
@@ -271,7 +271,7 @@ def test_state_12_a_lost_record_is_announced_and_the_message_is_sent_anew(
 ) -> None:
     """The text is composed before the send that recreates the message, so it must speak of
     the message it will become: any text that lands IS the recreation, and a first line saying
-    "НЕ восстановлено" on it would be false for a whole period. Creation is plain text through
+    "NOT restored" on it would be false for a whole period. Creation is plain text through
     the public verb; the HTML form follows with the first edit."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
@@ -301,8 +301,8 @@ def test_state_12_a_lost_record_is_announced_and_the_message_is_sent_anew(
     _run(runtime, adapter, scenario)
 
     text = adapter.sent[0]
-    assert text.startswith("🔴 Закреплённое сообщение пропало (21:00 UTC), создано заново")
-    assert "<b>" not in text and "ПОДРОБНОСТИ" in text  # the plain form, headings upper-case
+    assert text.startswith("🔴 Pinned message lost (21:00 UTC), recreated")
+    assert "<b>" not in text and "DETAILS" in text  # the plain form, headings upper-case
     assert runtime.record["message_id"] == "101"
     assert runtime.record["recreated_at"]
 
@@ -390,7 +390,7 @@ def test_a_healthy_cadence_never_shows_the_lagging_banner(monkeypatch, tmp_path:
 
     # The edits, not the creation: the first message of all is never confirmed yet and says so.
     first_lines = [text.splitlines()[0] for text, _ in adapter.html_edits]
-    assert first_lines == ["🟢 Норма · 09.09 21:00 UTC"] * len(first_lines), first_lines
+    assert first_lines == ["🟢 Healthy · Sep 9 21:00 UTC"] * len(first_lines), first_lines
 
 
 def test_a_collector_that_exits_the_interpreter_still_gets_a_notice(
@@ -649,7 +649,7 @@ def test_a_refused_html_edit_falls_back_to_plain_in_the_same_tick_and_probes_aga
         await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
         assert len(adapter.html_edits) == 1  # one refusal, then plain without asking again
         assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
-        assert "<b>" not in adapter.edits[0] and "ЛИМИТЫ" in adapter.edits[0]
+        assert "<b>" not in adapter.edits[0] and "LIMITS" in adapter.edits[0]
         assert ctx.state.data["probe"]["last_status"] == "edited"
         assert ctx.state.data["probe"]["screen_format"] == "plain"
         assert ctx.state.data["probe"]["html_error"] == "RuntimeError"
@@ -704,8 +704,8 @@ def test_an_adapter_without_the_verb_gets_plain_text_and_the_record_says_why(
 
     assert adapter.html_edits == []
     # A record without a confirmation banners the first edit; the status line follows it.
-    assert "🟢 Норма · 09.09 21:00 UTC" in adapter.edits[0].splitlines()[:2]
-    assert "ПОДРОБНОСТИ" in adapter.edits[0] and "<" not in adapter.edits[0]
+    assert "🟢 Healthy · Sep 9 21:00 UTC" in adapter.edits[0].splitlines()[:2]
+    assert "DETAILS" in adapter.edits[0] and "<" not in adapter.edits[0]
     assert ctx.state.data["probe"]["screen_format"] == "plain"
     assert ctx.state.data["probe"]["html_error"] == "no _edit_text"
 

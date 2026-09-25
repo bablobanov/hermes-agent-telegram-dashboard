@@ -99,7 +99,7 @@ def test_first_tick_past_the_threshold_speaks_then_silence_until_the_hour(
     first_tick = confirmed_at + timedelta(seconds=THRESHOLD + 40)
     code, out = _run(cfg, capsys, now=first_tick)
     assert code == 0
-    assert out.startswith("DASHBOARD PROBE ALERT: lagging\n🟡 Обновление запаздывает")
+    assert out.startswith("DASHBOARD PROBE ALERT: lagging\n🟡 Update lagging")
     assert "message_id=101" in out
 
     for ticks in range(1, 12):  # the rest of the hour: nothing, the message carries the state
@@ -108,7 +108,7 @@ def test_first_tick_past_the_threshold_speaks_then_silence_until_the_hour(
 
     hour_later = first_tick + timedelta(seconds=INTERVAL * 12)
     code, out = _run(cfg, capsys, now=hour_later)
-    assert out.startswith("DASHBOARD PROBE ALERT: stale\n🔴 ДАШБОРД УСТАРЕЛ")
+    assert out.startswith("DASHBOARD PROBE ALERT: stale\n🔴 DASHBOARD STALE")
 
 
 def test_a_skipped_tick_swallows_that_hour_s_alert_by_construction() -> None:
@@ -147,7 +147,7 @@ def test_never_and_lost_speak_every_tick(
     for tick in range(3):
         code, out = _run(cfg, capsys, now=NOW + timedelta(seconds=INTERVAL * tick))
         assert code == 0 and out.startswith(
-            "DASHBOARD PROBE ALERT: lost\n🔴 Закреплённое сообщение пропало"
+            "DASHBOARD PROBE ALERT: lost\n🔴 Pinned message lost"
         ), tick
 
     # No usable stamp to count from either: a stale that is dated in the future speaks every tick.

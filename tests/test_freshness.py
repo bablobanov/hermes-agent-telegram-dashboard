@@ -47,9 +47,9 @@ def test_exit_codes_for_external_watchdog() -> None:
 def test_stale_banner_is_loud_and_names_threshold() -> None:
     banner = message_banner("stale", _record(11), now=NOW, period_seconds=PERIOD)
     assert banner is not None
-    assert "ДАШБОРД УСТАРЕЛ" in banner
-    assert "11 мин" in banner
-    assert "порог 10 мин" in banner
+    assert "DASHBOARD STALE" in banner
+    assert "11 min" in banner
+    assert "threshold 10 min" in banner
     assert message_banner("confirmed", _record(1), now=NOW, period_seconds=PERIOD) is None
 
 
@@ -59,10 +59,10 @@ def test_data_time_and_message_time_are_separate_lines() -> None:
     rendered = render_dashboard(snapshot, now=NOW, delivery=_record(11), period_seconds=PERIOD)
 
     lines = rendered.splitlines()
-    assert lines[0].startswith("🔴 ДАШБОРД УСТАРЕЛ")
-    assert lines[1] == "🟢 Норма · 09.09 21:00 UTC"  # the data stamp, with its date
-    assert "> Подтверждено 20:49" in lines
-    assert "> Период 5 мин" in lines
+    assert lines[0].startswith("🔴 DASHBOARD STALE")
+    assert lines[1] == "🟢 Healthy · Sep 9 21:00 UTC"  # the data stamp, with its date
+    assert "> Confirmed 20:49" in lines
+    assert "> Period 5 min" in lines
 
 
 def test_confirmation_dated_in_the_future_is_stale_not_confirmed() -> None:
@@ -74,7 +74,7 @@ def test_confirmation_dated_in_the_future_is_stale_not_confirmed() -> None:
     assert classify_message_freshness(record, now=NOW, period_seconds=PERIOD) == "stale"
     assert check_exit_code(classify_message_freshness(record, now=NOW, period_seconds=PERIOD)) == 2
     banner = message_banner("stale", record, now=NOW, period_seconds=PERIOD)
-    assert banner is not None and "будущ" in banner
+    assert banner is not None and "future" in banner
 
 
 def test_small_clock_skew_into_the_future_is_still_confirmed() -> None:

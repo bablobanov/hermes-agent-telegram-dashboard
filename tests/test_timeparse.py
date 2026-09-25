@@ -114,7 +114,7 @@ def test_render_survives_edge_reset_dates_and_keeps_other_fields() -> None:
                 QuotaMetric(
                     "Claude",
                     "official",
-                    windows=(QuotaWindow("5 ч", 37.0, "9999-12-31T23:59:59+00:00"),),
+                    windows=(QuotaWindow("5h", 37.0, "9999-12-31T23:59:59+00:00"),),
                 ),
             )
         ),
@@ -124,7 +124,7 @@ def test_render_survives_edge_reset_dates_and_keeps_other_fields() -> None:
 
     lines = rendered.splitlines()
     assert "OpenAI ▓▓▓▓░ 75%" in lines
-    assert "> OpenAI дата нечитаема" in lines
+    assert "> OpenAI date unreadable" in lines
     assert "Claude ▓▓░░░ 37%" in lines
-    assert "> Claude дата нечитаема" in lines
-    assert lines[0] == "🟢 Норма · время неизвестно"
+    assert "> Claude date unreadable" in lines
+    assert lines[0] == "🟢 Healthy · time unknown"

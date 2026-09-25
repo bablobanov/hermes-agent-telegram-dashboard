@@ -19,9 +19,9 @@ def sanitize_public_text(value: str, *, limit: int = 160) -> str:
     text = _ANSI_RE.sub("", str(value))
     text = _CONTROL_RE.sub(" ", text)
     for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("[секрет]", text)
-    text = _UNIX_PATH_RE.sub("[путь]", text)
-    text = _WINDOWS_PATH_RE.sub("[путь]", text)
+        text = pattern.sub("[secret]", text)
+    text = _UNIX_PATH_RE.sub("[path]", text)
+    text = _WINDOWS_PATH_RE.sub("[path]", text)
     text = " ".join(text.split())
     if len(text) > limit:
         text = text[: max(0, limit - 1)].rstrip() + "…"

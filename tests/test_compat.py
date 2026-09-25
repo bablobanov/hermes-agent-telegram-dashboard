@@ -24,9 +24,9 @@ def test_bundled_matrix_loads_and_describes_every_mvp_source() -> None:
 def test_verification_is_honest_about_unknown_versions() -> None:
     matrix = load_matrix()
 
-    assert verification_for(matrix, "gateway_state", "0.21.1").startswith("проверено на 0.21.1")
-    assert "не проверено" in verification_for(matrix, "gateway_state", "0.22.0")
-    assert verification_for(matrix, "nope", "0.21.1") == "источник не описан в матрице"
+    assert verification_for(matrix, "gateway_state", "0.21.1").startswith("verified on 0.21.1")
+    assert "not verified" in verification_for(matrix, "gateway_state", "0.22.0")
+    assert verification_for(matrix, "nope", "0.21.1") == "source not described in the matrix"
 
 
 def test_matrix_schema_is_validated(tmp_path: Path) -> None:
