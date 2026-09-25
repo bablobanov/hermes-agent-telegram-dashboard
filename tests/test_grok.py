@@ -462,7 +462,7 @@ def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> N
 
     capacity, _, _ = parse_limits_payload(payload, now=NOW)
 
-    assert capacity.quotas[0].detail == "нет учётного токена"
+    assert capacity.quotas[0].detail == "no account token"
     assert capacity.quotas[1].detail == "AuthError"
     assert [q.provider for q in capacity.quotas] == ["Claude", "Codex", "Gemini"]
 
@@ -561,7 +561,7 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     assert "> Grok 17.09" in lines
     # Both cached numbers keep their own minute next to the screen's.
     assert "> Данные 13:45 · Codex 13:40 · Grok 13:40" in lines
-    assert "Claude · нет данных" in lines and "> Claude: нет учётного токена" in lines
+    assert "Claude · нет данных" in lines and "> Claude: no account token" in lines
     seen = [s for s in second.sources if s.state in ("fresh", "stale")]
     assert "grok_quota" in [s.name for s in seen]
     assert f"источники {len(seen)}/6" in text  # six sources, Grok counted
@@ -597,7 +597,7 @@ def test_with_limits_off_grok_is_off_too_and_says_why(tmp_path: Path) -> None:
 
     assert fetch.calls == 0
     grok_quota = next(q for q in snapshot.capacity.quotas if q.provider == "Grok")
-    assert grok_quota.kind == "unsupported" and grok_quota.detail == "лимиты выключены в конфиге"
+    assert grok_quota.kind == "unsupported" and grok_quota.detail == "limits disabled in config"
     assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "unsupported"
 
 
@@ -624,7 +624,7 @@ def test_a_grok_worker_past_its_deadline_is_one_tick_of_no_data_with_the_reason(
     )
 
     grok_quota = next(q for q in snapshot.capacity.quotas if q.provider == "Grok")
-    assert grok_quota.kind == "unavailable" and "не ответил" in (grok_quota.detail or "")
+    assert grok_quota.kind == "unavailable" and "no answer within" in (grok_quota.detail or "")
     # The abandoned worker still finished (the loop waits for its executor on shutdown) and left
     # its attempt in the cache: the next tick serves it instead of asking the proxy again.
     assert cache["item"]["status"] == "available"

@@ -421,7 +421,7 @@ def test_with_limits_off_kimi_is_off_too_and_says_why(tmp_path: Path) -> None:
 
     assert fetch.calls == 0
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
-    assert quota.kind == "unsupported" and quota.detail == "лимиты выключены в конфиге"
+    assert quota.kind == "unsupported" and quota.detail == "limits disabled in config"
     assert next(s for s in snapshot.sources if s.name == "kimi_quota").state == "unsupported"
 
 
@@ -448,5 +448,5 @@ def test_a_kimi_worker_past_its_deadline_is_one_tick_of_no_data_with_the_reason(
     )
 
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
-    assert quota.kind == "unavailable" and "не ответил" in (quota.detail or "")
+    assert quota.kind == "unavailable" and "no answer within" in (quota.detail or "")
     assert cache["item"]["status"] == "available"

@@ -32,7 +32,7 @@ def test_known_critical_incident_is_not_hidden_by_unknown_source() -> None:
             Incident(
                 incident_id="cron:delivery",
                 severity="critical",
-                title="Не доставлен результат",
+                title="Result not delivered",
             ),
         ),
     )
@@ -48,7 +48,7 @@ def test_warning_incident_sets_warning_overall() -> None:
             Incident(
                 incident_id="context:risk",
                 severity="warning",
-                title="Контекст одной сессии выше порога",
+                title="One session's context above the threshold",
             ),
         ),
     )

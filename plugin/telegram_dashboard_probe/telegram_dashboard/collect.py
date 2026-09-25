@@ -77,7 +77,7 @@ KimiFetch = QuotaFetch
 _UNCONFIRMED_PROVIDERS = ("Gemini",)
 # What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
 # token resolves): the installation has no credential, not a provider that refused.
-_NO_CREDENTIAL = "нет учётного токена"
+_NO_CREDENTIAL = "no account token"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +170,7 @@ def collect_gateway(
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        summary = GatewaySummary(
-            "unsupported", "unsupported", detail="gateway_state.json отсутствует"
-        )
+        summary = GatewaySummary("unsupported", "unsupported", detail="gateway_state.json missing")
         source = SourceObservation(
             "gateway_state", "official", "unsupported", detail=summary.detail
         )
@@ -196,7 +194,7 @@ def collect_gateway(
     if alive is False:
         incidents.append(
             Incident(
-                "gateway:dead", "critical", "Процесс gateway не найден, статус пережил владельца"
+                "gateway:dead", "critical", "Gateway process not found, status outlived its owner"
             )
         )
     if process == "running" and telegram in ("degraded", "disconnected"):
@@ -205,12 +203,12 @@ def collect_gateway(
             Incident(
                 "telegram:polling",
                 "critical",
-                f"Gateway работает, но Telegram не подключён ({reason})",
+                f"Gateway running, but Telegram disconnected ({reason})",
             )
         )
     elif needs_attention:
         incidents.append(
-            Incident("telegram:attention", "warning", "Telegram-адаптер просит внимания")
+            Incident("telegram:attention", "warning", "Telegram adapter asks for attention")
         )
     state: SourceState
     if alive is True:
@@ -219,7 +217,7 @@ def collect_gateway(
         state = "stale"
     else:
         state = "unavailable"
-    detail = error_code if alive is not None else "живость pid не проверить на этой платформе"
+    detail = error_code if alive is not None else "pid liveness cannot be checked on this platform"
     summary = GatewaySummary(process, telegram, updated_text, detail=detail)
     source = SourceObservation(
         "gateway_state", "official", state, observed_at=updated_text, detail=detail
@@ -230,9 +228,9 @@ def collect_gateway(
 def _gateway_unreadable(
     reason: str,
 ) -> tuple[GatewaySummary, SourceObservation, tuple[Incident, ...]]:
-    summary = GatewaySummary("unknown", "unknown", detail=f"нечитаем: {reason}")
+    summary = GatewaySummary("unknown", "unknown", detail=f"unreadable: {reason}")
     source = SourceObservation("gateway_state", "official", "unavailable", detail=summary.detail)
-    incident = Incident("gateway:unreadable", "warning", "gateway_state.json не читается")
+    incident = Incident("gateway:unreadable", "warning", "gateway_state.json unreadable")
     return summary, source, (incident,)
 
 
@@ -292,22 +290,24 @@ def parse_drift_output(
 ) -> DriftSummary:
     """Reduce check_drift.py output to a number. Exit 2 or unparseable output is ``unknown``."""
     if exit_code not in (0, 1):
-        return DriftSummary("unknown", checked_at=checked_at, detail=f"код возврата {exit_code}")
+        return DriftSummary("unknown", checked_at=checked_at, detail=f"exit code {exit_code}")
     sections = {int(number): int(count) for number, count in _SECTION_RE.findall(stdout)}
     keys = _KEYS_RE.findall(stdout)
     total = int(keys[0]) if keys else None
     if not sections:
         if exit_code == 0:
-            return DriftSummary("clean", 0, total, checked_at, detail="вывод без секций")
+            return DriftSummary("clean", 0, total, checked_at, detail="output without sections")
         return DriftSummary(
-            "unknown", None, total, checked_at, detail="дрейф есть, вывод не разобран"
+            "unknown", None, total, checked_at, detail="drift present, output not parsed"
         )
     changed = sum(sections.values())
     if exit_code == 0 and changed == 0:
         return DriftSummary("clean", 0, total, checked_at)
     if changed > 0:
         return DriftSummary("drift", changed, total, checked_at)
-    return DriftSummary("unknown", changed, total, checked_at, detail="код 1 при нуле расхождений")
+    return DriftSummary(
+        "unknown", changed, total, checked_at, detail="exit 1 with zero differences"
+    )
 
 
 def collect_drift(
@@ -318,31 +318,34 @@ def collect_drift(
     elif env.drift_command:
         summary, source = _drift_from_command(env.drift_command, runner, now=now)
     else:
-        summary = DriftSummary("unsupported", detail="источник дрейфа не настроен")
+        summary = DriftSummary("unsupported", detail="drift source not configured")
         source = SourceObservation("drift", "derived", "unsupported", detail=summary.detail)
         return summary, source, ()
     incidents: tuple[Incident, ...] = ()
     if summary.state == "drift":
-        total = f" из {summary.total_keys}" if summary.total_keys is not None else ""
-        incidents = (
-            Incident(
-                "config:drift", "warning", f"Дрейф конфига: {summary.changed_keys}{total} ключей"
-            ),
-        )
+        incidents = (Incident("config:drift", "warning", f"Config drift: {_keys_words(summary)}"),)
     return summary, source, incidents
+
+
+def _keys_words(summary: DriftSummary) -> str:
+    """``3 of 474 keys`` when the total is known, else ``3 keys`` (``1 key``)."""
+    changed = summary.changed_keys or 0
+    if summary.total_keys is not None:
+        return f"{changed} of {summary.total_keys} keys"
+    return f"{changed} key" if changed == 1 else f"{changed} keys"
 
 
 def _drift_from_report(path: Path, *, now: datetime) -> tuple[DriftSummary, SourceObservation]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        summary = DriftSummary("unsupported", detail="файл отчёта отсутствует")
+        summary = DriftSummary("unsupported", detail="report file missing")
         return summary, SourceObservation("drift", "derived", "unsupported", detail=summary.detail)
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        summary = DriftSummary("unknown", detail=f"отчёт нечитаем: {type(exc).__name__}")
+        summary = DriftSummary("unknown", detail=f"report unreadable: {type(exc).__name__}")
         return summary, SourceObservation("drift", "derived", "unavailable", detail=summary.detail)
     if not isinstance(payload, dict):
-        summary = DriftSummary("unknown", detail="отчёт не объект")
+        summary = DriftSummary("unknown", detail="report is not an object")
         return summary, SourceObservation("drift", "derived", "unavailable", detail=summary.detail)
     checked_at = payload.get("checked_at")
     checked_text = checked_at if isinstance(checked_at, str) else None
@@ -362,7 +365,7 @@ def _drift_from_command(
     result = runner.run(argv, timeout_seconds=30)
     checked = now.isoformat()
     if result.error is not None:
-        summary = DriftSummary("unknown", checked_at=checked, detail=f"запуск: {result.error}")
+        summary = DriftSummary("unknown", checked_at=checked, detail=f"launch: {result.error}")
         return summary, SourceObservation("drift", "derived", "unavailable", detail=summary.detail)
     summary = parse_drift_output(result.stdout, result.returncode, checked_at=checked)
     state: SourceState = "unavailable" if summary.state == "unknown" else "fresh"
@@ -410,8 +413,8 @@ def _limits_disabled(
 ) -> tuple[CapacitySummary, SourceObservation, ProbeResult] | None:
     if env.limits_enabled:
         return None
-    capacity = _capacity_unsupported("лимиты выключены в конфиге")
-    source = SourceObservation("limits", "official", "unsupported", detail="выключено")
+    capacity = _capacity_unsupported("limits disabled in config")
+    source = SourceObservation("limits", "official", "unsupported", detail="disabled")
     return capacity, source, ProbeResult("limits", "unsupported", "disabled in config")
 
 
@@ -419,9 +422,9 @@ def parse_limits_payload(
     payload: dict[str, Any], *, now: datetime
 ) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
     if payload.get("ok") is not True:
-        reason = sanitize_public_text(str(payload.get("reason") or "нет причины"), limit=80)
+        reason = sanitize_public_text(str(payload.get("reason") or "no reason"), limit=80)
         if reason.startswith("unsupported"):
-            capacity = _capacity_unsupported("фасад учёта недоступен на этой установке")
+            capacity = _capacity_unsupported("usage facade not available on this installation")
             source = SourceObservation("limits", "official", "unsupported", detail=reason)
             return capacity, source, ProbeResult("limits", "unsupported", reason)
         capacity = _capacity_unavailable(reason)
@@ -442,16 +445,16 @@ def parse_limits_payload(
         if quotas[key].kind == "official" and isinstance(fetched_at, str):
             fetched.append(fetched_at)
     ordered = [
-        quotas.get(key) or QuotaMetric(label, "unavailable", detail="провайдер не в ответе")
+        quotas.get(key) or QuotaMetric(label, "unavailable", detail="provider not in the answer")
         for key, label in _PROVIDER_LABELS.items()
     ]
     ordered.extend(
-        QuotaMetric(label, "unsupported", detail="источник не подтверждён")
+        QuotaMetric(label, "unsupported", detail="source not confirmed")
         for label in _UNCONFIRMED_PROVIDERS
     )
     observed_at = max(fetched) if fetched else None
     if observed_at is None:
-        source = SourceObservation("limits", "official", "unavailable", detail="ни одного окна")
+        source = SourceObservation("limits", "official", "unavailable", detail="no windows at all")
     else:
         freshness = classify_freshness(observed_at, now=now, ttl_seconds=LIMITS_STALE_SECONDS)
         source = SourceObservation("limits", "official", freshness, observed_at=observed_at)
@@ -464,7 +467,7 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
         if reason == "none":
             detail = _NO_CREDENTIAL
         else:
-            detail = sanitize_public_text(str(reason), limit=60) if reason else "нет данных"
+            detail = sanitize_public_text(str(reason), limit=60) if reason else "no data"
         return QuotaMetric(label, "unavailable", detail=detail)
     windows: list[QuotaWindow] = []
     for raw in item.get("windows") or ():
@@ -476,7 +479,7 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
         note = raw.get("note")
         windows.append(
             QuotaWindow(
-                sanitize_public_text(str(raw.get("label") or "окно"), limit=24),
+                sanitize_public_text(str(raw.get("label") or "window"), limit=24),
                 used_value,
                 reset if isinstance(reset, str) else None,
                 note=sanitize_public_text(note, limit=24) if isinstance(note, str) else None,
@@ -485,7 +488,7 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
     source = item.get("source")
     source_label = sanitize_public_text(str(source), limit=40) if source else None
     if not windows:
-        return QuotaMetric(label, "unavailable", detail="ответ без окон")
+        return QuotaMetric(label, "unavailable", detail="answer without windows")
     fetched_at = item.get("fetched_at")
     return QuotaMetric(
         label,
@@ -553,7 +556,7 @@ def collect_kimi(
 def quota_off_for(label: str, capacity: CapacitySummary) -> QuotaMetric:
     """A provider takes the block's verdict when the block itself is off or unsupported."""
     detail = capacity.quotas[0].detail if capacity.quotas else None
-    return QuotaMetric(label, "unsupported", detail=detail or "лимиты выключены в конфиге")
+    return QuotaMetric(label, "unsupported", detail=detail or "limits disabled in config")
 
 
 def grok_off_for(capacity: CapacitySummary) -> QuotaMetric:
@@ -578,7 +581,7 @@ def _capacity_unavailable(detail: str) -> CapacitySummary:
             QuotaMetric(label, "unavailable", detail=detail) for label in _PROVIDER_LABELS.values()
         )
         + tuple(
-            QuotaMetric(label, "unsupported", detail="источник не подтверждён")
+            QuotaMetric(label, "unsupported", detail="source not confirmed")
             for label in _UNCONFIRMED_PROVIDERS
         )
     )
@@ -852,10 +855,10 @@ async def _drift_off_loop(
         )
     except TimeoutError:
         # The worker thread finishes on its own; the runner kills the process tree at its limit.
-        # No checked_at: a check that did not finish must not render as "проверено HH:MM".
-        return _drift_not_collected(f"дедлайн {timeout_seconds:g} с")
+        # No checked_at: a check that did not finish must not render as "checked HH:MM".
+        return _drift_not_collected(f"deadline {timeout_seconds:g} s")
     except StillRunning:
-        return _drift_not_collected("предыдущий запрос ещё выполняется")
+        return _drift_not_collected("previous run still in progress")
     except _UNGUARDED:
         raise
     except BaseException as exc:
@@ -885,7 +888,7 @@ async def _limits_guarded(
         raise
     except BaseException as exc:
         source, incident = _collector_crashed("limits", "official", exc)
-        return _capacity_unavailable(source.detail or "сборщик упал"), source, (incident,)
+        return _capacity_unavailable(source.detail or "collector crashed"), source, (incident,)
 
 
 QuotaPart = tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]
@@ -903,7 +906,7 @@ async def _quota_guarded(
     fetch: QuotaFetch,
 ) -> QuotaPart:
     """``collect_quota`` in a worker with a deadline; a deadline or a busy worker is one tick of
-    "нет данных" with the reason, the cache untouched until the worker returns."""
+    "no data" with the reason, the cache untouched until the worker returns."""
     try:
         metric, source = await flights.run(
             key,
@@ -918,9 +921,9 @@ async def _quota_guarded(
         )
         return metric, source, ()
     except TimeoutError:
-        return (*_quota_unavailable(key, label, f"не ответил за {timeout_seconds:g} с"), ())
+        return (*_quota_unavailable(key, label, f"no answer within {timeout_seconds:g} s"), ())
     except StillRunning:
-        return (*_quota_unavailable(key, label, "предыдущий запрос ещё не вернулся"), ())
+        return (*_quota_unavailable(key, label, "previous request has not returned"), ())
     except _UNGUARDED:
         raise
     except BaseException as exc:
@@ -941,6 +944,8 @@ def _collector_crashed(
     """An exception the collector did not foresee: class name only, the text may carry paths."""
     reason = failure_name(exc)
     logger.exception("collector %s crashed; source marked unavailable", name)
-    source = SourceObservation(name, authority, "unavailable", detail=f"сборщик упал: {reason}")
-    incident = Incident(f"collector:{name}", "warning", f"Сборщик {name} упал ({reason})")
+    source = SourceObservation(
+        name, authority, "unavailable", detail=f"collector crashed: {reason}"
+    )
+    incident = Incident(f"collector:{name}", "warning", f"Collector {name} crashed ({reason})")
     return source, incident

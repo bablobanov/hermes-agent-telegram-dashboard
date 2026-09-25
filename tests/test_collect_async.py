@@ -94,7 +94,7 @@ def test_a_drift_deadline_is_one_unavailable_source_and_the_rest_still_answers(
 
     by_name = {source.name: source for source in snapshot.sources}
     assert by_name["drift"].state == "unavailable"
-    assert "дедлайн" in (by_name["drift"].detail or "")
+    assert "deadline" in (by_name["drift"].detail or "")
     assert snapshot.drift is not None and snapshot.drift.state == "unknown"
     assert snapshot.drift.changed_keys is None  # never zero for "we do not know"
     assert by_name["gateway_state"].state == "fresh"
@@ -194,7 +194,7 @@ def test_a_source_that_exits_the_interpreter_is_unavailable_not_a_dead_tick(
 
 
 def test_a_drift_deadline_is_not_shown_as_a_completed_check(tmp_path: Path) -> None:
-    """``checked_at`` on a deadline would render as "проверено HH:MM": a check that did not
+    """``checked_at`` on a deadline would render as "checked HH:MM": a check that did not
     finish must not look like one that did."""
     runner = BlockingRunner(0.5, CommandResult(0, DRIFT_CLEAN, ""))
 
@@ -204,7 +204,7 @@ def test_a_drift_deadline_is_not_shown_as_a_completed_check(tmp_path: Path) -> N
 
     assert snapshot.drift is not None
     assert snapshot.drift.state == "unknown" and snapshot.drift.checked_at is None
-    assert "дедлайн" in (snapshot.drift.detail or "")
+    assert "deadline" in (snapshot.drift.detail or "")
 
 
 class CountingRunner(BlockingRunner):
@@ -245,7 +245,7 @@ def test_a_worker_abandoned_by_its_deadline_is_not_started_again_until_it_return
 
     assert runner.calls == 2, "the hung worker must not be duplicated while it runs"
     drift_of = lambda s: next(src for src in s.sources if src.name == "drift")  # noqa: E731
-    assert drift_of(first).state == "unavailable" and "дедлайн" in (drift_of(first).detail or "")
+    assert drift_of(first).state == "unavailable" and "deadline" in (drift_of(first).detail or "")
     assert drift_of(second).state == "unavailable"
-    assert "ещё выполняется" in (drift_of(second).detail or "")
+    assert "still in progress" in (drift_of(second).detail or "")
     assert drift_of(third).state == "fresh"

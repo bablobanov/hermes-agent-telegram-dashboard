@@ -167,8 +167,20 @@ def test_drift_from_command_and_report(tmp_path: Path) -> None:
 
     assert summary.state == "drift" and source.state == "fresh"
     assert incidents[0].incident_id == "config:drift"
-    assert "3 из 474" in incidents[0].title
+    assert incidents[0].title == "Config drift: 3 of 474 keys"
     assert runner.calls == [("python", "check_drift.py")]
+
+
+def test_drift_without_a_total_counts_the_keys_in_words(tmp_path: Path) -> None:
+    # Another script's sections without the "ключей N" line: no total, the count stands alone.
+    one_key = "[1] only on the server: 1\n[2] only in the baseline: 0\n[3] values differ: 0\n"
+    runner = FakeRunner(CommandResult(1, one_key, ""))
+    env = Environment(hermes_home=tmp_path, drift_command=("python", "check_drift.py"))
+
+    summary, _, incidents = collect_drift(env, runner, now=NOW)
+
+    assert summary.state == "drift" and summary.changed_keys == 1 and summary.total_keys is None
+    assert incidents[0].title == "Config drift: 1 key"
 
     report = tmp_path / "drift.json"
     report.write_text(
