@@ -1,5 +1,6 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
-for the pinned message itself. No real Hermes is touched: every state is a snapshot literal.
+for the pinned message itself and one for the Hermes version line. No real Hermes is touched:
+every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -23,6 +24,7 @@ from .schema import (
     Severity,
     SourceObservation,
     SourceState,
+    VersionSummary,
 )
 
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
@@ -31,6 +33,10 @@ _T = "2026-09-09T21:00:00+00:00"
 _T_MINUS_2M = "2026-09-09T20:58:00+00:00"
 _T_MINUS_20M = "2026-09-09T20:40:00+00:00"
 _DRIFT_08 = "2026-09-09T08:00:00+00:00"
+# Upstream's releases as of NOW (the real ones): 0.21.1 is Latest, 0.20.5 three releases below.
+_V0_21_1 = "2026-09-07T22:17:01Z"
+_V0_20_5 = "2026-08-21T12:16:39Z"
+_RELEASES_KNOWN = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +96,7 @@ def _snapshot(
     drift: DriftSummary | None = None,
     gateway: GatewaySummary | None = None,
     capacity: CapacitySummary | None = None,
+    version: VersionSummary | None = None,
 ) -> DashboardSnapshot:
     return DashboardSnapshot(
         overall=overall,
@@ -100,12 +107,31 @@ def _snapshot(
         drift=drift or DriftSummary("clean", 0, 474, _DRIFT_08),
         gateway=gateway or GatewaySummary("running", "connected", _T_MINUS_2M),
         sources=sources or _sources(),
+        version=version,
+    )
+
+
+def _version(running: str, published: str, behind: int) -> VersionSummary:
+    return VersionSummary(
+        running=running,
+        latest="0.21.1",
+        running_published_at=published,
+        latest_published_at=_V0_21_1,
+        behind=behind,
+        list_size=_RELEASES_KNOWN,
+        checked_at=_T,
     )
 
 
 def all_states() -> tuple[State, ...]:
     return (
-        State(1, "All normal", _snapshot("normal"), _delivery_ok(), "normal"),
+        State(
+            1,
+            "All normal",
+            _snapshot("normal", version=_version("0.21.1", _V0_21_1, 0)),
+            _delivery_ok(),
+            "normal",
+        ),
         State(
             2,
             "Gateway alive, Telegram polling down",
@@ -243,6 +269,13 @@ def all_states() -> tuple[State, ...]:
                 last_error="lost",
                 lost_at=_T,
             ),
+            "normal",
+        ),
+        State(
+            13,
+            "Hermes three releases behind",
+            _snapshot("normal", version=_version("0.20.5", _V0_20_5, 3)),
+            _delivery_ok(),
             "normal",
         ),
     )

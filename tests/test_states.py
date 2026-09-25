@@ -28,8 +28,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_twelve_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 13))
+def test_thirteen_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 14))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -83,12 +83,15 @@ def test_state_1_is_this_exact_screen() -> None:
         "Gemini · no data",
         "Grok · no data",
         "",
+        "🤖 Hermes 0.21.1 ✓",
+        "",
         "> ## Details",
         "> Confirmed 20:58",
         "> Period 5 min",
         "> Profiles 1/1 · sources 3/3",
         ">",
         "> Drift checked 08:00",
+        "> Hermes 0.21.1 of Sep 7 is the latest · checked Sep 9 21:00",
         ">",
         "> ## No data",
         "> Gemini: source not confirmed",
@@ -172,3 +175,20 @@ def test_every_state_has_a_plain_form_without_markup_inside_the_telegram_limit(s
     assert not any(line.startswith(">") for line in plain.splitlines())
     assert _utf16_units(plain) <= TELEGRAM_TEXT_LIMIT
     assert plain.splitlines()[0].startswith(("🟢", "🟡", "🔴", "⚪", "⚠️"))
+
+
+def test_state_13_is_three_releases_behind_as_information_only() -> None:
+    """The version line when upstream is ahead: two versions and an arrow on the screen, the
+    dates and the count in the details; no sign, no advice, the status stays green."""
+    state = STATES[12]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Hermes three releases behind"
+    assert main[0] == "🟢 Healthy · Sep 9 21:00 UTC"
+    assert main[-3:] == ["", "🤖 Hermes 0.20.5 → 0.21.1", ""]
+    assert "> Hermes 0.20.5 of Aug 21, latest 0.21.1 of Sep 7" in lines
+    assert "> 3 releases behind · checked Sep 9 21:00" in lines
+    assert "⚠" not in text
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS

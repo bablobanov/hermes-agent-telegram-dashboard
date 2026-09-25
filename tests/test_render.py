@@ -19,6 +19,7 @@ from telegram_dashboard.schema import (
     Incident,
     QuotaMetric,
     QuotaWindow,
+    VersionSummary,
     WorkSummary,
 )
 
@@ -394,3 +395,130 @@ def test_drift_that_could_not_be_checked_shows_why_and_no_check_time() -> None:
     assert "Drift: unknown" in rendered.splitlines()
     assert "> Drift: deadline 35 s" in rendered.splitlines()
     assert "checked" not in rendered and "check time" not in rendered
+
+
+# ----------------------------------------------------------------------------- the version line
+#
+# Information only: which Hermes the gateway runs and which release upstream marks Latest. No
+# sign, no advice; the dates, the count and the time of the check live in the details.
+
+_CHECKED = "2026-09-25T16:40:00+00:00"
+_OURS = "2026-09-14T16:04:14Z"
+_LATEST = "2026-09-24T10:09:38Z"
+
+
+def _with_version(version: VersionSummary) -> DashboardSnapshot:
+    return DashboardSnapshot(
+        overall="normal",
+        observed_at="2026-09-25T16:45:00+00:00",
+        capacity=CapacitySummary((QuotaMetric("Codex", "official", used=10, limit=100),)),
+        version=version,
+    )
+
+
+def _version_render(version: VersionSummary) -> tuple[list[str], list[str]]:
+    text = render_dashboard(_with_version(version), now=NOW, zone=UTC)
+    main = _main_part(text)
+    return main, text.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("version", "line", "details"),
+    [
+        (
+            VersionSummary("0.21.3", "0.21.5", _OURS, _LATEST, 2, 36, _CHECKED),
+            "🤖 Hermes 0.21.3 → 0.21.5",
+            [
+                "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24",
+                "> 2 releases behind · checked Sep 25 16:40",
+            ],
+        ),
+        (
+            VersionSummary("0.21.4", "0.21.5", "2026-09-21T18:10:55Z", _LATEST, 1, 36, _CHECKED),
+            "🤖 Hermes 0.21.4 → 0.21.5",
+            [
+                "> Hermes 0.21.4 of Sep 21, latest 0.21.5 of Sep 24",
+                "> 1 release behind · checked Sep 25 16:40",
+            ],
+        ),
+        (
+            VersionSummary("0.21.5", "0.21.5", _LATEST, _LATEST, 0, 36, _CHECKED),
+            "🤖 Hermes 0.21.5 ✓",
+            ["> Hermes 0.21.5 of Sep 24 is the latest · checked Sep 25 16:40"],
+        ),
+        (
+            VersionSummary("0.21.3", checked_at=_CHECKED, reason="GitHub rate limit"),
+            "🤖 Hermes 0.21.3 · no data",
+            ["> Hermes latest: GitHub rate limit · checked Sep 25 16:40"],
+        ),
+        (
+            VersionSummary(
+                None, "0.21.5", None, _LATEST, None, 36, _CHECKED, None, "not on this installation"
+            ),
+            "🤖 Hermes · no data",
+            [
+                "> Hermes version: not on this installation",
+                "> Hermes latest 0.21.5 of Sep 24 · checked Sep 25 16:40",
+            ],
+        ),
+        (
+            VersionSummary("0.21.6", "0.21.5", "2026-09-26T10:00:00Z", _LATEST, -1, 36, _CHECKED),
+            "🤖 Hermes 0.21.6 · latest 0.21.5",
+            [
+                "> Hermes 0.21.6 of Sep 26 is newer than the latest 0.21.5 of Sep 24 · checked Sep 25 16:40"
+            ],
+        ),
+        (
+            VersionSummary("0.20.0", "0.21.5", None, _LATEST, None, 36, _CHECKED),
+            "🤖 Hermes 0.20.0 · latest 0.21.5",
+            [
+                "> Hermes 0.20.0 not among the last 36 releases, latest 0.21.5 of Sep 24"
+                " · checked Sep 25 16:40"
+            ],
+        ),
+    ],
+    ids=["behind", "one-behind", "same", "no-latest", "no-running", "newer", "not-listed"],
+)
+def test_the_version_line_and_its_details(
+    version: VersionSummary, line: str, details: list[str]
+) -> None:
+    main, lines = _version_render(version)
+
+    assert main[-2:] == [line, ""]
+    assert main[-3] == ""  # its own block, apart from the limits above
+    assert main.index(line) > main.index("## 🧠 Limits used")
+    assert len(line) <= 32
+    for expected in details:
+        assert expected in lines
+    for word in ("update", "upgrade", "hermes update", "⚠"):
+        assert word not in line.lower()
+
+
+def test_the_version_line_follows_the_limits_and_is_absent_without_a_version() -> None:
+    without = render_dashboard(
+        DashboardSnapshot(overall="normal", observed_at="2026-09-25T16:45:00+00:00"),
+        now=NOW,
+        zone=UTC,
+    )
+
+    assert "Hermes" not in without
+
+
+def test_the_version_line_stands_alone_without_a_limits_block() -> None:
+    snapshot = DashboardSnapshot(
+        overall="normal",
+        observed_at="2026-09-25T16:45:00+00:00",
+        version=VersionSummary("0.21.5", "0.21.5", _LATEST, _LATEST, 0, 36, _CHECKED),
+    )
+
+    main = _main_part(render_dashboard(snapshot, now=NOW, zone=UTC))
+
+    assert main[-3:] == ["", "🤖 Hermes 0.21.5 ✓", ""]
+
+
+def test_a_version_reason_is_sanitized_like_every_other_reason() -> None:
+    _main, lines = _version_render(
+        VersionSummary("0.21.3", checked_at=_CHECKED, reason="collector crashed: /root/.env")
+    )
+
+    assert not any("/root/.env" in line for line in lines)

@@ -2,8 +2,9 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "🧠 Limits used" with the time to every reset, and everything that explains a line
-(reasons, per-source stamps, coverage) in a details block that Telegram shows collapsed.
+provider under "🧠 Limits used" with the time to every reset, the Hermes version line after them,
+and everything that explains a line (reasons, per-source stamps, coverage) in a details block
+that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
 details. Work and automation blocks render only when the snapshot carries them; ``None`` means
 the block is not observed on this installation and nothing is invented for it.
@@ -31,9 +32,11 @@ from .schema import (
     GatewaySummary,
     QuotaMetric,
     QuotaWindow,
+    VersionSummary,
 )
 from .timeparse import (
     age_seconds,
+    format_day,
     format_day_time,
     format_in_zone,
     format_stamp,
@@ -53,6 +56,9 @@ WARN_MARK = "⚠️"
 # number after it. Every percent on the screen is the spent share; the heading says so, and its
 # brain names the block at a glance: bold alone hardly shows in Telegram Desktop (25.09).
 LIMITS_HEADING = "🧠 Limits used"
+# The Hermes version line after the limits: information only, no sign and no advice (decision of
+# 25.09: updating Hermes is a process, not a restart).
+VERSION_MARK = "🤖"
 _MINUTES_PER_DAY = 1440
 # Windows carry no length label (decision of 25.09): the spent share and the time to its reset
 # answer what the reader acts on, the owner of the account knows the plan, and a length the
@@ -176,6 +182,8 @@ def render_dashboard(
         for quota in snapshot.capacity.quotas:
             lines.append(_quota_line(quota, reference, details))
         details.data = _data_stamps(snapshot, zone)
+    if snapshot.version is not None:
+        lines.extend(["", _version_line(snapshot.version, details, zone)])
     if snapshot.work is not None:
         work = snapshot.work
         lines.extend(
@@ -409,6 +417,72 @@ def _duration_words(minutes: int) -> str:
     if hours:
         return f"{hours}h{mins}m" if mins else f"{hours}h"
     return f"{mins}m"
+
+
+def _version_line(version: VersionSummary, details: _Details, zone: tzinfo) -> str:
+    """``🤖 Hermes 0.21.3 → 0.21.5``: the version the gateway runs, then the release upstream
+    marks Latest. The dates, the count and the time of the check go to the details."""
+    checked = _checked(version.checked_at, zone)
+    running = sanitize_public_text(version.running, limit=24) if version.running else None
+    if running is None:
+        details.missing.append(f"Hermes version: {_reason(version.local_reason)}")
+    if version.latest is None:
+        details.missing.append(f"Hermes latest: {_reason(version.reason)}{checked}")
+        return f"{VERSION_MARK} Hermes {running} · no data" if running else _no_version()
+    latest = sanitize_public_text(version.latest, limit=24)
+    latest_of = f"{latest}{_of(version.latest_published_at, zone)}"
+    if running is None:
+        details.state.append(f"Hermes latest {latest_of}{checked}")
+        return _no_version()
+    details.state.extend(_version_details(version, running, latest_of, checked, zone))
+    return _version_words(version.behind, running, latest)
+
+
+def _version_words(behind: int | None, running: str, latest: str) -> str:
+    if behind == 0:
+        return f"{VERSION_MARK} Hermes {running} {OK_MARK}"
+    if behind is not None and behind > 0:
+        return f"{VERSION_MARK} Hermes {running} → {latest}"
+    # Newer than Latest, or not on the list at all: no arrow, it would point the wrong way.
+    return f"{VERSION_MARK} Hermes {running} · latest {latest}"
+
+
+def _version_details(
+    version: VersionSummary, running: str, latest_of: str, checked: str, zone: tzinfo
+) -> list[str]:
+    ours = f"Hermes {running}{_of(version.running_published_at, zone)}"
+    behind = version.behind
+    if behind == 0:
+        return [f"{ours} is the latest{checked}"]
+    if behind is None:
+        return [
+            f"Hermes {running} not among the last {version.list_size} releases, "
+            f"latest {latest_of}{checked}"
+        ]
+    if behind < 0:
+        return [f"{ours} is newer than the latest {latest_of}{checked}"]
+    return [
+        f"{ours}, latest {latest_of}",
+        f"{_plural(behind, 'release', 'releases')} behind{checked}",
+    ]
+
+
+def _no_version() -> str:
+    return f"{VERSION_MARK} Hermes · no data"
+
+
+def _of(published: str | None, zone: tzinfo) -> str:
+    day = format_day(published, zone) if published else None
+    return f" of {day}" if day else ""
+
+
+def _checked(checked_at: str | None, zone: tzinfo) -> str:
+    stamp = format_day_time(checked_at, zone) if checked_at else None
+    return f" · checked {stamp}" if stamp else ""
+
+
+def _reason(reason: str | None) -> str:
+    return sanitize_public_text(reason, limit=60) if reason else "unknown"
 
 
 def _data_stamps(snapshot: DashboardSnapshot, zone: tzinfo) -> str | None:
