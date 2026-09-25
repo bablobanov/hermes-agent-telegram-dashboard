@@ -59,6 +59,9 @@ LIMITS_HEADING = "🧠 Limits used"
 # The Hermes version line after the limits: information only, no sign and no advice (decision of
 # 25.09: updating Hermes is a process, not a restart).
 VERSION_MARK = "🤖"
+# A phone line; the version line keeps to it whatever the version string (a dev build, a local
+# tag): a shorter form first, then the version cut with an ellipsis, whole in the details.
+_LINE_COLUMNS = 32
 _MINUTES_PER_DAY = 1440
 # Windows carry no length label (decision of 25.09): the spent share and the time to its reset
 # answer what the reader acts on, the owner of the account knows the plan, and a length the
@@ -428,7 +431,12 @@ def _version_line(version: VersionSummary, details: _Details, zone: tzinfo) -> s
         details.missing.append(f"Hermes version: {_reason(version.local_reason)}")
     if version.latest is None:
         details.missing.append(f"Hermes latest: {_reason(version.reason)}{checked}")
-        return f"{VERSION_MARK} Hermes {running} · no data" if running else _no_version()
+        if running is None:
+            return _no_version()
+        line = _fit(running, " · no data")
+        if running not in line:
+            details.state.append(f"Hermes version {running}")
+        return line
     latest = sanitize_public_text(version.latest, limit=24)
     latest_of = f"{latest}{_of(version.latest_published_at, zone)}"
     if running is None:
@@ -440,11 +448,25 @@ def _version_line(version: VersionSummary, details: _Details, zone: tzinfo) -> s
 
 def _version_words(behind: int | None, running: str, latest: str) -> str:
     if behind == 0:
-        return f"{VERSION_MARK} Hermes {running} {OK_MARK}"
+        return _fit(running, f" {OK_MARK}")
     if behind is not None and behind > 0:
-        return f"{VERSION_MARK} Hermes {running} → {latest}"
+        return _fit(running, f" → {latest}")
     # Newer than Latest, or not on the list at all: no arrow, it would point the wrong way.
-    return f"{VERSION_MARK} Hermes {running} · latest {latest}"
+    shorter = f"{VERSION_MARK} Hermes {running}" + (" · newer" if behind is not None else "")
+    return _fit(running, f" · latest {latest}", shorter)
+
+
+def _fit(running: str, after: str, *shorter: str) -> str:
+    """``🤖 Hermes <running><after>`` within a phone line: as is, else the first shorter form
+    that fits, else the running version cut with an ellipsis so ``after`` stays whole."""
+    head = f"{VERSION_MARK} Hermes "
+    for line in (f"{head}{running}{after}", *shorter):
+        if len(line) <= _LINE_COLUMNS:
+            return line
+    room = _LINE_COLUMNS - len(head) - len(after) - 1
+    if room < 1:
+        return f"{head}{running}"[: _LINE_COLUMNS - 1] + "…"
+    return f"{head}{running[:room]}…{after}"
 
 
 def _version_details(

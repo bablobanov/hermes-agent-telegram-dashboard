@@ -522,3 +522,44 @@ def test_a_version_reason_is_sanitized_like_every_other_reason() -> None:
     )
 
     assert not any("/root/.env" in line for line in lines)
+
+
+_LONG = "0.22.0.dev0+local.abcdef"
+
+
+@pytest.mark.parametrize(
+    ("version", "keeps", "detail"),
+    [
+        (
+            VersionSummary(_LONG, "0.21.5", None, _LATEST, None, 36, _CHECKED),
+            "🤖 Hermes 0.22",
+            f"> Hermes {_LONG} not among the last 36 releases",
+        ),
+        (
+            VersionSummary(_LONG, "0.21.5", "2026-09-10T00:00:00Z", _LATEST, 3, 36, _CHECKED),
+            " → 0.21.5",
+            f"> Hermes {_LONG} of Sep 10, latest 0.21.5 of Sep 24",
+        ),
+        (
+            VersionSummary(_LONG, checked_at=_CHECKED, reason="HTTP 503"),
+            " · no data",
+            f"> Hermes version {_LONG}",
+        ),
+        (
+            VersionSummary("0.21.11", "0.21.10", _LATEST, _LATEST, -1, 36, _CHECKED),
+            "🤖 Hermes 0.21.11 · newer",
+            "> Hermes 0.21.11 of Sep 24 is newer than the latest 0.21.10 of Sep 24",
+        ),
+    ],
+    ids=["not-listed", "behind", "no-data", "newer-two-digit"],
+)
+def test_a_long_version_is_cut_to_the_phone_line_and_kept_whole_in_the_details(
+    version: VersionSummary, keeps: str, detail: str
+) -> None:
+    main, lines = _version_render(version)
+    line = main[-2]
+
+    assert line.startswith("🤖 Hermes ")
+    assert len(line) <= 32, line
+    assert keeps in line
+    assert any(entry.startswith(detail) for entry in lines), lines
