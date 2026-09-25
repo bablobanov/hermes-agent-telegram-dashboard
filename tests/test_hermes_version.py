@@ -582,7 +582,9 @@ def test_a_crashing_check_is_cached_for_the_day_not_retried_every_tick(tmp_path:
     assert len(calls) == 1
     assert cache["attempted_at"] == NOW.isoformat()
     assert second.version.reason == "collector crashed: RuntimeError"
-    assert [i.title for i in first.incidents] == ["Collector hermes_version crashed (RuntimeError)"]
+    crashed = "Collector hermes_version crashed (RuntimeError)"
+    assert crashed in [incident.title for incident in first.incidents]
+    assert crashed not in [incident.title for incident in second.incidents]  # served from cache
 
 
 def _facade():
