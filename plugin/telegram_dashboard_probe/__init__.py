@@ -499,7 +499,7 @@ class ProbeRuntime:
         if dashboard is None:
             self.record["last_render_error"] = "ImportError"
             return Screen(
-                self._notice(now, "пакет telegram_dashboard не импортируется, экран не собран")
+                self._notice(now, "package telegram_dashboard not importable, screen not built")
             )
         try:
             snapshot = await self.collector(now)
@@ -527,7 +527,7 @@ class ProbeRuntime:
             else:
                 logger.exception("probe: screen not composed; the message gets a notice instead")
             self.record["last_render_error"] = reason
-            return Screen(self._notice(now, f"экран не собран: {reason}"))
+            return Screen(self._notice(now, f"screen not built: {reason}"))
         self.record["last_render_error"] = None
         return Screen(plain=plain, html=html)
 
@@ -535,8 +535,8 @@ class ProbeRuntime:
         """The record as it will be once this text lands.
 
         The text is composed before delivery. When the message was lost and this tick will send
-        a new one, any text that lands IS the recreation: the banner must say "создано заново",
-        not "НЕ восстановлено" for a whole period on the very message that restored it.
+        a new one, any text that lands IS the recreation: the banner must say "recreated",
+        not "NOT restored" for a whole period on the very message that restored it.
         """
         record = dict(self.record)
         chat = self.settings.chat_id
@@ -596,8 +596,8 @@ class ProbeRuntime:
         return "\n".join(
             [
                 f"⚠️ HERMES DASHBOARD: {reason}",
-                f"Данные: нет · tick {self.ticks}",
-                f"Обновлено: {stamp:%Y-%m-%d %H:%M %Z} · период {minutes} мин",
+                f"Data: none · tick {self.ticks}",
+                f"Updated: {stamp:%Y-%m-%d %H:%M %Z} · period {minutes} min",
             ]
         )
 

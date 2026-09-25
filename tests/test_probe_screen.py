@@ -161,7 +161,7 @@ def test_a_failed_stage_still_edits_the_message_with_a_loud_stamp(
         assert text.startswith("⚠️")
         assert text in adapter.edits  # the notice takes the plain verb
         assert "RuntimeError" in text and "-100999" not in text
-        assert "Обновлено: " in text
+        assert "Updated: " in text
         assert ctx.state.data["probe"]["last_status"] == "edited"
         assert ctx.state.data["probe"]["last_render_error"] == "RuntimeError"
 
@@ -188,7 +188,7 @@ def test_without_the_dashboard_package_the_message_says_so(monkeypatch, tmp_path
     text = adapter.texts[-1]
     assert text.startswith("⚠️")
     assert "telegram_dashboard" in text
-    assert "Обновлено: " in text
+    assert "Updated: " in text
     assert adapter.html_edits == []  # nothing to build a form from: plain only
 
 

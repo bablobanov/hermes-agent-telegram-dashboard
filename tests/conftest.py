@@ -20,7 +20,7 @@ def _stub(provider: str, source: str):
         return {
             "provider": provider,
             "status": "unavailable",
-            "reason": "заглушка тестов",
+            "reason": "test stub",
             "source": source,
             "fetched_at": None,
             "windows": [],
