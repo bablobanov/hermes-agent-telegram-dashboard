@@ -31,7 +31,6 @@ packages = ["plugin/telegram_dashboard_probe/telegram_dashboard"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["plugin/telegram_dashboard_probe"]
-addopts = "-q"
 
 [tool.ruff]
 target-version = "py311"

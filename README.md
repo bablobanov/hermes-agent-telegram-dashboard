@@ -325,13 +325,13 @@ gateway's own); elsewhere they degrade to `unsupported`.
 ## Tests
 
 ```bash
-python -m pytest tests -q          # plus `pip install tzdata` on Windows
+python -m pytest tests             # plus `pip install tzdata` on Windows
 ruff check . && ruff format --check . && mypy --strict -p telegram_dashboard
 ```
 
 `pyproject.toml` points pytest and mypy at the package inside the plugin folder. Every run prints
 `telegram_dashboard.__file__` in the header: a green run that does not say which tree it tested
-proves nothing. No test reaches a provider: the Grok and Kimi attempts are stubbed by an autouse
+proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the Grok and Kimi attempts are stubbed by an autouse
 fixture in `tests/conftest.py` unless a test passes its own fake; a plugin loaded by the test
 helpers takes that same patched package, not a second copy of it under the plugin's name
 (`tests/probe_fakes.py`, `load_plugin`). `tests/test_probe_plugin.py` skips unless the Hermes engine is

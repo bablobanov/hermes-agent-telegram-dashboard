@@ -20,8 +20,9 @@ jobs:
         run: python -m pip install "pytest>=8,<10" tzdata
       # No engine on the runner: tests that need Hermes objects skip, every other test runs.
       # The header of the run names the tree under test; the package path comes from pyproject.
+      # No -q: a quiet run hides that header, and a doubled one hides the "N passed" line too.
       - name: Offline test suite
-        run: python -m pytest tests -q
+        run: python -m pytest tests
 
   lint:
     runs-on: ubuntu-latest
