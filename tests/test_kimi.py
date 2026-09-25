@@ -110,25 +110,46 @@ def test_the_usages_url_is_derived_from_the_engine_s_base_url_not_a_second_host(
 # ----------------------------------------------------------------------------- parsing
 
 
-def test_a_legacy_plan_is_a_5h_window_and_a_weekly_window_with_their_own_resets() -> None:
+def test_a_legacy_plan_is_its_weekly_window_with_its_reset() -> None:
     assert kimi.parse_usages(LEGACY) == [
-        {"label": "5h", "used_percent": 12.0, "reset_at": RESET_5H},
         {"label": "7d", "used_percent": 40.0, "reset_at": RESET_7D},
     ]
 
 
-def test_a_new_plan_is_a_5h_window_and_a_monthly_window_the_code_share_is_not_a_window() -> None:
+def test_a_new_plan_is_its_monthly_window_the_code_share_is_not_a_window() -> None:
     windows = kimi.parse_usages(NEW_PLAN)
 
-    assert [w["label"] for w in windows] == ["5h", "month"]
-    assert windows[1]["used_percent"] == pytest.approx(7.95)
-    assert windows[1]["reset_at"] == RESET_MONTH
+    assert [w["label"] for w in windows] == ["month"]
+    assert windows[0]["used_percent"] == pytest.approx(7.95)
+    assert windows[0]["reset_at"] == RESET_MONTH
+
+
+def test_the_5h_entry_is_left_out_until_a_probe_explains_it() -> None:
+    """On the pilot account ``limit_5h`` read 0 while ``limits[]`` said 55 of 100 for the same
+    300-minute window (probe of 2026-09-24): a number its own answer contradicts is not shown,
+    and an answer with nothing else is "no data", not a zero."""
+    pilot = {
+        "limits": [
+            {
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {"limit": "100", "used": "55", "remaining": "45"},
+            }
+        ],
+        "usages": {
+            "limit_5h": {"used_ratio": 0, "reset_time": RESET_5H},
+            "limit_month_total": {"used_ratio": 0.0342, "reset_time": RESET_MONTH},
+        },
+    }
+
+    assert [w["label"] for w in kimi.parse_usages(pilot)] == ["month"]
+    with pytest.raises(kimi.ShapeError, match="usages without known windows"):
+        kimi.parse_usages({"usages": {"limit_5h": {"used_ratio": 0.5}}})
 
 
 def test_a_window_without_a_reset_keeps_its_number() -> None:
-    windows = kimi.parse_usages({"usages": {"limit_5h": {"used_ratio": 0.5}}})
+    windows = kimi.parse_usages({"usages": {"limit_7d": {"used_ratio": 0.5}}})
 
-    assert windows == [{"label": "5h", "used_percent": 50.0, "reset_at": None}]
+    assert windows == [{"label": "7d", "used_percent": 50.0, "reset_at": None}]
 
 
 @pytest.mark.parametrize(
@@ -138,13 +159,13 @@ def test_a_window_without_a_reset_keeps_its_number() -> None:
         ({"usages": []}, "answer without usages"),
         ({"usages": {}}, "usages without known windows"),
         ({"usages": {"limit_9y": {"used_ratio": 0.1}}}, "usages without known windows"),
-        ({"usages": {"limit_5h": "12%"}}, "limit_5h not an object"),
-        ({"usages": {"limit_5h": {"reset_time": RESET_5H}}}, "limit_5h.used_ratio not a number"),
-        ({"usages": {"limit_5h": {"used_ratio": True}}}, "limit_5h.used_ratio not a number"),
-        ({"usages": {"limit_5h": {"used_ratio": 12}}}, "limit_5h.used_ratio outside 0..1"),
+        ({"usages": {"limit_7d": "12%"}}, "limit_7d not an object"),
+        ({"usages": {"limit_7d": {"reset_time": RESET_7D}}}, "limit_7d.used_ratio not a number"),
+        ({"usages": {"limit_7d": {"used_ratio": True}}}, "limit_7d.used_ratio not a number"),
+        ({"usages": {"limit_7d": {"used_ratio": 12}}}, "limit_7d.used_ratio outside 0..1"),
         (
-            {"usages": {"limit_5h": {"used_ratio": 0.1, "reset_time": "soon"}}},
-            "limit_5h.reset_time unreadable",
+            {"usages": {"limit_7d": {"used_ratio": 0.1, "reset_time": "soon"}}},
+            "limit_7d.reset_time unreadable",
         ),
     ],
 )
@@ -165,7 +186,7 @@ def test_one_attempt_sends_the_engine_s_client_header_with_the_bearer_key_and_ne
 
     assert item["status"] == "available" and item["fetched_at"] == NOW.isoformat()
     assert item["source"] == kimi.SOURCE and item["provider"] == "kimi"
-    assert [w["label"] for w in item["windows"]] == ["5h", "7d"]
+    assert [w["label"] for w in item["windows"]] == ["7d"]
     assert [url for url, _ in http.calls] == [USAGES_URL]
     headers = http.calls[0][1]
     assert headers["Authorization"] == f"Bearer {_creds()[0]}"

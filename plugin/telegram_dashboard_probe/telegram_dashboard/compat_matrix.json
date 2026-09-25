@@ -73,7 +73,7 @@
     },
     "kimi_quota": {
       "probe": "in-process import of hermes_cli.auth.resolve_api_key_provider_credentials('kimi-coding') at call time: the key and base URL by the runtime's own rules (.env, then the credential pool, then the sk-kimi- prefix redirect); import failure or no key = unavailable with the reason",
-      "contract": "GET <base URL without /v1>/v1/usages on the host the engine already uses for Kimi inference, Authorization: Bearer <key>, the client header the engine sends to that host; usages.{limit_5h,limit_7d,limit_month_total} with used_ratio 0..1 and reset_time (the shape the official client parses: MoonshotAI/kimi-code packages/oauth/src/managed-usage.ts). Not in Kimi's docs; the number is the provider's own (kimi.py). Same cache policy as grok_quota",
+      "contract": "GET <base URL without /v1>/v1/usages on the host the engine already uses for Kimi inference, Authorization: Bearer <key>, the client header the engine sends to that host; usages.{limit_7d,limit_month_total} with used_ratio 0..1 and reset_time (the shape the official client parses: MoonshotAI/kimi-code packages/oauth/src/managed-usage.ts; usages.limit_5h is left out until a probe explains it, on the pilot account it contradicts limits[]). Not in Kimi's docs; the number is the provider's own (kimi.py). Same cache policy as grok_quota",
       "verified": {
         "0.21.3": "read-by-code, engine clone at v2026.9.14: resolver signature and the kimi-coding registry row (hermes_cli/auth.py); parser pinned to the shapes third-party clients reported (tests/test_kimi.py). NOT yet observed live: the pilot probe waits for the owner's go-ahead"
       },

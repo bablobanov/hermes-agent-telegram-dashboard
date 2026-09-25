@@ -43,7 +43,7 @@ Limits used
 Claude · no data                    a line without a number never shows a zero
 ⚠️ Codex 98% (1h21m)                the spent share, the time to the reset; the mark from 90%
 Grok · usage not started            a state in words is never turned into a number
-Kimi 0% (4h13m) · 3% (29d)          every window, in the provider's own order
+Kimi 3% (29d)                       every window, in the provider's own order
 Gemini · no data
 
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
@@ -295,12 +295,14 @@ URL come from the engine's own resolver
 credential pool, then the key-prefix redirect), so the screen shows the quota of exactly the
 credential inference uses, and the request carries the client header the engine sends to that
 host. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
-`managed-usage.ts`): `usages.limit_5h`, `usages.limit_7d` (legacy plans), `usages.limit_month_total`
-(new plans), each with `used_ratio` in 0..1 and a `reset_time`; every window is on the line with
-its own reset (`Kimi 12% (2h53m) · 40% (3d)`). Same policy and cache as Grok; the request
-never goes through the credential pool's rotation, so a failed request cannot mark the pool
-exhausted. Not in Kimi's docs; a changed shape is named, not guessed. Kimi is its own source on
-the coverage line (`Kimi quota`).
+`managed-usage.ts`): `usages.limit_7d` (legacy plans) and `usages.limit_month_total` (new
+plans), each with `used_ratio` in 0..1 and a `reset_time`, every window on the line with its own
+reset (`Kimi 3% (29d)`). `usages.limit_5h` is not shown for now: on the pilot account it has read
+0 at every reading while `limits[]` beside it reported 55 of 100 for a 300-minute window with the
+same reset, and the plan shows no five-hour limit; a probe decides what either field is. Same
+policy and cache as Grok; the request never goes through the credential pool's rotation, so a
+failed request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named,
+not guessed. Kimi is its own source on the coverage line (`Kimi quota`).
 
 **Claude on an installation without an Anthropic credential**: the line says `no data` and the
 details say `no account token`, a reason, never a zero.

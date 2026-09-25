@@ -7,7 +7,8 @@ key-prefix redirect). The shape is the one the official client parses
 (``@moonshot-ai/kimi-code-oauth``, ``managed-usage.ts``): ``usages`` keyed by window with
 ``used_ratio`` in 0..1 and an RFC 3339 ``reset_time``; a legacy plan carries ``limit_5h`` and
 ``limit_7d``, a new plan ``limit_5h`` and ``limit_month_total`` (``limit_month_code`` is the code
-share of the monthly total, not a window of its own). Not in Kimi's docs; the number is the
+share of the monthly total, not a window of its own). ``limit_5h`` is not read for now: see
+``WINDOWS``. Not in Kimi's docs; the number is the
 provider's own, the same class as the Grok reader and the engine's Anthropic and Codex fetchers.
 
 The request carries the client header the engine sends to this host (``agent_init.py``,
@@ -44,9 +45,13 @@ DEFAULT_INTERVAL_SECONDS = 900.0
 HTTP_TIMEOUT_SECONDS = 10.0
 # One request plus thread start-up.
 TICK_TIMEOUT_SECONDS = 15.0
-# Payload key -> label on the screen, in the order the official client shows them.
+# Payload key -> label, in the order the official client shows them. ``limit_5h`` is left out
+# until a probe explains it (decision of 25.09): on the pilot account it has read 0 at every
+# reading since 2026-09-24, while ``limits[]`` beside it reported 55 of 100 for a 300-minute
+# window with the same reset, and the owner's plan shows no five-hour limit. In the reports of
+# other clients (codenotch#307, oh-my-pi#12790) the two agree; here they do not, and a number
+# that its own answer contradicts is not shown.
 WINDOWS: tuple[tuple[str, str], ...] = (
-    ("limit_5h", "5h"),
     ("limit_7d", "7d"),
     ("limit_month_total", "month"),
 )
