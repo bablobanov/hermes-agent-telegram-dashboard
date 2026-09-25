@@ -90,7 +90,9 @@ LOST_MARKERS = ("message to edit not found", "message can't be edited", "message
 DASHBOARD_MODULES = ("collect", "compat", "freshness", "render")
 # What the tick calls; a copy of the package that lacks any of it is refused at import time.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
-    "collect": ("collect_all_async", "SubprocessRunner", "Flights"),
+    # VERSION_FLIGHT came with ``version_cache`` (0.6.0): a copy without it would reject that
+    # argument on every tick.
+    "collect": ("collect_all_async", "SubprocessRunner", "Flights", "VERSION_FLIGHT"),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),

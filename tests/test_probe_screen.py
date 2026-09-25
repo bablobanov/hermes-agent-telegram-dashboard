@@ -351,6 +351,24 @@ def test_settings_fall_back_to_the_environment_and_to_the_engine_default_home(
     assert plugin.display_zone(settings) is UTC  # unknown zone name degrades, never raises
 
 
+def test_a_package_copy_from_before_the_version_line_is_refused_at_load(tmp_path: Path) -> None:
+    """The plugin hands ``version_cache`` to the collector. A copy of the package from before
+    0.6.0 would reject that argument on every tick and cost the whole screen; it is refused once,
+    at load, like any older copy, and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    assert 'VERSION_FLIGHT = "hermes_version"\n' in text
+    collect_py.write_text(text.replace('VERSION_FLIGHT = "hermes_version"\n', ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.older_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""

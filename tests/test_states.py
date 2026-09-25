@@ -1,4 +1,5 @@
-"""Ten static states from section 11 of the research plus two for the message itself.
+"""Ten static states from section 11 of the research, two for the message itself and one for
+the Hermes version line.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
