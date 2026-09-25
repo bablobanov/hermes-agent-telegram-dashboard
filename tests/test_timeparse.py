@@ -9,10 +9,57 @@ import pytest
 from telegram_dashboard.normalize import classify_freshness
 from telegram_dashboard.render import render_dashboard
 from telegram_dashboard.schema import CapacitySummary, DashboardSnapshot, QuotaMetric, QuotaWindow
-from telegram_dashboard.timeparse import age_seconds, format_in_zone, parse_timestamp, to_zone
+from telegram_dashboard.timeparse import (
+    MONTHS,
+    age_seconds,
+    day_words,
+    format_day,
+    format_day_time,
+    format_in_zone,
+    format_stamp,
+    parse_timestamp,
+    to_zone,
+)
 
 MOSCOW = ZoneInfo("Europe/Moscow")
+YEKATERINBURG = ZoneInfo("Asia/Yekaterinburg")  # "+05" as its abbreviation, like the live host
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
+
+
+def test_month_table_has_twelve_english_abbreviations() -> None:
+    assert len(MONTHS) == 12
+    assert (MONTHS[0], MONTHS[8], MONTHS[11]) == ("Jan", "Sep", "Dec")
+
+
+def test_day_words_drop_the_leading_zero_of_the_day() -> None:
+    assert day_words(datetime(2026, 9, 5, tzinfo=UTC)) == "Sep 5"
+    assert day_words(datetime(2026, 10, 25, tzinfo=UTC)) == "Oct 25"
+
+
+def test_day_helpers_follow_the_zone_and_its_abbreviation() -> None:
+    stamp = "2026-09-25T11:18:00Z"
+
+    assert format_day(stamp, YEKATERINBURG) == "Sep 25"
+    assert format_day_time(stamp, YEKATERINBURG) == "Sep 25 16:18"
+    assert format_stamp(stamp, YEKATERINBURG) == "Sep 25 16:18 +05"
+    assert format_stamp(stamp, UTC) == "Sep 25 11:18 UTC"
+
+
+def test_day_helpers_cross_midnight_in_the_zone() -> None:
+    # 22:30 UTC on Oct 1 is already Oct 2 in Moscow: the day comes from the zone, not from UTC.
+    assert format_day("2026-10-01T22:30:00Z", MOSCOW) == "Oct 2"
+    assert format_day_time("2026-10-01T22:30:00Z", MOSCOW) == "Oct 2 01:30"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-time", "", None, 12345, datetime.max.replace(tzinfo=UTC)],
+    ids=["garbage", "empty", "none", "number", "overflow-in-zone"],
+)
+def test_day_helpers_return_none_instead_of_raising(value: object) -> None:
+    assert format_day(value, MOSCOW) is None
+    assert format_day_time(value, MOSCOW) is None
+    assert format_stamp(value, MOSCOW) is None
 
 
 def test_datetime_max_utc_overflows_in_moscow_without_raising() -> None:
