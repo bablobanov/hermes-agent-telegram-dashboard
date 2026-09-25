@@ -51,6 +51,16 @@ Gemini · нет данных
                                     time, every reset, the reason of every "нет данных"
 ```
 
+The dashboard is one pinned text message in the agent's private chat or in a topic of its
+group. The plugin inside the gateway edits it in place every few minutes through the engine's
+own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
+status line, and the message under it carries the rest: gateway and Telegram state, the last
+backup, config drift, the account limits of every provider with a bar, and a collapsed details
+block with the reasons, the resets and the timestamps. Nothing to open, nothing to install on
+the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
+
+<img src="docs/dashboard-preview.jpg" width="600" alt="The pinned dashboard: status line, gateway, backup, drift, usage limits with bars, details and resets">
+
 Up to five events that need attention come right after the top block, before the limits.
 Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
 surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
