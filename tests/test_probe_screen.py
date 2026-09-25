@@ -395,6 +395,53 @@ def test_a_healthy_cadence_never_shows_the_lagging_banner(monkeypatch, tmp_path:
     assert first_lines == ["🟢 Healthy · Sep 9 21:00 UTC"] * len(first_lines), first_lines
 
 
+def test_the_first_screen_comes_soon_after_the_adapter_connects_whatever_the_period(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """At start the Telegram adapter is often not connected yet. Waiting for it is retried
+    after a short pause, not after the whole period: with a long period on production the
+    first screen after a restart would otherwise come a period later."""
+    plugin = load_plugin()
+    monkeypatch.setattr(plugin, "WAITING_RETRY_SECONDS", 0.05)
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=3600))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter()
+    adapter.is_connected = False
+
+    async def scenario() -> None:
+        await until(lambda: ctx.state.data["probe"].get("last_status") == "waiting")
+        adapter.is_connected = True
+        await until(lambda: len(adapter.html_edits) >= 1, timeout=2.0)
+
+    _run(runtime, adapter, scenario)
+
+    assert ctx.state.data["probe"]["last_status"] == "edited"
+
+
+def test_a_connected_adapter_keeps_the_whole_period(monkeypatch, tmp_path: Path) -> None:
+    """The short pause is for waiting only: once the screen is delivered, the next tick is a
+    period later, not the retry pause later."""
+    plugin = load_plugin()
+    monkeypatch.setattr(plugin, "WAITING_RETRY_SECONDS", 0.05)
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=3600))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 1)
+        await asyncio.sleep(0.5)
+
+    _run(runtime, adapter, scenario)
+
+    assert len(adapter.html_edits) == 1
+
+
 def test_a_collector_that_exits_the_interpreter_still_gets_a_notice(
     monkeypatch, tmp_path: Path
 ) -> None:

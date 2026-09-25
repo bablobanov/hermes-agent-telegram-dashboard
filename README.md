@@ -194,7 +194,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    |---|---|---|
    | `chat_id` | `HERMES_DASHBOARD_PROBE_CHAT` | required; no chat, no handler |
    | `thread_id` | `HERMES_DASHBOARD_PROBE_THREAD` | forum topic; omit for General |
-   | `period_seconds` | `HERMES_DASHBOARD_PROBE_PERIOD` | default 60; finite, clamped to [0.01, 86400] |
+   | `period_seconds` | `HERMES_DASHBOARD_PROBE_PERIOD` | default 60; finite, clamped to [0.01, 86400]; while the Telegram adapter is not connected yet (right after a start) the next try comes in 30 s, not a period later |
    | `hermes_home` | `HERMES_HOME` | default `~/.hermes`; where `gateway_state.json` lives |
    | `drift_report` | `HERMES_DASHBOARD_PROBE_DRIFT_REPORT` | JSON with `checked_at`, `exit_code`, `stdout` |
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |

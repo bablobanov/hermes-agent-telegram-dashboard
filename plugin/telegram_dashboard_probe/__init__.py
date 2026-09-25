@@ -61,6 +61,9 @@ DEFAULT_PERIOD_SECONDS = 60.0
 # old message on screen. Anything non-finite falls back, the rest is clamped to this range.
 MIN_PERIOD_SECONDS = 0.01
 MAX_PERIOD_SECONDS = 86_400.0
+# While the Telegram adapter is not connected yet (right after a start) the next try comes this
+# soon, not a period later: with a long period the first screen after a restart would wait it.
+WAITING_RETRY_SECONDS = 30.0
 DEFAULT_HERMES_HOME = "~/.hermes"
 ENV_CHAT = "HERMES_DASHBOARD_PROBE_CHAT"
 ENV_THREAD = "HERMES_DASHBOARD_PROBE_THREAD"
@@ -392,7 +395,15 @@ class ProbeRuntime:
             # slow collector pushes every confirmation past the freshness threshold and the
             # message banners "lagging" on a healthy system.
             elapsed = loop.time() - started
-            await asyncio.sleep(max(0.0, self.settings.period_seconds - elapsed))
+            await asyncio.sleep(max(0.0, self._pause() - elapsed))
+
+    def _pause(self) -> float:
+        """The whole period after a tick that got to Telegram; a short retry while waiting for
+        the adapter, so the first screen after a restart does not wait a whole period."""
+        period = self.settings.period_seconds
+        if self.record.get("last_status") == "waiting":
+            return min(period, WAITING_RETRY_SECONDS)
+        return period
 
     async def tick(self) -> None:
         if self.live_adapter() is None:
