@@ -30,17 +30,38 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 
 ## What the message shows
 
-1. Top line: overall status, data time, message confirmation time, source coverage, gateway
-   and Telegram state, and the last `state.db` backup (time, age in words, integrity verdict)
-2. Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
-   surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code
-   platform serves its own clients (see "Limits" below); Gemini is shown as "no confirmed
-   source", never as zero. A line without a number always names its reason
-3. Config drift: number of keys that differ from the approved baseline
-4. Up to five events that need attention
+One phone screen, about thirty characters per line, then a details block that Telegram shows
+collapsed:
+
+```
+🟢 Норма · 25.09 12:21 +05          status and the dated data stamp (the pinned header shows it)
+Gateway ✓ · Telegram ✓              words when something is off: остановлен, не подключён
+Бэкап ✓ 6 ч назад                   the last state.db backup; ⚠️ when it failed or is older than 26 h
+Дрейф ✓ 0 из 481                    keys that differ from the approved baseline
+
+Лимиты
+Claude · нет данных                 a line without a number never shows a zero
+⚠️ Codex ▓▓▓▓▓ 98%                  the mark from 90% spent; the bar is the provider's own number
+Grok · расход не начат              a state in words is never turned into a bar
+Kimi ░░░░░ 3% мес · 5 ч 0%          the most spent window owns the bar, the others follow in words
+Gemini · нет данных
+
+▎Подробности                        collapsed: confirmation time, the odd data minute, period,
+▎…                                  coverage, absolute backup time and integrity, drift check
+                                    time, every reset, the reason of every "нет данных"
+```
+
+Up to five events that need attention come right after the top block, before the limits.
+Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
+surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
+serves its own clients (see "Limits" below); Gemini is shown as "no confirmed source", never as
+zero. Nothing is dropped from the old screen, only moved: a line without a number still names its
+reason, in the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
-installation says `unsupported`. Both lower coverage; neither turns green.
+installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
+(`Профили 1/1 · источники 6/6`) lives in the details and comes up to the screen only when it is
+incomplete (`Охват профилей 2/3`, `Не наблюдается: …`, `Устарело: …`).
 
 The screen text is in Russian; there is no other language yet.
 
@@ -73,7 +94,8 @@ What "verified" means here, honestly:
 | Hermes | How |
 |---|---|
 | 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
-| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver and registry row read in the engine source |
+| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the HTML form of the screen sent and edited into a test message of the pilot chat through the Bot API |
+| 0.21.5 (`v2026.9.24`) | `_edit_text` read in the engine source: same signature and body as 0.21.1 and 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
 Anything else is not verified. Above these versions the sources are probed at runtime and
@@ -105,9 +127,10 @@ and edits the same message; the counter text of the vertical slice is gone.
 register(ctx) → ctx.register_platform_handler("telegram", wire)
              → adapter.connect() calls wire(app, adapter)
              → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
-             → each tick: collect_all_async → render_dashboard → to_telegram_plain, then
-               adapter = runner.adapters["telegram"] if connected,
-               adapter.send(...) once, adapter.edit_message(...) afterwards
+             → each tick: collect_all_async → render_dashboard → to_telegram_html and
+               to_telegram_plain, then adapter = runner.adapters["telegram"] if connected,
+               adapter.send(plain) once, adapter._edit_text(html, "HTML") afterwards,
+               adapter.edit_message(plain) in the same tick when the HTML edit is refused
 ```
 
 Two traps found by reading engine 0.21.1 and built into the plugin: `connect()` runs the factory
@@ -116,14 +139,23 @@ forward to the replacement adapter (`send` does). A loop that keeps its first ad
 "Not connected" forever while looking alive. `tests/test_probe_plugin.py` executes the chain
 against the real engine objects with the Telegram `Bot` mocked and simulates the reconnect.
 
-**The screen is plain text, on purpose.** `edit_message` without `finalize` sets no parse mode
-(and the engine builds its PTB application without `Defaults`, so nothing is applied behind its
-back). Its `finalize=True` path converts to MarkdownV2 and, when the escaped payload exceeds
-4096 UTF-16 units, splits it into NEW continuation messages: a pinned dashboard must never do
-that, and the dashboard cannot know how many `\` the engine will add. Headings are upper-case
-lines (`to_telegram_plain`); the cron path keeps the HTML form for its own bot. The one
-`send` that creates the message (and a recreation after a loss) goes through the adapter's
-own markdown conversion; the screen has no markdown constructs, so it renders the same.
+**The screen is HTML when the adapter takes it, plain text otherwise.** The public
+`edit_message` without `finalize` sets no parse mode (the engine builds its PTB application
+without `Defaults`), and its `finalize=True` path converts to MarkdownV2 and, when the escaped
+payload exceeds 4096 UTF-16 units, splits it into NEW continuation messages: a pinned dashboard
+must never do that. The adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on
+0.21.1, 0.21.3 and 0.21.5, takes a parse mode and raises on refusal. Every tick calls it with
+`HTML` (bold headings, the details in one `<blockquote expandable>`, both Bot API 7.4 features
+that any bot may use) and, on any failure but "not modified", edits plain through the public verb
+in the same tick. A plain edit that succeeds right after a failed HTML one means the form was
+refused: the screen stays plain (upper-case headings, the details shown in full), the record says
+`screen_format: plain` with the exception class in `html_error`, one warning goes to the journal,
+and HTML is tried again twelve ticks later. An adapter without `_edit_text` gets the same plain
+form and `html_error: no _edit_text`. The method is private: the plugin treats it as a
+capability, never as a promise (`compat_matrix.json`, row `screen_html`). The one `send` that
+creates the message (and a recreation after a loss) goes through the adapter's own markdown
+conversion as plain text; the next tick edits it into the HTML form. The cron path sends the
+HTML form with its own bot.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -177,16 +209,17 @@ before Kimi (Grok's attempt at the top level) is moved under `grok` once.
 
 ### The backup line
 
-`Бэкап: 24.09 05:31 +05 · 6 ч назад · integrity ok` sits in the top block, beside the gateway
-line, in every state: a screen silent about the norm makes silence indistinguishable from
-confirmation. The source is a JSON status a backup job writes on every run (`ok`, `phase`,
-`reason`, `integrity`, `finished_epoch` or `finished_at`); the dashboard reads that file only
-and never opens the database or the copy. A failed run is loud on the line
-(`⚠️ не состоялся … · <phase>: <reason>`) and an event; a status older than 26 h is marked
-(`⚠️ старше 26 ч`) and an event; a missing or unreadable file is `нет данных (<reason>)` and an
-event; no `backup_status` configured is `не наблюдается`. The status shape is the one our own
-timer writes (`state_db_publish.py` in the operator repository); any writer that produces the
-same keys works.
+`Бэкап ✓ 6 ч назад` sits in the top block, beside the gateway line, in every state: a screen
+silent about the norm makes silence indistinguishable from confirmation. The absolute time and
+the integrity verdict are in the details (`Бэкап 24.09 05:31 · integrity ok`). The source is a
+JSON status a backup job writes on every run (`ok`, `phase`, `reason`, `integrity`,
+`finished_epoch` or `finished_at`); the dashboard reads that file only and never opens the
+database or the copy. A failed run is loud on the line (`Бэкап ⚠️ не состоялся 6 ч назад`, the
+`<phase>: <reason>` in the details) and an event; a status older than 26 h is marked
+(`⚠️ старше 26 ч`) and an event; a missing or unreadable file is `нет данных` with the reason in
+the details and an event; no `backup_status` configured is `не наблюдается`. The status shape is
+the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
+produces the same keys works.
 
 ### Limits: three kinds that never mix
 
@@ -199,9 +232,17 @@ undocumented surfaces (`api/oauth/usage`, the ChatGPT backend), and so does the 
 A documented surface would be preferable; an undocumented provider number is still the
 provider's number, and a local count is not.
 
-Each official line carries its own stamp (`· данные HH:MM`): a number read on its own cadence
-must not borrow the screen's `Обновлено`. A stale number under a fresh stamp looks like
-knowledge, which is the one thing a limits block must never do.
+An official line is one line: `⚠️ Codex ▓▓▓▓▓ 98%`, the mark from 90% spent, a five-cell bar
+of the provider's own number, the exact percent; with several windows the most spent one owns
+the bar and the others follow in words (`Kimi ░░░░░ 3% мес · 5 ч 0%`). A state the provider
+reports in words is never turned into a bar or a zero (`Grok · расход не начат`). Resets are in
+the details, one line per provider (`Codex завтра 16:14`, `Kimi 5 ч 16:34 · мес 25.10`: a time
+for the data day, `завтра HH:MM` for the next, a date beyond). A number read on its own cadence
+must not borrow the screen's stamp: the details line `Данные 12:21 · Kimi 12:16` names every
+number read at another minute than the screen, and a cached number is never shown older than
+its refresh interval (`quota_cache.py`), after two intervals the source is `Устарело` on the
+screen. A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
+block must never do.
 
 **Grok** (`telegram_dashboard/grok.py`): the weekly pool of the SuperGrok subscription, read
 from `https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the token the engine
@@ -216,8 +257,9 @@ The shape is checked strictly (`currentPeriod.type == USAGE_PERIOD_TYPE_WEEKLY`,
 percent in 0..100, a readable end date); anything else is named, not guessed. One answer is a
 state rather than a changed shape: right after the weekly reset the proxy leaves
 `creditUsagePercent` out altogether until the first request of the new period (probed
-2026-09-25). The line then reads `неделя: расход не начат` with the reset date, never a zero,
-and only while the period is the current one and on-demand spend is an explicit zero; a percent
+2026-09-25). The line then reads `Grok · расход не начат` with the reset date in the details,
+never a zero, and only while the period is the current one and on-demand spend is an explicit
+zero; a percent
 missing under any other conditions is named (`нет creditUsagePercent`). Grok is its own source
 on the coverage line (`квота Grok`).
 
@@ -229,14 +271,15 @@ credential pool, then the key-prefix redirect), so the screen shows the quota of
 credential inference uses, and the request carries the client header the engine sends to that
 host. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
 `managed-usage.ts`): `usages.limit_5h`, `usages.limit_7d` (legacy plans), `usages.limit_month_total`
-(new plans), each with `used_ratio` in 0..1 and a `reset_time`; every window keeps its own reset
-on the line (`5 ч 12% (сброс 25.09 03:10) · неделя 40% (сброс 26.09 17:32)`). Same policy and
+(new plans), each with `used_ratio` in 0..1 and a `reset_time`; the most spent window owns the
+bar on the line (`Kimi ▓▓░░░ 40% неделя · 5 ч 12%`) and every window keeps its own reset in the
+details (`Kimi 5 ч 03:10 · неделя 26.09`). Same policy and
 cache as Grok; the request never goes through the credential pool's rotation, so a failed
 request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named, not
 guessed. Kimi is its own source on the coverage line (`квота Kimi`).
 
-**Claude on an installation without an Anthropic credential**: the line says
-`нет данных (у сервера нет учётного токена)`, a reason, never a zero.
+**Claude on an installation without an Anthropic credential**: the line says `нет данных` and
+the details say `нет учётного токена`, a reason, never a zero.
 
 The check for the plugin path is the same `--check`, pointed at that file:
 

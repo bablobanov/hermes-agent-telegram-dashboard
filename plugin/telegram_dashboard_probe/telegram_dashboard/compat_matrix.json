@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-09-24",
+  "updated": "2026-09-25",
   "note": "Per source: how it is probed at runtime, and on which Hermes versions it was verified and how. 'read-by-code' means the engine source was read, not executed; 'live' means observed on a running installation. Missing version = not verified, the dashboard still runs and reports reduced coverage.",
   "floors": {
     "delivery_plugin": {
@@ -38,13 +38,23 @@
     },
     "plugin_platform_handler": {
       "probe": "PluginContext has register_platform_handler and spawn_task; the Telegram adapter calls _wire_plugin_handlers(app) from connect()",
-      "contract": "ctx.register_platform_handler('telegram', factory) -> factory(native, adapter) at every connect(), including reconnects with a NEW adapter instance; ctx.spawn_task(coro) supervised, cancelled on unload; adapter.send/edit_message return SendResult; edit_message does NOT forward to the replacement adapter, so the live adapter is re-resolved per tick via adapter.gateway_runner.adapters and only used when is_connected; edit_message(chat, id, text) without finalize sends PLAIN text (no parse_mode; the PTB Application is built without Defaults) and truncates an over-long payload in place, while finalize=True converts to MarkdownV2 and splits an over-long escaped payload into NEW continuation messages, so the dashboard always edits without finalize and renders headings as upper-case lines; parse_mode=HTML is not reachable through the public adapter",
+      "contract": "ctx.register_platform_handler('telegram', factory) -> factory(native, adapter) at every connect(), including reconnects with a NEW adapter instance; ctx.spawn_task(coro) supervised, cancelled on unload; adapter.send/edit_message return SendResult; edit_message does NOT forward to the replacement adapter, so the live adapter is re-resolved per tick via adapter.gateway_runner.adapters and only used when is_connected; edit_message(chat, id, text) without finalize sends PLAIN text (no parse_mode; the PTB Application is built without Defaults) and truncates an over-long payload in place, while finalize=True converts to MarkdownV2 and splits an over-long escaped payload into NEW continuation messages, so the dashboard never edits with finalize; a parse mode is not reachable through the public verb, the adapter's own _edit_text takes one (row screen_html), and the plain public edit stays the fallback",
       "verified": {
         "0.20.5": "read-by-code, desktop install at 16c67248d4: ABSENT — no register_platform_handler, no register_telegram_handler, no _wire_plugin_handlers anywhere; spawn_task and PluginState exist. The plugin path cannot run on 0.20.x",
         "0.21.1": "executed in-process against the engine clone at 2237be3559 with python-telegram-bot 22.8 installed: real PluginManager/PluginContext/TelegramAdapter/PluginState, PTB Bot object mocked (tests/test_probe_plugin.py); reconnect simulated by tearing down the first adapter and wiring a second one. NOT executed against live Telegram, NOT executed inside a running gateway. Text mode read-by-code at plugins/platforms/telegram/adapter.py:3420 (_edit_text) and :3439 (edit_message), builder chain at :2932 has no .defaults(); the plain edit executed in-process with parse_mode absent from the Bot call (tests/test_probe_plugin.py)"
       },
       "caveat": "user plugins are opt-in: the plugin key must be listed in plugins.enabled (hermes_cli/plugins_discovery.py gate_manifest), and the factory fires before the Bot is initialised, so the first tick waits for is_connected",
       "deployment": "the engine imports a directory plugin as package hermes_plugins.<slug> with __path__ = the plugin dir (hermes_cli/plugins_loader.py _load_directory_module), so telegram_dashboard/ copied INTO the plugin folder resolves as a relative package; verified through the real PluginManager.discover_and_load in tests/test_probe_plugin.py"
+    },
+    "screen_html": {
+      "probe": "the live adapter has a coroutine _edit_text; every tick calls _edit_text(chat, message_id, html, 'HTML') and, on any exception other than 'not modified', edits plain through the public edit_message in the same tick. Plain succeeded right after HTML failed = the HTML form was refused: screen_format 'plain' and the exception class in the record, HTML tried again after HTML_RETRY_TICKS (12). No _edit_text at all = plain, html_error 'no _edit_text'",
+      "contract": "TelegramAdapter._edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None: normalizes the ids, passes parse_mode to Bot.edit_message_text only when given, raises the PTB error on refusal ('Message is not modified' included). A PRIVATE method: the plugin treats it as a capability, never as a promise, and the public plain edit is always the fallback. The parse mode is the string 'HTML' (ParseMode.HTML is that string); the markup is <b> and one <blockquote expandable>, both Bot API 7.4+, not the rich_message parameter",
+      "verified": {
+        "0.21.1": "read-by-code, engine clone at 2237be3559, plugins/platforms/telegram/adapter.py:3420",
+        "0.21.3": "read-by-code, engine clone at v2026.9.14 (the pilot gateway), adapter.py:3470: same signature and body. Live: the exact HTML form (bold, expandable quote, bars) sent and EDITED into a test message of the pilot chat through the Bot API on 2026-09-25 with the gateway's own bot token (staging typo_probe.py), rendered collapsed on the phone; the plugin's own call NOT yet executed inside a running gateway",
+        "0.21.5": "read-by-code, engine clone at v2026.9.24, adapter.py:3839: same signature and body"
+      },
+      "caveat": "a future adapter that renames or removes _edit_text degrades the screen to plain text without breaking: upper-case headings, the details shown in full (tests/test_probe_screen.py, PlainOnlyAdapter). The first message of all (creation and re-creation after a loss) goes through the public send as plain text; the next tick edits it into the HTML form"
     },
     "drift": {
       "probe": "configured report file exists, or configured argv is runnable",
