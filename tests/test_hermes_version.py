@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -352,7 +353,7 @@ def test_a_failed_check_is_not_retried_before_a_day() -> None:
     assert later["reason"] == "GitHub rate limit"
 
 
-def test_the_interval_is_a_day_and_the_deadline_covers_two_requests() -> None:
+def test_the_interval_is_a_day_and_the_deadline_outlasts_two_socket_timeouts() -> None:
     assert hv.INTERVAL_SECONDS == 86400
     assert hv.TICK_TIMEOUT_SECONDS > 2 * hv.HTTP_TIMEOUT_SECONDS
     assert hv.PER_PAGE == 100
@@ -507,3 +508,48 @@ def test_a_crashing_version_read_keeps_the_upstream_answer(tmp_path: Path) -> No
     assert snapshot.version.latest == "0.21.5"
     titles = [incident.title for incident in snapshot.incidents]
     assert "Collector hermes_version crashed (AttributeError)" in titles
+
+
+# ----------------------------------------------------------------------------- review 25.09
+
+
+def test_a_body_nested_too_deep_is_a_cached_reason_never_an_exception() -> None:
+    deep = "[" * 200_000
+
+    item = hv.fetch_item(now=NOW, get=_http(latest=(200, deep)))
+    refused = hv.fetch_item(now=NOW, get=_http(latest=(403, deep)))
+
+    assert item["status"] == "unavailable"
+    assert item["reason"] == "answer shape: JSON nested too deep"
+    assert refused["reason"] == "HTTP 403"
+
+
+def test_behind_counts_from_latest_s_own_entry_when_its_version_is_listed_twice() -> None:
+    again = _release("0.21.5", "2026-09-26T10:00:00Z", tag="v2026.9.26")
+    item = hv.fetch_item(now=NOW, get=_http(listing=(200, json.dumps([again, *RELEASES]))))
+
+    summary = hv.summarize(item, "0.21.3", None)
+
+    assert summary.latest_published_at == "2026-09-24T10:09:38Z"
+    assert summary.behind == 2
+
+
+def test_a_cached_latest_missing_from_its_list_is_no_data() -> None:
+    item = _available(releases=[{"version": "0.21.3", "published_at": "2026-09-14T16:04:14Z"}])
+
+    summary = hv.summarize(item, "0.21.3", None)
+
+    assert summary.latest is None
+    assert summary.reason == "cached answer unreadable"
+
+
+def test_a_redirect_is_followed_only_while_it_stays_on_api_github_com() -> None:
+    handler = hv._StayOnApi()
+    request = urllib.request.Request(hv.LATEST_URL)
+
+    moved = handler.redirect_request(
+        request, None, 301, "Moved", {}, "https://api.github.com/repositories/1/releases/latest"
+    )
+    assert moved is not None
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(request, None, 302, "Found", {}, "https://example.com/x")

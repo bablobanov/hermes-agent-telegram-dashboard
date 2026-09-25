@@ -40,16 +40,19 @@ from .timeparse import parse_timestamp
 SOURCE = "github_releases"
 REPOSITORY = "NousResearch/hermes-agent"
 PER_PAGE = 100
-LATEST_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-LIST_URL = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page={PER_PAGE}"
+API_ROOT = "https://api.github.com/"
+LATEST_URL = f"{API_ROOT}repos/{REPOSITORY}/releases/latest"
+LIST_URL = f"{API_ROOT}repos/{REPOSITORY}/releases?per_page={PER_PAGE}"
 HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "hermes-agent-telegram-dashboard",
 }
 INTERVAL_SECONDS = 86400.0
+# urllib's timeout bounds each socket operation, not a whole request: a slow body can take
+# longer. The worker deadline only releases the tick ("no answer within 25 s"); the worker then
+# finishes on its own and its attempt lands in the cache like any other.
 HTTP_TIMEOUT_SECONDS = 10.0
-# The worker deadline covers both requests plus thread start-up.
 TICK_TIMEOUT_SECONDS = 25.0
 # The list carries every release's notes (about 1 MB for 36 releases on 2026-09-25); a body past
 # this is cut, and a cut body is not JSON.
@@ -91,15 +94,36 @@ def running_version(
 # ----------------------------------------------------------------------------- one attempt
 
 
+class _StayOnApi(urllib.request.HTTPRedirectHandler):
+    """A redirect is followed only while it stays on api.github.com; anywhere else it ends the
+    attempt as its own HTTP status."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if not newurl.startswith(API_ROOT):
+            raise urllib.error.HTTPError(newurl, code, "redirect off api.github.com", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_StayOnApi)
+
+
 def http_get(url: str, headers: dict[str, str]) -> tuple[int, str]:
-    if not url.startswith("https://api.github.com/"):
+    if not url.startswith(API_ROOT):
         raise ValueError("only api.github.com is read")
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return int(response.status), response.read(MAX_BODY_BYTES).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return int(exc.code), exc.read(2000).decode("utf-8", "replace")
+        return int(exc.code), (exc.read(2000) if exc.fp else b"").decode("utf-8", "replace")
 
 
 def fetch_item(*, now: datetime, get: HttpGet = http_get) -> dict[str, Any]:
@@ -125,6 +149,9 @@ def fetch_item(*, now: datetime, get: HttpGet = http_get) -> dict[str, Any]:
     except ShapeError as exc:
         item["reason"] = f"answer shape: {exc}"
         return item
+    except Exception as exc:  # a parsing surprise is this attempt's reason, cached like any other
+        item["reason"] = f"answer shape: {type(exc).__name__}"
+        return item
     item.update(status="available", fetched_at=now.isoformat(), latest=latest, releases=releases)
     return item
 
@@ -142,12 +169,14 @@ def _get_json(get: HttpGet, url: str) -> object:
         return json.loads(body)
     except ValueError as exc:
         raise ShapeError("not JSON") from exc
+    except RecursionError as exc:
+        raise ShapeError("JSON nested too deep") from exc
 
 
 def _rate_limited(body: str) -> bool:
     try:
         message = json.loads(body).get("message")
-    except (ValueError, AttributeError):
+    except Exception:
         return False
     return isinstance(message, str) and "rate limit" in message.lower()
 
@@ -199,7 +228,9 @@ def summarize(item: object, running: str | None, local_reason: str | None) -> Ve
         releases = [_cached_release(entry) for entry in _cached_list(item.get("releases"))]
     except ShapeError:
         return replace(base, reason="cached answer unreadable")
-    ours, behind = _position(releases, running, latest["version"])
+    if latest not in releases:
+        return replace(base, reason="cached answer unreadable")
+    ours, behind = _position(releases, running, latest)
     return replace(
         base,
         latest=latest["version"],
@@ -211,14 +242,16 @@ def summarize(item: object, running: str | None, local_reason: str | None) -> Ve
 
 
 def _position(
-    releases: list[Release], running: str | None, latest: str
+    releases: list[Release], running: str | None, latest: Release
 ) -> tuple[Release | None, int | None]:
-    """Our release on the list and how far below Latest it stands (negative: above)."""
+    """Our release on the list and how far below Latest it stands (negative: above). Latest is
+    its own entry, not the first one with its version string; a running version listed twice
+    resolves to the newer entry, the only one a version string can name."""
     versions = [entry["version"] for entry in releases]
-    if running is None or running not in versions or latest not in versions:
+    if running is None or running not in versions:
         return None, None
     index = versions.index(running)
-    return releases[index], index - versions.index(latest)
+    return releases[index], index - releases.index(latest)
 
 
 def _cached_release(value: object) -> Release:
