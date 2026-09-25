@@ -77,7 +77,7 @@ KimiFetch = QuotaFetch
 _UNCONFIRMED_PROVIDERS = ("Gemini",)
 # What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
 # token resolves): the installation has no credential, not a provider that refused.
-_NO_CREDENTIAL = "у сервера нет учётного токена"
+_NO_CREDENTIAL = "нет учётного токена"
 
 
 @dataclass(frozen=True, slots=True)

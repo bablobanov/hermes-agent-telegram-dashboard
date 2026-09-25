@@ -1,7 +1,8 @@
 """Ten static states from section 11 of the research plus two for the message itself.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
-out by normal metrics, the next action is nameable from the first screen.
+out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
+the first screen is one phone screen, with the explanations in a collapsed details block.
 """
 
 import pytest
@@ -10,12 +11,21 @@ from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT, render_dashboard, to_
 from telegram_dashboard.states import NOW, PERIOD_SECONDS, all_states
 
 STATES = all_states()
+# A phone shows about 30 characters per line and about 15 lines of a message; block glyphs and
+# emoji are wider than letters, so the budget is tighter than the count suggests.
+PHONE_LINES = 14
+PHONE_COLUMNS = 32
 
 
 def _render(state) -> str:
     return render_dashboard(
         state.snapshot, now=NOW, delivery=state.delivery, period_seconds=PERIOD_SECONDS
     )
+
+
+def _main_part(text: str) -> list[str]:
+    lines = text.splitlines()
+    return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
 def test_twelve_states_are_defined_and_numbered() -> None:
@@ -25,12 +35,14 @@ def test_twelve_states_are_defined_and_numbered() -> None:
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
 def test_every_state_renders_within_telegram_limit_and_matches_expected_overall(state) -> None:
     text = _render(state)
+    lines = text.splitlines()
 
     assert state.snapshot.overall == state.expect_overall
     assert len(to_telegram_html(text)) <= TELEGRAM_TEXT_LIMIT
-    assert "Данные: 21:00 UTC" in text
-    assert "Сообщение подтверждено:" in text
-    assert "Обновлено: 2026-09-09 21:00 UTC" in text
+    # The status line carries the dated data stamp; a banner may sit above it.
+    assert any(line.endswith(" · 09.09 21:00 UTC") for line in lines[:2])
+    assert any(line.startswith("> Подтверждено") for line in lines)
+    assert "> Период 5 мин" in lines
     assert text.count("- ") <= 40
 
 
@@ -43,21 +55,33 @@ def test_non_normal_states_never_show_green(state) -> None:
 
 def test_state_1_all_normal_is_green_and_names_coverage() -> None:
     text = _render(STATES[0])
+    lines = text.splitlines()
 
-    assert text.splitlines()[1] == "🟢 Норма"
-    assert "Охват источников: 3/3" in text
-    assert "Gateway: работает · Telegram: подключён" in text
-    # Two windows, two resets: one date after two percentages would not say which window it ends.
-    assert "Claude: 5 ч 37% (сброс 10.09 00:00) · 7 дн 12% (сброс 14.09 00:00)" in text
-    assert "Gemini: нет данных (источник не подтверждён)" in text
-    assert "✅ 0 из 474 ключей расходятся · проверено 08:00 UTC" in text
+    assert lines[0] == "🟢 Норма · 09.09 21:00 UTC"
+    assert "Gateway ✓ · Telegram ✓" in lines
+    assert "Дрейф ✓ 0 из 474" in lines
+    # Two windows: the most spent one owns the bar, the other follows in words; both resets in
+    # the details, each with its own label, because one date after two numbers says nothing.
+    assert "Claude ▓▓░░░ 37% 5 ч · 7 дн 12%" in lines
+    assert "> Claude 5 ч завтра 00:00 · 7 дн 14.09" in lines
+    assert "Gemini · нет данных" in lines
+    assert "> Gemini: источник не подтверждён" in lines
+    assert "> Профили 1/1 · источники 3/3" in lines
+    assert "> Дрейф проверен 08:00" in lines
+
+
+def test_state_1_fits_one_phone_screen() -> None:
+    main = _main_part(_render(STATES[0]))
+
+    assert len(main) <= PHONE_LINES, main
+    assert max(len(line) for line in main) <= PHONE_COLUMNS, main
 
 
 def test_state_2_polling_dead_puts_the_incident_first() -> None:
     text = _render(STATES[1])
 
-    assert "🔴 Требует внимания" in text
-    assert "Gateway: работает · Telegram: ошибка" in text
+    assert text.startswith("🔴 Требует внимания · 09.09 21:00 UTC")
+    assert "Gateway ✓ · Telegram ошибка" in text.splitlines()
     assert text.index("Telegram не подключён") < text.index("## Лимиты")
 
 
@@ -73,14 +97,14 @@ def test_state_9_drift_is_visible_in_both_incident_and_block() -> None:
     text = _render(STATES[8])
 
     assert "Дрейф конфига: 3 из 474 ключей" in text
-    assert "⚠️ 3 из 474 ключей расходятся" in text
+    assert "Дрейф ⚠️ 3 из 474" in text.splitlines()
 
 
 def test_state_10_stale_source_lowers_coverage_and_names_it() -> None:
     text = _render(STATES[9])
 
     assert "⚪ Состояние неизвестно" in text
-    assert "Устарело: лимиты" in text
+    assert "Устарело: лимиты" in _main_part(text)  # an exception stays on the screen
 
 
 def test_state_11_stale_message_banner_is_first_line_even_when_data_is_fine() -> None:
@@ -108,13 +132,15 @@ def _utf16_units(text: str) -> int:
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
 def test_every_state_has_a_plain_form_without_markup_inside_the_telegram_limit(state) -> None:
-    """The plugin path delivers plain text (engine ``edit_message``, ``finalize=False``): Telegram
-    counts UTF-16 code units, emoji count twice, and a ``#`` would be shown literally."""
+    """The plugin's fallback delivers plain text (engine ``edit_message``, ``finalize=False``):
+    Telegram counts UTF-16 code units, emoji count twice, a ``#`` or a ``>`` marker would be
+    shown literally."""
     from telegram_dashboard.render import to_telegram_plain
 
     plain = to_telegram_plain(_render(state))
 
     assert "#" not in plain
     assert "<" not in plain
+    assert not any(line.startswith(">") for line in plain.splitlines())
     assert _utf16_units(plain) <= TELEGRAM_TEXT_LIMIT
-    assert plain.splitlines()[0].startswith(("HERMES DASHBOARD", "🔴", "🟡", "⚠️"))
+    assert plain.splitlines()[0].startswith(("🟢", "🟡", "🔴", "⚪", "⚠️"))

@@ -120,7 +120,7 @@ def test_a_legacy_plan_is_a_5h_window_and_a_weekly_window_with_their_own_resets(
 def test_a_new_plan_is_a_5h_window_and_a_monthly_window_the_code_share_is_not_a_window() -> None:
     windows = kimi.parse_usages(NEW_PLAN)
 
-    assert [w["label"] for w in windows] == ["5 ч", "месяц"]
+    assert [w["label"] for w in windows] == ["5 ч", "мес"]
     assert windows[1]["used_percent"] == pytest.approx(7.95)
     assert windows[1]["reset_at"] == RESET_MONTH
 
@@ -314,12 +314,13 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
 
     text = _render(capacity)
 
-    assert (
-        "- Kimi: 5 ч 12% (сброс 22.09 16:32) · неделя 40% (сброс 26.09 12:32) · данные 13:25"
-        in text
-    )
-    # A single window keeps the form the screen has had since the first pilot.
-    assert "- Grok: неделя 27% · сброс 24.09 19:25 UTC · данные 13:25" in text
+    # The most spent window gets the bar and its label; the other follows in words.
+    assert "Kimi ▓▓░░░ 40% неделя · 5 ч 12%" in text.splitlines()
+    assert "Grok ▓░░░░ 27%" in text.splitlines()
+    # Resets and stamps live in the details: a reset today is a time, a later one a date.
+    assert "> Kimi 5 ч 16:32 · неделя 26.09" in text.splitlines()
+    assert "> Grok 24.09" in text.splitlines()
+    assert "> Данные 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
 
 
 def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
@@ -328,12 +329,15 @@ def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
             QuotaMetric(
                 "Kimi",
                 "official",
-                windows=(QuotaWindow("5 ч", 12.0, None), QuotaWindow("месяц", 8.0, RESET_MONTH)),
+                windows=(QuotaWindow("5 ч", 12.0, None), QuotaWindow("мес", 8.0, RESET_MONTH)),
             ),
         )
     )
 
-    assert "- Kimi: 5 ч 12% · месяц 8% (сброс 22.10 00:00)" in _render(capacity)
+    text = _render(capacity)
+
+    assert "Kimi ▓░░░░ 12% 5 ч · мес 8%" in text.splitlines()
+    assert "> Kimi мес 22.10" in text.splitlines()  # only the window that has a reset
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -400,13 +404,12 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert (
-        "- Kimi: 5 ч 12% (сброс 22.09 16:32) · неделя 40% (сброс 26.09 12:32) · данные 13:40"
-        in text
-    )
+    assert "Kimi ▓▓░░░ 40% неделя · 5 ч 12%" in text.splitlines()
+    assert "> Kimi 5 ч 16:32 · неделя 26.09" in text.splitlines()
+    assert "Данные 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]
-    assert f"Охват источников: {len(seen)}/6" in text
+    assert f"источники {len(seen)}/6" in text
 
 
 def test_with_limits_off_kimi_is_off_too_and_says_why(tmp_path: Path) -> None:

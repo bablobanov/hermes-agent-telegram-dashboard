@@ -75,7 +75,9 @@ def test_render_survives_edge_reset_dates_and_keeps_other_fields() -> None:
 
     rendered = render_dashboard(snapshot, zone=MOSCOW)
 
-    assert "OpenAI: Остаток 25%" in rendered
-    assert "Reset: дата нечитаема" in rendered
-    assert "Claude: 5 ч 37% · сброс: дата нечитаема" in rendered
-    assert "Данные: время неизвестно" in rendered
+    lines = rendered.splitlines()
+    assert "OpenAI ▓▓▓▓░ 75%" in lines
+    assert "> OpenAI дата нечитаема" in lines
+    assert "Claude ▓▓░░░ 37%" in lines
+    assert "> Claude дата нечитаема" in lines
+    assert lines[0] == "🟢 Норма · время неизвестно"

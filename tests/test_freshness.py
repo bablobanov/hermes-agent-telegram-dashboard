@@ -58,10 +58,11 @@ def test_data_time_and_message_time_are_separate_lines() -> None:
     snapshot = DashboardSnapshot(overall="normal", observed_at=NOW.isoformat())
     rendered = render_dashboard(snapshot, now=NOW, delivery=_record(11), period_seconds=PERIOD)
 
-    assert rendered.startswith("🔴 ДАШБОРД УСТАРЕЛ")
-    assert "Данные: 21:00 UTC" in rendered
-    assert "Сообщение подтверждено: 20:49 UTC" in rendered
-    assert "Обновлено: 2026-09-09 21:00 UTC · период 5 мин" in rendered
+    lines = rendered.splitlines()
+    assert lines[0].startswith("🔴 ДАШБОРД УСТАРЕЛ")
+    assert lines[1] == "🟢 Норма · 09.09 21:00 UTC"  # the data stamp, with its date
+    assert "> Подтверждено 20:49" in lines
+    assert "> Период 5 мин" in lines
 
 
 def test_confirmation_dated_in_the_future_is_stale_not_confirmed() -> None:

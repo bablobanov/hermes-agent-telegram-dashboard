@@ -401,7 +401,7 @@ def _render(capacity: CapacitySummary, sources=()) -> str:
 def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     capacity = CapacitySummary(
         (
-            QuotaMetric("Claude", "unavailable", detail="у сервера нет учётного токена"),
+            QuotaMetric("Claude", "unavailable", detail="нет учётного токена"),
             QuotaMetric(
                 "Codex",
                 "official",
@@ -419,11 +419,18 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     )
 
     text = _render(capacity)
+    lines = text.splitlines()
 
-    assert "- Claude: нет данных (у сервера нет учётного токена)" in text
-    assert "- Codex: Session 14% · сброс 19.09 08:12 UTC · данные 13:38" in text
-    assert "- Grok: SuperGrok неделя 27% · сброс 17.09 19:25 UTC · данные 13:25" in text
-    assert "- Gemini: нет данных (источник не подтверждён)" in text
+    assert "Claude · нет данных" in lines
+    assert "Codex ▓░░░░ 14%" in lines
+    assert "Grok ▓░░░░ 27%" in lines
+    assert "Gemini · нет данных" in lines
+    # The details carry what the line does not: each number's own minute when it differs from
+    # the screen's, each reset, each reason.
+    assert "> Данные 13:40 · Codex 13:38 · Grok 13:25" in lines
+    assert "> Codex 19.09" in lines and "> Grok 17.09" in lines
+    assert "> Claude: нет учётного токена" in lines
+    assert "> Gemini: источник не подтверждён" in lines
 
 
 def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as_a_zero() -> None:
@@ -436,11 +443,12 @@ def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as
         )
     )
 
-    line = next(line for line in _render(capacity).splitlines() if "Grok:" in line)
+    lines = _render(capacity).splitlines()
+    line = next(line for line in lines if line.startswith("Grok"))
 
-    assert (
-        line == "- Grok: SuperGrok неделя: расход не начат · сброс 01.10 19:25 UTC · данные 13:25"
-    )
+    assert line == "Grok · расход не начат"  # words, no bar, no percent
+    assert "> Grok 01.10" in lines
+    assert "> Данные 13:40 · Grok 13:25" in lines
 
 
 def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> None:
@@ -454,7 +462,7 @@ def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> N
 
     capacity, _, _ = parse_limits_payload(payload, now=NOW)
 
-    assert capacity.quotas[0].detail == "у сервера нет учётного токена"
+    assert capacity.quotas[0].detail == "нет учётного токена"
     assert capacity.quotas[1].detail == "AuthError"
     assert [q.provider for q in capacity.quotas] == ["Claude", "Codex", "Gemini"]
 
@@ -548,11 +556,15 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     grok_quota = next(q for q in second.capacity.quotas if q.provider == "Grok")
     assert grok_quota.kind == "official" and grok_quota.fetched_at == NOW.isoformat()
     text = render_dashboard(second, now=NOW, zone=UTC, period_seconds=300)
-    assert "Grok: неделя 27% · сброс 17.09 19:25 UTC · данные 13:40" in text
-    assert "Claude: нет данных (у сервера нет учётного токена)" in text
+    lines = text.splitlines()
+    assert "Grok ▓░░░░ 27%" in lines
+    assert "> Grok 17.09" in lines
+    # Both cached numbers keep their own minute next to the screen's.
+    assert "> Данные 13:45 · Codex 13:40 · Grok 13:40" in lines
+    assert "Claude · нет данных" in lines and "> Claude: нет учётного токена" in lines
     seen = [s for s in second.sources if s.state in ("fresh", "stale")]
     assert "grok_quota" in [s.name for s in seen]
-    assert f"Охват источников: {len(seen)}/6" in text  # six sources, Grok counted
+    assert f"источники {len(seen)}/6" in text  # six sources, Grok counted
 
 
 def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
@@ -570,7 +582,8 @@ def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
     )
 
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "- Grok: неделя: расход не начат · сброс 01.10 19:25 UTC · данные 13:40" in text
+    assert "Grok · расход не начат" in text.splitlines()
+    assert "> Grok 01.10" in text.splitlines()
     assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "fresh"
     assert "creditUsagePercent" not in text
 

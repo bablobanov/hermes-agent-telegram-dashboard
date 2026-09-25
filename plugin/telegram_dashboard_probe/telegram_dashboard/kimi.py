@@ -48,7 +48,7 @@ TICK_TIMEOUT_SECONDS = 15.0
 WINDOWS: tuple[tuple[str, str], ...] = (
     ("limit_5h", "5 ч"),
     ("limit_7d", "неделя"),
-    ("limit_month_total", "месяц"),
+    ("limit_month_total", "мес"),
 )
 
 CredentialResolver = Callable[[], tuple[str, str]]

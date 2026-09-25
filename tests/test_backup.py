@@ -218,37 +218,39 @@ def _render(summary: BackupSummary | None, *, zone=UTC, now: datetime = NOW) -> 
 def test_the_line_carries_the_time_the_age_in_words_and_the_verdict() -> None:
     summary, _, _ = backup.summarize(_status(), now=NOW)
 
-    text = _render(summary)
+    lines = _render(summary).splitlines()
 
-    assert "Бэкап: 21.09 15:56 UTC · 6 ч назад · integrity ok" in text.splitlines()
+    # The verdict and the age on the screen; the absolute time and integrity in the details.
+    assert "Бэкап ✓ 6 ч назад" in lines
+    assert "> Бэкап 21.09 15:56 · integrity ok" in lines
 
 
 def test_the_line_is_in_the_reader_s_zone() -> None:
     summary, _, _ = backup.summarize(_status(), now=NOW)
 
-    text = _render(summary, zone=ZoneInfo("Asia/Tokyo"))
+    lines = _render(summary, zone=ZoneInfo("Asia/Tokyo")).splitlines()
 
-    assert "Бэкап: 22.09 00:56 JST · 6 ч назад · integrity ok" in text.splitlines()
+    assert "Бэкап ✓ 6 ч назад" in lines
+    assert "> Бэкап 22.09 00:56 · integrity ok" in lines  # the zone is on the first line
 
 
 def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
     old = NOW - timedelta(hours=30)
     summary, _, _ = backup.summarize(_status(finished_epoch=int(old.timestamp())), now=NOW)
 
-    text = _render(summary)
+    lines = _render(summary).splitlines()
 
-    assert "Бэкап: 20.09 15:56 UTC · 30 ч назад · integrity ok ⚠️ старше 26 ч" in text.splitlines()
+    assert "Бэкап ✓ 30 ч назад ⚠️ старше 26 ч" in lines
+    assert "> Бэкап 20.09 15:56 · integrity ok" in lines
 
 
 def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> None:
     summary, _, _ = backup.summarize(_failed(), now=NOW)
 
-    text = _render(summary)
+    lines = _render(summary).splitlines()
 
-    assert (
-        f"Бэкап: ⚠️ не состоялся 21.09 15:56 UTC · 6 ч назад · snapshot: {FAILED_REASON}"
-        in text.splitlines()
-    )
+    assert "Бэкап ⚠️ не состоялся 6 ч назад" in lines
+    assert f"> Бэкап 21.09 15:56 · snapshot: {FAILED_REASON}" in lines
 
 
 def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None:
@@ -257,10 +259,13 @@ def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None
     )
     unconfigured, _, _ = backup.collect_backup(Environment(hermes_home=tmp_path), now=NOW)
 
-    assert "Бэкап: нет данных (файл статуса отсутствует)" in _render(missing).splitlines()
-    assert (
-        "Бэкап: не наблюдается (источник бэкапа не настроен)" in _render(unconfigured).splitlines()
-    )
+    missing_lines = _render(missing).splitlines()
+    unconfigured_lines = _render(unconfigured).splitlines()
+
+    assert "Бэкап: нет данных" in missing_lines
+    assert "> Бэкап: файл статуса отсутствует" in missing_lines
+    assert "Бэкап: не наблюдается" in unconfigured_lines
+    assert "> Бэкап: источник бэкапа не настроен" in unconfigured_lines
 
 
 def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
@@ -279,8 +284,8 @@ def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
 
     lines = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300).splitlines()
 
-    gateway = next(i for i, line in enumerate(lines) if line.startswith("Gateway:"))
-    assert lines[gateway + 1].startswith("Бэкап: ")
+    gateway = next(i for i, line in enumerate(lines) if line.startswith("Gateway "))
+    assert lines[gateway + 1].startswith("Бэкап ")
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -302,7 +307,8 @@ def test_the_tick_reads_the_status_file_and_counts_the_source(tmp_path: Path) ->
     source = next(s for s in snapshot.sources if s.name == "backup")
     assert source.state == "fresh"
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Бэкап: 21.09 15:56 UTC · 6 ч назад · integrity ok" in text.splitlines()
+    assert "Бэкап ✓ 6 ч назад" in text.splitlines()
+    assert "> Бэкап 21.09 15:56 · integrity ok" in text.splitlines()
     assert "бэкап" not in text.split("Не наблюдается:")[-1].split("\n")[0]
 
 
