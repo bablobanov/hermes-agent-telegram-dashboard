@@ -183,8 +183,8 @@ def fetch_item(
     except ValueError as exc:  # ShapeError and a body that is not JSON
         item["reason"] = f"answer shape: {_public(exc) or 'not JSON'}"
         return item
-    # The plan name rides on the item, not on the window label: the line names every window
-    # (``7d:27%(5d)``), and a plan in it would cost a phone line its width.
+    # The plan name rides on the item, not on the window label: a plan is not a window, and
+    # the screen has no place for it yet.
     tier = _tier(headers, get)
     if tier:
         item["plan"] = tier

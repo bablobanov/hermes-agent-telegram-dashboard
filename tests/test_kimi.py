@@ -315,9 +315,9 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
     text = _render(capacity)
 
     # Every window in the provider's order, the more spent one included, each with the time to
-    # its own reset: minutes under a day, whole days from two days on.
-    assert "Kimi 5h:12%(2h53m) · 7d:40%(3d)" in text.splitlines()
-    assert "Grok 7d:27%(2d)" in text.splitlines()
+    # its own reset (minutes under a day, whole days from two days on) and no length label.
+    assert "Kimi 12% (2h53m) · 40% (3d)" in text.splitlines()
+    assert "Grok 27% (2d)" in text.splitlines()
     assert "## Resets" not in text
     assert "> Data 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
 
@@ -336,7 +336,7 @@ def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
     text = _render(capacity)
 
     # Only the window that has a reset carries a countdown.
-    assert "Kimi 5h:12% · month:8%(29d)" in text.splitlines()
+    assert "Kimi 12% · 8% (29d)" in text.splitlines()
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -403,7 +403,7 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Kimi 5h:12%(2h53m) · 7d:40%(3d)" in text.splitlines()
+    assert "Kimi 12% (2h53m) · 40% (3d)" in text.splitlines()
     assert "Data 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]

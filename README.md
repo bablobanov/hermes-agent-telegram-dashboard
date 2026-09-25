@@ -41,9 +41,9 @@ Drift ✓ 0 of 481                    keys that differ from the approved baselin
 
 Limits used
 Claude · no data                    a line without a number never shows a zero
-⚠️ Codex 5h:98%(1h21m)              the spent share, the time to the reset; the mark from 90%
+⚠️ Codex 98% (1h21m)                the spent share, the time to the reset; the mark from 90%
 Grok · usage not started            a state in words is never turned into a number
-Kimi 5h:0%(4h13m) · month:3%(29d)   every window, in the provider's own order
+Kimi 0% (4h13m) · 3% (29d)          every window, in the provider's own order
 Gemini · no data
 
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
@@ -248,15 +248,17 @@ undocumented surfaces (`api/oauth/usage`, the ChatGPT backend), and so does the 
 A documented surface would be preferable; an undocumented provider number is still the
 provider's number, and a local count is not.
 
-An official line is one line: `⚠️ Codex 5h:98%(1h21m)`. Every window the provider reports is on
-it, in the provider's own order, as `label:N%(time to reset)`: the spent share (every percent on
-the screen is spent, never remaining, from every source; the heading says `Limits used`) and the
+An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
+it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
+screen is spent, never remaining, from every source; the heading says `Limits used`) and the
 time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
 days from two days on (`4d`), `(?)` when the reset date cannot be read. The mark comes from 90%
-spent in any window. The engine names its windows in words (Codex `Session`/`Weekly`, Claude
-`Current session`/`Current week`); they become `5h` and `7d`, the labels Grok and Kimi carry
-too, and Kimi's monthly window is `month` (`Kimi 5h:0%(4h13m) · month:3%(29d)`). A state the
-provider reports in words is never turned into a number or a zero (`Grok · usage not started`).
+spent in any window. A window carries no length label: the share and its reset are what the
+reader acts on, the owner of the account knows the plan, and a length the source does not state
+would be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on
+some plans the first one is the week). A limit for one model keeps its scope
+(`Claude 37% (3h) · 12% (4d) · Opus 5% (4d)`). A state the provider reports in words is never
+turned into a number or a zero (`Grok · usage not started`).
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
@@ -295,7 +297,7 @@ credential inference uses, and the request carries the client header the engine 
 host. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
 `managed-usage.ts`): `usages.limit_5h`, `usages.limit_7d` (legacy plans), `usages.limit_month_total`
 (new plans), each with `used_ratio` in 0..1 and a `reset_time`; every window is on the line with
-its own reset (`Kimi 5h:12%(2h53m) · 7d:40%(3d)`). Same policy and cache as Grok; the request
+its own reset (`Kimi 12% (2h53m) · 40% (3d)`). Same policy and cache as Grok; the request
 never goes through the credential pool's rotation, so a failed request cannot mark the pool
 exhausted. Not in Kimi's docs; a changed shape is named, not guessed. Kimi is its own source on
 the coverage line (`Kimi quota`).

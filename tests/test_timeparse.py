@@ -125,6 +125,6 @@ def test_render_survives_edge_reset_dates_and_keeps_other_fields() -> None:
     lines = rendered.splitlines()
     # Neither reset can be counted (the data time itself is unreadable): a question mark, and
     # the numbers stay.
-    assert "OpenAI 75%(?)" in lines
-    assert "Claude 5h:37%(?)" in lines
+    assert "OpenAI 75% (?)" in lines
+    assert "Claude 37% (?)" in lines
     assert lines[0] == "🟢 Healthy · time unknown"

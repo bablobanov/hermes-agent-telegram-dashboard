@@ -425,9 +425,9 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     lines = text.splitlines()
 
     assert "Claude · no data" in lines
-    # The engine's ``Session`` is the five-hour window; every reset rides on its own window.
-    assert "Codex 5h:14%(2h32m)" in lines
-    assert "Grok 7d:27%(5d)" in lines
+    # No length label, the engine's ``Session`` included; every reset rides on its own window.
+    assert "Codex 14% (2h32m)" in lines
+    assert "Grok 27% (5d)" in lines
     assert "Gemini · no data" in lines
     # The details carry what the line does not: each number's own minute when it differs from
     # the screen's, each reason.
@@ -561,7 +561,7 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     assert grok_quota.kind == "official" and grok_quota.fetched_at == NOW.isoformat()
     text = render_dashboard(second, now=NOW, zone=UTC, period_seconds=300)
     lines = text.splitlines()
-    assert "Grok 7d:27%(5d)" in lines
+    assert "Grok 27% (5d)" in lines
     # Both cached numbers keep their own minute next to the screen's.
     assert "> Data 13:45 · Codex 13:40 · Grok 13:40" in lines
     assert "Claude · no data" in lines and "> Claude: no account token" in lines

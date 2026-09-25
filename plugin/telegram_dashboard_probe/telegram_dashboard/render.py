@@ -53,18 +53,12 @@ WARN_MARK = "⚠️"
 # number after it. Every percent on the screen is the spent share; the heading says so.
 LIMITS_HEADING = "Limits used"
 _MINUTES_PER_DAY = 1440
-# The engine's usage facade names its windows in words (``agent/account_usage.py``, 0.21.1 and
-# 0.21.3: Codex ``Session``/``Weekly``, Claude ``Current session``/``Current week``); the line
-# names every window, so the words become the short labels the other providers already carry.
-# A label not listed here is shown as the source gave it.
-_WINDOW_LABELS = {
-    "Session": "5h",
-    "Current session": "5h",
-    "Weekly": "7d",
-    "Current week": "7d",
-    "Opus week": "Opus 7d",
-    "Sonnet week": "Sonnet 7d",
-}
+# Windows carry no length label (decision of 25.09): the spent share and the time to its reset
+# answer what the reader acts on, the owner of the account knows the plan, and a length the
+# source does not state becomes a lie (the engine calls Codex's first window ``Session`` whatever
+# its ``limit_window_seconds``; ``agent/account_usage.py``, 0.21.1 and 0.21.3). A label that
+# narrows the scope stays: a limit for one model is not the account's limit.
+_SCOPE_LABELS = {"Opus week": "Opus", "Sonnet week": "Sonnet"}
 # A limit this far spent gets the warning mark on its line (decision of 25.09). Only the line:
 # the overall status and the incidents come from the collectors, not from this number.
 QUOTA_WARN_PERCENT = 90
@@ -358,29 +352,23 @@ def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Detail
 def _windows_line(
     provider: str, windows: tuple[QuotaWindow, ...], reference: datetime | None
 ) -> str:
-    """``Claude 5h:37%(3h) · 7d:12%(4d)``: every window in the provider's own order, each with
-    the time to its reset. A single window without a number says its state in words."""
+    """``Claude 37% (3h) · 12% (4d)``: every window in the provider's own order, each with the
+    time to its reset. A line without a number says the provider's states in words."""
     numbered = [window.used_percent for window in windows if window.used_percent is not None]
-    if not numbered and len(windows) == 1:
-        return f"{provider} · {_window_words(windows[0], reference, with_label=False)}"
     words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
         return f"{provider} · {words}"
     return f"{_warn(max(numbered))}{provider} {words}"
 
 
-def _window_words(
-    window: QuotaWindow, reference: datetime | None, *, with_label: bool = True
-) -> str:
-    """``label:N%(reset)``; the provider's state in words when it gave no number; ``?``
-    otherwise. A state in words never becomes a number."""
-    label = _WINDOW_LABELS.get(window.label, window.label)
+def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
+    """``37% (3h)``, ``Opus 5% (4d)``; the provider's state in words when it gave no number;
+    ``?`` otherwise. A state in words never becomes a number."""
+    scope = _SCOPE_LABELS.get(window.label)
+    head = f"{scope} " if scope else ""
     if window.used_percent is not None:
-        suffix = _reset_suffix(window.reset_at, reference)
-        return f"{label}:{window.used_percent:.0f}%{suffix}"
-    if window.note:
-        return f"{label}: {window.note}" if with_label else window.note
-    return f"{label}:?"
+        return f"{head}{window.used_percent:.0f}%{_reset_suffix(window.reset_at, reference)}"
+    return f"{head}{window.note or '?'}"
 
 
 def _warn(percent: float) -> str:
@@ -389,11 +377,11 @@ def _warn(percent: float) -> str:
 
 
 def _reset_suffix(value: object, reference: datetime | None) -> str:
-    """``(3h)``: the time to the reset; ``(?)`` when it cannot be counted; nothing without a
+    """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
     reset date at all."""
     if not value:
         return ""
-    return f"({_until(value, reference) or '?'})"
+    return f" ({_until(value, reference) or '?'})"
 
 
 def _until(value: object, reference: datetime | None) -> str | None:

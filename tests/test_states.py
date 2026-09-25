@@ -60,9 +60,9 @@ def test_state_1_all_normal_is_green_and_names_coverage() -> None:
     assert lines[0] == "🟢 Healthy · Sep 9 21:00 UTC"
     assert "Gateway ✓ · Telegram ✓" in lines
     assert "Drift ✓ 0 of 474" in lines
-    # Two windows in the provider's order, each with its label and the time to its own reset:
-    # one countdown after two numbers would say nothing.
-    assert "Claude 5h:37%(3h) · 7d:12%(4d)" in lines
+    # Two windows in the provider's order, each with the time to its own reset: one countdown
+    # after two numbers would say nothing.
+    assert "Claude 37% (3h) · 12% (4d)" in lines
     assert "Gemini · no data" in lines
     assert "> Gemini: source not confirmed" in lines
     assert "> Profiles 1/1 · sources 3/3" in lines
@@ -78,8 +78,8 @@ def test_state_1_is_this_exact_screen() -> None:
         "Drift ✓ 0 of 474",
         "",
         "## Limits used",
-        "Claude 5h:37%(3h) · 7d:12%(4d)",
-        "Codex 5h:61%(2h30m)",
+        "Claude 37% (3h) · 12% (4d)",
+        "Codex 61% (2h30m)",
         "Gemini · no data",
         "Grok · no data",
         "",
