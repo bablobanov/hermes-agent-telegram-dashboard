@@ -2,8 +2,8 @@
 the one-attempt-per-interval cache, and what the screen says for every way it can go wrong.
 
 Three things are pinned here that a green screen alone would not prove: a cached number is never
-older than the interval, a failed attempt is "нет данных" with its reason and is not retried
-before the interval, and the line carries its own stamp instead of borrowing "Обновлено".
+older than the interval, a failed attempt is "no data" with its reason and is not retried
+before the interval, and the line carries its own stamp instead of borrowing "Updated".
 """
 
 from __future__ import annotations
@@ -85,21 +85,21 @@ def _token() -> str:
 def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date() -> None:
     window = grok.parse_weekly(BILLING, now=NOW)
 
-    assert window == {"label": "неделя", "used_percent": 27.0, "reset_at": END}
+    assert window == {"label": "week", "used_percent": 27.0, "reset_at": END}
     assert grok.parse_tier(SETTINGS) == "SuperGrok"
 
 
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [
-        ({}, "ответ без config"),
+        ({}, "answer without config"),
         (
             {"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_MONTHLY"}}},
-            "период не недельный",
+            "period not weekly",
         ),
         (
             {"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY"}}},
-            "нет creditUsagePercent",
+            "no creditUsagePercent",
         ),
         (
             {
@@ -108,7 +108,7 @@ def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date()
                     "creditUsagePercent": True,
                 }
             },
-            "не число",
+            "not a number",
         ),
         (
             {
@@ -117,7 +117,7 @@ def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date()
                     "creditUsagePercent": 140,
                 }
             },
-            "вне 0..100",
+            "outside 0..100",
         ),
         (
             {
@@ -126,7 +126,7 @@ def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date()
                     "creditUsagePercent": 5,
                 }
             },
-            "дата сброса нечитаема",
+            "reset date unreadable",
         ),
     ],
 )
@@ -164,9 +164,9 @@ AFTER_RESET_CONFIG: dict[str, Any] = {
 }
 AFTER_RESET = {"config": AFTER_RESET_CONFIG}
 NOT_STARTED_WINDOW = {
-    "label": "неделя",
+    "label": "week",
     "used_percent": None,
-    "note": "расход не начат",
+    "note": "usage not started",
     "reset_at": NEXT_END,
 }
 
@@ -185,14 +185,14 @@ def test_right_after_the_weekly_reset_the_pool_says_it_has_not_started_in_words_
     ("payload", "now", "reason"),
     [
         # The key is there but empty: a changed shape, not the counter that is not created yet.
-        (_after_reset(creditUsagePercent=None), AFTER_RESET_AT, "не число"),
+        (_after_reset(creditUsagePercent=None), AFTER_RESET_AT, "not a number"),
         # The period is not the current one: the answer is stale or early, not a fresh week.
-        (AFTER_RESET, AFTER_RESET_AT + timedelta(days=7), "нет creditUsagePercent"),
-        (AFTER_RESET, AFTER_RESET_AT - timedelta(days=1), "нет creditUsagePercent"),
+        (AFTER_RESET, AFTER_RESET_AT + timedelta(days=7), "no creditUsagePercent"),
+        (AFTER_RESET, AFTER_RESET_AT - timedelta(days=1), "no creditUsagePercent"),
         # Something was spent: the percent must be there.
-        (_after_reset(onDemandUsed={"val": 3}), AFTER_RESET_AT, "нет creditUsagePercent"),
-        (_after_reset(onDemandUsed={"val": False}), AFTER_RESET_AT, "нет creditUsagePercent"),
-        (_after_reset(onDemandUsed=None), AFTER_RESET_AT, "нет creditUsagePercent"),
+        (_after_reset(onDemandUsed={"val": 3}), AFTER_RESET_AT, "no creditUsagePercent"),
+        (_after_reset(onDemandUsed={"val": False}), AFTER_RESET_AT, "no creditUsagePercent"),
+        (_after_reset(onDemandUsed=None), AFTER_RESET_AT, "no creditUsagePercent"),
         # Without a readable start the period cannot be shown to be the current one.
         (
             _after_reset(
@@ -200,7 +200,7 @@ def test_right_after_the_weekly_reset_the_pool_says_it_has_not_started_in_words_
                 billingPeriodStart="soon",
             ),
             AFTER_RESET_AT,
-            "нет creditUsagePercent",
+            "no creditUsagePercent",
         ),
     ],
 )
@@ -220,7 +220,7 @@ def test_one_attempt_reads_the_pool_with_the_cli_client_header_and_never_logs_th
     item = grok.fetch_item(now=NOW, resolve=_token, get=http)
 
     assert item["status"] == "available" and item["fetched_at"] == NOW.isoformat()
-    assert item["windows"] == [{"label": "SuperGrok неделя", "used_percent": 27.0, "reset_at": END}]
+    assert item["windows"] == [{"label": "SuperGrok week", "used_percent": 27.0, "reset_at": END}]
     assert [url for url, _ in http.calls] == [grok.BILLING_URL, grok.SETTINGS_URL]
     headers = http.calls[0][1]
     assert headers["x-xai-token-auth"] == "xai-grok-cli"
@@ -234,23 +234,23 @@ def test_a_week_not_started_is_an_answer_with_its_reset_date_and_the_plan_name()
     item = grok.fetch_item(now=AFTER_RESET_AT, resolve=_token, get=http)
 
     assert item["status"] == "available" and item["fetched_at"] == AFTER_RESET_AT.isoformat()
-    assert item["windows"] == [{**NOT_STARTED_WINDOW, "label": "SuperGrok неделя"}]
+    assert item["windows"] == [{**NOT_STARTED_WINDOW, "label": "SuperGrok week"}]
 
 
 def test_the_tier_is_optional_and_its_absence_never_costs_the_number() -> None:
     item = grok.fetch_item(now=NOW, resolve=_token, get=_http(SETTINGS_URL=(503, "")))
 
     assert item["status"] == "available"
-    assert item["windows"][0]["label"] == "неделя"
+    assert item["windows"][0]["label"] == "week"
 
 
 @pytest.mark.parametrize(
     ("http", "reason"),
     [
         (_http(BILLING_URL=(401, '{"error": "expired"}')), "HTTP 401"),
-        (_http(BILLING_URL=(200, "<html>")), "форма ответа"),
-        (_http(BILLING_URL=(200, json.dumps({"config": {}}))), "период не недельный"),
-        (_http(BILLING_URL=TimeoutError("read timed out")), "запрос не прошёл"),
+        (_http(BILLING_URL=(200, "<html>")), "answer shape"),
+        (_http(BILLING_URL=(200, json.dumps({"config": {}}))), "period not weekly"),
+        (_http(BILLING_URL=TimeoutError("read timed out")), "request failed"),
     ],
 )
 def test_every_failed_attempt_is_no_data_with_its_reason(http: FakeHttp, reason: str) -> None:
@@ -268,11 +268,11 @@ def test_a_token_that_cannot_be_resolved_is_named_without_the_engine_s_text_leak
         raise LookupError("No xAI OAuth credentials stored in /var/lib/x/auth.json")
 
     assert (
-        "резолвер xAI недоступен"
+        "xAI resolver not available"
         in grok.fetch_item(now=NOW, resolve=no_engine, get=_http())["reason"]
     )
     reason = grok.fetch_item(now=NOW, resolve=no_grant, get=_http())["reason"]
-    assert reason.startswith("токен xAI:") and "/var/lib" not in reason
+    assert reason.startswith("xAI token:") and "/var/lib" not in reason
 
 
 # ----------------------------------------------------------------------------- cache policy
@@ -297,7 +297,7 @@ AVAILABLE = {
     "reason": None,
     "source": grok.SOURCE,
     "fetched_at": None,
-    "windows": [{"label": "неделя", "used_percent": 27.0, "reset_at": END}],
+    "windows": [{"label": "week", "used_percent": 27.0, "reset_at": END}],
 }
 FAILED = {**AVAILABLE, "status": "unavailable", "reason": "HTTP 503", "windows": []}
 
@@ -340,7 +340,7 @@ def test_a_cached_number_older_than_the_interval_is_not_a_number() -> None:
     item = grok.tick(cache, now=NOW + timedelta(minutes=1), interval_seconds=900, fetch=fetch)
 
     assert fetch.calls == 0
-    assert item["status"] == "unavailable" and item["reason"] == "число в кэше устарело"
+    assert item["status"] == "unavailable" and item["reason"] == "cached number too old"
     assert item["windows"] == []
 
 
@@ -375,7 +375,7 @@ def test_a_week_not_started_is_a_fresh_source_and_its_words_survive_the_cache() 
     json.loads(json.dumps(cache))  # the state file keeps the cache as JSON
 
     assert metric.kind == "official"
-    assert metric.windows == (QuotaWindow("неделя", None, NEXT_END, note="расход не начат"),)
+    assert metric.windows == (QuotaWindow("week", None, NEXT_END, note="usage not started"),)
     assert source.state == "fresh"
 
 
@@ -401,7 +401,7 @@ def _render(capacity: CapacitySummary, sources=()) -> str:
 def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     capacity = CapacitySummary(
         (
-            QuotaMetric("Claude", "unavailable", detail="нет учётного токена"),
+            QuotaMetric("Claude", "unavailable", detail="no account token"),
             QuotaMetric(
                 "Codex",
                 "official",
@@ -411,10 +411,10 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
             QuotaMetric(
                 "Grok",
                 "official",
-                windows=(QuotaWindow("SuperGrok неделя", 27.0, END),),
+                windows=(QuotaWindow("SuperGrok week", 27.0, END),),
                 fetched_at="2026-09-12T13:25:00+00:00",
             ),
-            QuotaMetric("Gemini", "unsupported", detail="источник не подтверждён"),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
         )
     )
 
@@ -429,12 +429,12 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     # the screen's, each reset, each reason.
     assert "> Данные 13:40 · Codex 13:38 · Grok 13:25" in lines
     assert "> Codex 19.09" in lines and "> Grok 17.09" in lines
-    assert "> Claude: нет учётного токена" in lines
-    assert "> Gemini: источник не подтверждён" in lines
+    assert "> Claude: no account token" in lines
+    assert "> Gemini: source not confirmed" in lines
 
 
 def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as_a_zero() -> None:
-    window = QuotaWindow("SuperGrok неделя", None, NEXT_END, note="расход не начат")
+    window = QuotaWindow("SuperGrok week", None, NEXT_END, note="usage not started")
     capacity = CapacitySummary(
         (
             QuotaMetric(
@@ -446,7 +446,7 @@ def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as
     lines = _render(capacity).splitlines()
     line = next(line for line in lines if line.startswith("Grok"))
 
-    assert line == "Grok · расход не начат"  # words, no bar, no percent
+    assert line == "Grok · usage not started"  # words, no bar, no percent
     assert "> Grok 01.10" in lines
     assert "> Данные 13:40 · Grok 13:25" in lines
 
@@ -472,7 +472,7 @@ def test_grok_sits_after_the_facade_providers_and_before_the_unconfirmed_ones() 
         (
             QuotaMetric("Claude", "unavailable", detail="x"),
             QuotaMetric("Codex", "unavailable", detail="x"),
-            QuotaMetric("Gemini", "unsupported", detail="источник не подтверждён"),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
         )
     )
 
@@ -582,7 +582,7 @@ def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
     )
 
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Grok · расход не начат" in text.splitlines()
+    assert "Grok · usage not started" in text.splitlines()
     assert "> Grok 01.10" in text.splitlines()
     assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "fresh"
     assert "creditUsagePercent" not in text

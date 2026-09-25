@@ -112,15 +112,15 @@ def test_the_usages_url_is_derived_from_the_engine_s_base_url_not_a_second_host(
 
 def test_a_legacy_plan_is_a_5h_window_and_a_weekly_window_with_their_own_resets() -> None:
     assert kimi.parse_usages(LEGACY) == [
-        {"label": "5 ч", "used_percent": 12.0, "reset_at": RESET_5H},
-        {"label": "неделя", "used_percent": 40.0, "reset_at": RESET_7D},
+        {"label": "5h", "used_percent": 12.0, "reset_at": RESET_5H},
+        {"label": "week", "used_percent": 40.0, "reset_at": RESET_7D},
     ]
 
 
 def test_a_new_plan_is_a_5h_window_and_a_monthly_window_the_code_share_is_not_a_window() -> None:
     windows = kimi.parse_usages(NEW_PLAN)
 
-    assert [w["label"] for w in windows] == ["5 ч", "мес"]
+    assert [w["label"] for w in windows] == ["5h", "month"]
     assert windows[1]["used_percent"] == pytest.approx(7.95)
     assert windows[1]["reset_at"] == RESET_MONTH
 
@@ -128,23 +128,23 @@ def test_a_new_plan_is_a_5h_window_and_a_monthly_window_the_code_share_is_not_a_
 def test_a_window_without_a_reset_keeps_its_number() -> None:
     windows = kimi.parse_usages({"usages": {"limit_5h": {"used_ratio": 0.5}}})
 
-    assert windows == [{"label": "5 ч", "used_percent": 50.0, "reset_at": None}]
+    assert windows == [{"label": "5h", "used_percent": 50.0, "reset_at": None}]
 
 
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [
-        ({}, "ответ без usages"),
-        ({"usages": []}, "ответ без usages"),
-        ({"usages": {}}, "usages без известных окон"),
-        ({"usages": {"limit_9y": {"used_ratio": 0.1}}}, "usages без известных окон"),
-        ({"usages": {"limit_5h": "12%"}}, "limit_5h не объект"),
-        ({"usages": {"limit_5h": {"reset_time": RESET_5H}}}, "limit_5h.used_ratio не число"),
-        ({"usages": {"limit_5h": {"used_ratio": True}}}, "limit_5h.used_ratio не число"),
-        ({"usages": {"limit_5h": {"used_ratio": 12}}}, "limit_5h.used_ratio вне 0..1"),
+        ({}, "answer without usages"),
+        ({"usages": []}, "answer without usages"),
+        ({"usages": {}}, "usages without known windows"),
+        ({"usages": {"limit_9y": {"used_ratio": 0.1}}}, "usages without known windows"),
+        ({"usages": {"limit_5h": "12%"}}, "limit_5h not an object"),
+        ({"usages": {"limit_5h": {"reset_time": RESET_5H}}}, "limit_5h.used_ratio not a number"),
+        ({"usages": {"limit_5h": {"used_ratio": True}}}, "limit_5h.used_ratio not a number"),
+        ({"usages": {"limit_5h": {"used_ratio": 12}}}, "limit_5h.used_ratio outside 0..1"),
         (
             {"usages": {"limit_5h": {"used_ratio": 0.1, "reset_time": "soon"}}},
-            "limit_5h.reset_time нечитаем",
+            "limit_5h.reset_time unreadable",
         ),
     ],
 )
@@ -165,7 +165,7 @@ def test_one_attempt_sends_the_engine_s_client_header_with_the_bearer_key_and_ne
 
     assert item["status"] == "available" and item["fetched_at"] == NOW.isoformat()
     assert item["source"] == kimi.SOURCE and item["provider"] == "kimi"
-    assert [w["label"] for w in item["windows"]] == ["5 ч", "неделя"]
+    assert [w["label"] for w in item["windows"]] == ["5h", "week"]
     assert [url for url, _ in http.calls] == [USAGES_URL]
     headers = http.calls[0][1]
     assert headers["Authorization"] == f"Bearer {_creds()[0]}"
@@ -178,9 +178,9 @@ def test_one_attempt_sends_the_engine_s_client_header_with_the_bearer_key_and_ne
     [
         (_http((401, '{"error": "unauthorized"}')), "HTTP 401"),
         (_http((403, "")), "HTTP 403"),
-        (_http((200, "<html>")), "форма ответа"),
-        (_http((200, json.dumps({"usages": {}}))), "usages без известных окон"),
-        (_http(TimeoutError("read timed out")), "запрос не прошёл"),
+        (_http((200, "<html>")), "answer shape"),
+        (_http((200, json.dumps({"usages": {}}))), "usages without known windows"),
+        (_http(TimeoutError("read timed out")), "request failed"),
     ],
 )
 def test_every_failed_attempt_is_no_data_with_its_reason(http: FakeHttp, reason: str) -> None:
@@ -199,11 +199,11 @@ def test_a_key_that_cannot_be_resolved_is_named_without_the_engine_s_text_leakin
 
     http = _http()
     assert (
-        "резолвер Kimi недоступен"
+        "Kimi resolver not available"
         in kimi.fetch_item(now=NOW, resolve=no_engine, get=http)["reason"]
     )
     reason = kimi.fetch_item(now=NOW, resolve=no_key, get=http)["reason"]
-    assert reason.startswith("ключ Kimi:") and "/var/lib" not in reason
+    assert reason.startswith("Kimi key:") and "/var/lib" not in reason
     assert http.calls == []
 
 
@@ -230,8 +230,8 @@ AVAILABLE = {
     "source": kimi.SOURCE,
     "fetched_at": None,
     "windows": [
-        {"label": "5 ч", "used_percent": 12.0, "reset_at": RESET_5H},
-        {"label": "неделя", "used_percent": 40.0, "reset_at": RESET_7D},
+        {"label": "5h", "used_percent": 12.0, "reset_at": RESET_5H},
+        {"label": "week", "used_percent": 40.0, "reset_at": RESET_7D},
     ],
 }
 FAILED = {**AVAILABLE, "status": "unavailable", "reason": "HTTP 503", "windows": []}
@@ -262,7 +262,7 @@ def test_kimi_sits_after_grok_and_before_the_unconfirmed_providers() -> None:
         (
             QuotaMetric("Claude", "unavailable", detail="x"),
             QuotaMetric("Codex", "unavailable", detail="x"),
-            QuotaMetric("Gemini", "unsupported", detail="источник не подтверждён"),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
         )
     )
 
@@ -300,13 +300,13 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
             QuotaMetric(
                 "Kimi",
                 "official",
-                windows=(QuotaWindow("5 ч", 12.0, RESET_5H), QuotaWindow("неделя", 40.0, RESET_7D)),
+                windows=(QuotaWindow("5h", 12.0, RESET_5H), QuotaWindow("week", 40.0, RESET_7D)),
                 fetched_at="2026-09-22T13:25:00+00:00",
             ),
             QuotaMetric(
                 "Grok",
                 "official",
-                windows=(QuotaWindow("неделя", 27.0, "2026-09-24T19:25:30+00:00"),),
+                windows=(QuotaWindow("week", 27.0, "2026-09-24T19:25:30+00:00"),),
                 fetched_at="2026-09-22T13:25:00+00:00",
             ),
         )
@@ -315,10 +315,10 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
     text = _render(capacity)
 
     # The most spent window gets the bar and its label; the other follows in words.
-    assert "Kimi ▓▓░░░ 40% неделя · 5 ч 12%" in text.splitlines()
+    assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
     assert "Grok ▓░░░░ 27%" in text.splitlines()
     # Resets and stamps live in the details: a reset today is a time, a later one a date.
-    assert "> Kimi 5 ч 16:32 · неделя 26.09" in text.splitlines()
+    assert "> Kimi 5h 16:32 · week 26.09" in text.splitlines()
     assert "> Grok 24.09" in text.splitlines()
     assert "> Данные 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
 
@@ -329,15 +329,15 @@ def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
             QuotaMetric(
                 "Kimi",
                 "official",
-                windows=(QuotaWindow("5 ч", 12.0, None), QuotaWindow("мес", 8.0, RESET_MONTH)),
+                windows=(QuotaWindow("5h", 12.0, None), QuotaWindow("month", 8.0, RESET_MONTH)),
             ),
         )
     )
 
     text = _render(capacity)
 
-    assert "Kimi ▓░░░░ 12% 5 ч · мес 8%" in text.splitlines()
-    assert "> Kimi мес 22.10" in text.splitlines()  # only the window that has a reset
+    assert "Kimi ▓░░░░ 12% 5h · month 8%" in text.splitlines()
+    assert "> Kimi month 22.10" in text.splitlines()  # only the window that has a reset
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -404,8 +404,8 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Kimi ▓▓░░░ 40% неделя · 5 ч 12%" in text.splitlines()
-    assert "> Kimi 5 ч 16:32 · неделя 26.09" in text.splitlines()
+    assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
+    assert "> Kimi 5h 16:32 · week 26.09" in text.splitlines()
     assert "Данные 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]

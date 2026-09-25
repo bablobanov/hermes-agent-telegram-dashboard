@@ -2,7 +2,7 @@
 
 Shared by every provider the dashboard reads on its own cadence (Grok, Kimi). The policy is the
 same for all of them: one attempt per ``interval_seconds``, success or failure; a failed attempt
-is "нет данных" with its reason until the next attempt; a number is never shown when it is older
+is "no data" with its reason until the next attempt; a number is never shown when it is older
 than the interval allows. The cache belongs to the caller (the plugin keeps one per provider in
 its record), so the interval survives a restart and the state file shows when the provider was
 last asked.
@@ -38,7 +38,7 @@ def tick(
 
 
 def not_older_than(item: dict[str, Any], *, now: datetime, limit_seconds: float) -> dict[str, Any]:
-    """``item`` as is while its number is young enough; otherwise "нет данных" with the reason.
+    """``item`` as is while its number is young enough; otherwise "no data" with the reason.
 
     The guard behind the policy: whatever put an old number into the cache (a clock jump, a
     hand-edited state file), the screen does not show it under a fresh stamp."""
@@ -47,5 +47,5 @@ def not_older_than(item: dict[str, Any], *, now: datetime, limit_seconds: float)
     fetched = parse_timestamp(item.get("fetched_at"))
     age = age_seconds(fetched, now) if fetched is not None else None
     if age is None or age < 0 or age > limit_seconds:
-        return {**item, "status": "unavailable", "reason": "число в кэше устарело", "windows": []}
+        return {**item, "status": "unavailable", "reason": "cached number too old", "windows": []}
     return item

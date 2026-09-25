@@ -6,7 +6,7 @@ token the engine already holds, through the engine's own resolver, so the screen
 of exactly the grant inference uses. Probed on the installation on 2026-09-12: the host the engine
 talks to for inference (``api.x.ai``) answers 404 here; the CLI proxy host is required.
 
-Policy: one attempt per ``interval_seconds``, success or failure. A failure is "нет данных" with
+Policy: one attempt per ``interval_seconds``, success or failure. A failure is "no data" with
 its reason until the next attempt; a number is never shown when it is older than the interval
 allows, and the line carries its own stamp (``quota_cache``). Nothing here logs a body or a
 token.
@@ -41,8 +41,8 @@ DEFAULT_INTERVAL_SECONDS = 900.0
 HTTP_TIMEOUT_SECONDS = 10.0
 # The worker deadline covers both requests plus thread start-up.
 TICK_TIMEOUT_SECONDS = 25.0
-WINDOW_LABEL = "неделя"
-NOT_STARTED_NOTE = "расход не начат"
+WINDOW_LABEL = "week"
+NOT_STARTED_NOTE = "usage not started"
 
 TokenResolver = Callable[[], str]
 HttpGet = Callable[[str, dict[str, str]], tuple[int, str]]
@@ -87,27 +87,27 @@ def parse_weekly(payload: object, *, now: datetime) -> dict[str, Any]:
     (``_not_started``). A zero would be a number the provider never gave."""
     config = payload.get("config") if isinstance(payload, dict) else None
     if not isinstance(config, dict):
-        raise ShapeError("ответ без config")
+        raise ShapeError("answer without config")
     period = config.get("currentPeriod")
     if not isinstance(period, dict) or period.get("type") != WEEKLY_PERIOD:
         period_type = period.get("type") if isinstance(period, dict) else None
-        raise ShapeError(f"период не недельный: {sanitize_public_text(str(period_type), limit=32)}")
+        raise ShapeError(f"period not weekly: {sanitize_public_text(str(period_type), limit=32)}")
     window: dict[str, Any] = {"label": WINDOW_LABEL}
     if "creditUsagePercent" in config:
         window["used_percent"] = _percent(config["creditUsagePercent"])
     elif _not_started(config, period, now):
         window.update(used_percent=None, note=NOT_STARTED_NOTE)
     else:
-        raise ShapeError("нет creditUsagePercent")
+        raise ShapeError("no creditUsagePercent")
     window["reset_at"] = _reset_date(config, period)
     return window
 
 
 def _percent(used: object) -> float:
     if isinstance(used, bool) or not isinstance(used, int | float) or not math.isfinite(used):
-        raise ShapeError("creditUsagePercent не число")
+        raise ShapeError("creditUsagePercent not a number")
     if not 0 <= used <= 100:
-        raise ShapeError(f"creditUsagePercent вне 0..100: {used:g}")
+        raise ShapeError(f"creditUsagePercent outside 0..100: {used:g}")
     return float(used)
 
 
@@ -133,7 +133,7 @@ def _reset_date(config: dict[str, Any], period: dict[str, Any]) -> str:
     if parse_timestamp(end) is None:
         end = config.get("billingPeriodEnd")
     if parse_timestamp(end) is None:
-        raise ShapeError("дата сброса нечитаема")
+        raise ShapeError("reset date unreadable")
     return str(end)
 
 
@@ -163,17 +163,17 @@ def fetch_item(
     try:
         token = resolve()
     except ImportError:
-        item["reason"] = "резолвер xAI недоступен на этой установке"
+        item["reason"] = "xAI resolver not available on this installation"
         return item
     except Exception as exc:
-        item["reason"] = f"токен xAI: {_public(exc)}"
+        item["reason"] = f"xAI token: {_public(exc)}"
         return item
     headers = {"Authorization": f"Bearer {token}", CLIENT_HEADER[0]: CLIENT_HEADER[1]}
     headers["Accept"] = "application/json"
     try:
         status, body = get(BILLING_URL, headers)
     except Exception as exc:
-        item["reason"] = f"запрос не прошёл: {_public(exc)}"
+        item["reason"] = f"request failed: {_public(exc)}"
         return item
     if status != 200:
         item["reason"] = f"HTTP {status}"
@@ -181,7 +181,7 @@ def fetch_item(
     try:
         window = parse_weekly(json.loads(body), now=now)
     except ValueError as exc:  # ShapeError and a body that is not JSON
-        item["reason"] = f"форма ответа: {_public(exc) or 'не JSON'}"
+        item["reason"] = f"answer shape: {_public(exc) or 'not JSON'}"
         return item
     tier = _tier(headers, get)
     if tier:

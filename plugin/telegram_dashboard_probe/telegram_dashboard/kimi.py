@@ -46,9 +46,9 @@ HTTP_TIMEOUT_SECONDS = 10.0
 TICK_TIMEOUT_SECONDS = 15.0
 # Payload key -> label on the screen, in the order the official client shows them.
 WINDOWS: tuple[tuple[str, str], ...] = (
-    ("limit_5h", "5 ч"),
-    ("limit_7d", "неделя"),
-    ("limit_month_total", "мес"),
+    ("limit_5h", "5h"),
+    ("limit_7d", "week"),
+    ("limit_month_total", "month"),
 )
 
 CredentialResolver = Callable[[], tuple[str, str]]
@@ -100,29 +100,29 @@ def parse_usages(payload: object) -> list[dict[str, Any]]:
     """The known windows as payload item windows; ``ShapeError`` names what is wrong."""
     usages = payload.get("usages") if isinstance(payload, dict) else None
     if not isinstance(usages, dict):
-        raise ShapeError("ответ без usages")
+        raise ShapeError("answer without usages")
     windows: list[dict[str, Any]] = []
     for key, label in WINDOWS:
         entry = usages.get(key)
         if entry is None:
             continue
         if not isinstance(entry, dict):
-            raise ShapeError(f"{key} не объект")
+            raise ShapeError(f"{key} not an object")
         ratio = entry.get("used_ratio")
         if isinstance(ratio, bool) or not isinstance(ratio, int | float):
-            raise ShapeError(f"{key}.used_ratio не число")
+            raise ShapeError(f"{key}.used_ratio not a number")
         if not math.isfinite(ratio):
-            raise ShapeError(f"{key}.used_ratio не число")
+            raise ShapeError(f"{key}.used_ratio not a number")
         if not 0 <= ratio <= 1:
-            raise ShapeError(f"{key}.used_ratio вне 0..1: {ratio:g}")
+            raise ShapeError(f"{key}.used_ratio outside 0..1: {ratio:g}")
         reset = entry.get("reset_time")
         if reset is not None and parse_timestamp(reset) is None:
-            raise ShapeError(f"{key}.reset_time нечитаем")
+            raise ShapeError(f"{key}.reset_time unreadable")
         windows.append(
             {"label": label, "used_percent": float(ratio) * 100.0, "reset_at": reset or None}
         )
     if not windows:
-        raise ShapeError("usages без известных окон")
+        raise ShapeError("usages without known windows")
     return windows
 
 
@@ -148,10 +148,10 @@ def fetch_item(
     try:
         key, base_url = resolve()
     except ImportError:
-        item["reason"] = "резолвер Kimi недоступен на этой установке"
+        item["reason"] = "Kimi resolver not available on this installation"
         return item
     except Exception as exc:
-        item["reason"] = f"ключ Kimi: {_public(exc)}"
+        item["reason"] = f"Kimi key: {_public(exc)}"
         return item
     headers = {
         "Authorization": f"Bearer {key}",
@@ -161,7 +161,7 @@ def fetch_item(
     try:
         status, body = get(usages_url(base_url), headers)
     except Exception as exc:
-        item["reason"] = f"запрос не прошёл: {_public(exc)}"
+        item["reason"] = f"request failed: {_public(exc)}"
         return item
     if status != 200:
         item["reason"] = f"HTTP {status}"
@@ -169,7 +169,7 @@ def fetch_item(
     try:
         windows = parse_usages(json.loads(body))
     except ValueError as exc:  # ShapeError and a body that is not JSON
-        item["reason"] = f"форма ответа: {_public(exc) or 'не JSON'}"
+        item["reason"] = f"answer shape: {_public(exc) or 'not JSON'}"
         return item
     item["status"] = "available"
     item["fetched_at"] = now.isoformat()
