@@ -578,6 +578,42 @@ def test_the_tick_hands_the_record_s_own_cache_to_the_collector_and_persists_it(
     }
 
 
+def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The once-a-day upstream check keeps its attempt in the record beside ``limits_cache``:
+    the same dict on every tick, written to the state file, and read back after a restart, so a
+    restart does not ask GitHub again."""
+    from datetime import datetime
+
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[dict[str, Any]] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        kwargs["version_cache"]["attempted_at"] = kwargs["now"].isoformat()
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    now = datetime(2026, 9, 25, 16, 40, tzinfo=UTC)
+
+    asyncio.run(runtime._collect(now))
+    asyncio.run(runtime._collect(now))
+    runtime._note(status="edited", error=None)
+
+    assert seen[0]["version_cache"] is seen[1]["version_cache"] is runtime.record["release_cache"]
+    assert ctx.state.data["probe"]["release_cache"] == {"attempted_at": now.isoformat()}
+
+    restarted = plugin.register(ctx)
+    assert restarted is not None
+    restarted._load_record()
+    assert restarted.release_cache() == {"attempted_at": now.isoformat()}
+    assert restarted.release_cache() is restarted.record["release_cache"]
+
+
 def test_a_record_from_before_kimi_keeps_its_grok_attempt_under_the_provider_key(
     monkeypatch, tmp_path: Path
 ) -> None:

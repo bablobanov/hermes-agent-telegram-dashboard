@@ -78,6 +78,9 @@ DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
 LIMITS_CACHE_KEY = "limits_cache"
 QUOTA_CACHE_PROVIDERS = ("grok", "kimi")
+# The once-a-day check of the latest Hermes release upstream keeps its attempt beside them, so a
+# restart does not ask GitHub again.
+RELEASE_CACHE_KEY = "release_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
@@ -566,6 +569,7 @@ class ProbeRuntime:
             grok_interval_seconds=self.settings.limits_refresh_seconds,
             kimi_cache=caches["kimi"],
             kimi_interval_seconds=self.settings.limits_refresh_seconds,
+            version_cache=self.release_cache(),
         )
 
     def quota_caches(self) -> dict[str, dict[str, Any]]:
@@ -584,6 +588,15 @@ class ProbeRuntime:
         for provider in QUOTA_CACHE_PROVIDERS:
             if not isinstance(cache.get(provider), dict):
                 cache[provider] = {}
+        return cache
+
+    def release_cache(self) -> dict[str, Any]:
+        """The upstream release check's cache inside the record, the same object on every tick
+        so the collector's write lands in the record and in the state file with it."""
+        cache = self.record.get(RELEASE_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[RELEASE_CACHE_KEY] = cache
         return cache
 
     def _render_period(self) -> int:

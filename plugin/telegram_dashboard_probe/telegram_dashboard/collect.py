@@ -29,6 +29,11 @@ from .compat import Environment, ProbeResult
 from .grok import DEFAULT_INTERVAL_SECONDS as GROK_DEFAULT_INTERVAL_SECONDS
 from .grok import TICK_TIMEOUT_SECONDS as GROK_TICK_TIMEOUT_SECONDS
 from .grok import fetch_item as grok_fetch_item
+from .hermes_version import INTERVAL_SECONDS as VERSION_INTERVAL_SECONDS
+from .hermes_version import TICK_TIMEOUT_SECONDS as VERSION_TICK_TIMEOUT_SECONDS
+from .hermes_version import fetch_item as version_fetch_item
+from .hermes_version import running_version
+from .hermes_version import summarize as summarize_version
 from .kimi import DEFAULT_INTERVAL_SECONDS as KIMI_DEFAULT_INTERVAL_SECONDS
 from .kimi import TICK_TIMEOUT_SECONDS as KIMI_TICK_TIMEOUT_SECONDS
 from .kimi import fetch_item as kimi_fetch_item
@@ -51,6 +56,7 @@ from .schema import (
     QuotaWindow,
     SourceObservation,
     SourceState,
+    VersionSummary,
 )
 from .workers import Flights, StillRunning, failure_name
 
@@ -73,6 +79,8 @@ GROK_LABEL = "Grok"
 KIMI_LABEL = "Kimi"
 GrokFetch = QuotaFetch
 KimiFetch = QuotaFetch
+VersionFetch = QuotaFetch
+LocalVersion = Callable[[], tuple[str | None, str | None]]
 # Nobody has looked for a quota surface of these yet; the screen says so, not "0%".
 _UNCONFIRMED_PROVIDERS = ("Gemini",)
 # What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
@@ -614,6 +622,7 @@ def build_snapshot(
     incidents: tuple[Incident, ...],
     coverage: Coverage | None = None,
     backup: BackupSummary | None = None,
+    version: VersionSummary | None = None,
 ) -> DashboardSnapshot:
     ordered = tuple(sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))[:5])
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
@@ -628,6 +637,7 @@ def build_snapshot(
         gateway=gateway,
         backup=backup,
         sources=sources,
+        version=version,
     )
 
 
@@ -733,6 +743,11 @@ async def collect_all_async(
     kimi_interval_seconds: float = KIMI_DEFAULT_INTERVAL_SECONDS,
     kimi_timeout_seconds: float = KIMI_TICK_TIMEOUT_SECONDS,
     kimi_fetch: KimiFetch | None = None,
+    version_cache: dict[str, Any] | None = None,
+    version_interval_seconds: float = VERSION_INTERVAL_SECONDS,
+    version_timeout_seconds: float = VERSION_TICK_TIMEOUT_SECONDS,
+    version_fetch: VersionFetch | None = None,
+    version_local: LocalVersion | None = None,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -740,7 +755,8 @@ async def collect_all_async(
     deadline is not started again until it returns. ``grok_cache`` and ``kimi_cache`` are the
     caller's durable dicts (the plugin keeps them in its record, one per provider): a worker
     abandoned by its deadline still writes its attempt there when it returns, so the next tick
-    serves it instead of asking again.
+    serves it instead of asking again. ``version_cache`` is the same for the once-a-day upstream
+    release check; without it (no durable record) the version line is not collected at all.
     """
     flights = flights or Flights()
     gateway, gateway_source, gateway_incidents = _gateway_guarded(env, now=now)
@@ -748,6 +764,7 @@ async def collect_all_async(
     (
         (drift, drift_source, drift_incidents),
         (capacity, limits_source, limits_incidents),
+        (version, version_incidents),
     ) = await asyncio.gather(
         _drift_off_loop(
             env, runner, now=now, timeout_seconds=drift_timeout_seconds, flights=flights
@@ -758,6 +775,15 @@ async def collect_all_async(
             resolve=resolve_limits,
             timeout_seconds=limits_timeout_seconds,
             flights=flights,
+        ),
+        _version_guarded(
+            version_cache,
+            now=now,
+            interval_seconds=version_interval_seconds,
+            timeout_seconds=version_timeout_seconds,
+            flights=flights,
+            fetch=version_fetch or version_fetch_item,
+            local=version_local or running_version,
         ),
     )
     grok_incidents: tuple[Incident, ...] = ()
@@ -799,6 +825,7 @@ async def collect_all_async(
         gateway=gateway,
         drift=drift,
         backup=backup,
+        version=version,
         capacity=merge_quotas(capacity, grok, kimi),
         sources=(
             gateway_source,
@@ -815,6 +842,7 @@ async def collect_all_async(
             *limits_incidents,
             *grok_incidents,
             *kimi_incidents,
+            *version_incidents,
         ),
     )
 
@@ -936,6 +964,85 @@ def _quota_unavailable(key: str, label: str, detail: str) -> tuple[QuotaMetric, 
         QuotaMetric(label, "unavailable", detail=detail),
         SourceObservation(f"{key}_quota", "official", "unavailable", detail=detail),
     )
+
+
+VersionPart = tuple[VersionSummary | None, tuple[Incident, ...]]
+VERSION_FLIGHT = "hermes_version"
+
+
+async def _version_guarded(
+    cache: dict[str, Any] | None,
+    *,
+    now: datetime,
+    interval_seconds: float,
+    timeout_seconds: float,
+    flights: Flights,
+    fetch: VersionFetch,
+    local: LocalVersion,
+) -> VersionPart:
+    """The version line: the running version is one attribute read here; the upstream check
+    runs in the plugin's own worker under a deadline, at most once a day through ``cache``. A
+    hung or failing GitHub is this line's "no data", never a stalled loop or a missing screen;
+    the line is no source, so it moves neither the status nor the coverage."""
+    if cache is None:
+        return None, ()
+    incidents: list[Incident] = []
+    try:
+        running, local_reason = local()
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(VERSION_FLIGHT, "local", exc)
+        running, local_reason = None, source.detail
+        incidents.append(incident)
+    item = await _version_attempt(
+        cache,
+        now=now,
+        interval_seconds=interval_seconds,
+        timeout_seconds=timeout_seconds,
+        flights=flights,
+        fetch=fetch,
+        incidents=incidents,
+    )
+    return summarize_version(item, running, local_reason), tuple(incidents)
+
+
+async def _version_attempt(
+    cache: dict[str, Any],
+    *,
+    now: datetime,
+    interval_seconds: float,
+    timeout_seconds: float,
+    flights: Flights,
+    fetch: VersionFetch,
+    incidents: list[Incident],
+) -> dict[str, Any]:
+    """The cache item for this tick; a deadline or a busy worker is one tick of "no data", the
+    cache untouched until the worker returns."""
+    try:
+        return await flights.run(
+            VERSION_FLIGHT,
+            quota_tick,
+            cache,
+            now=now,
+            interval_seconds=interval_seconds,
+            fetch=fetch,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError:
+        return _version_missed(now, f"no answer within {timeout_seconds:g} s")
+    except StillRunning:
+        return _version_missed(now, "previous request has not returned")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(VERSION_FLIGHT, "official", exc)
+        incidents.append(incident)
+        return _version_missed(now, source.detail or "collector crashed")
+
+
+def _version_missed(now: datetime, reason: str) -> dict[str, Any]:
+    return {"status": "unavailable", "reason": reason, "checked_at": now.isoformat()}
 
 
 def _collector_crashed(

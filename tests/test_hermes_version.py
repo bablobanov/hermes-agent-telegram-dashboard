@@ -9,17 +9,25 @@ rate-limit message carries the caller's IP); a failed check is not retried befor
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 import types
 import urllib.error
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from telegram_dashboard import hermes_version as hv
+from telegram_dashboard.collect import CommandResult, collect_all_async
+from telegram_dashboard.compat import Environment
 from telegram_dashboard.quota_cache import tick
+from telegram_dashboard.render import render_dashboard
 from telegram_dashboard.schema import VersionSummary
+from telegram_dashboard.workers import Flights
 
 NOW = datetime(2026, 9, 25, 16, 40, tzinfo=UTC)
 
@@ -348,3 +356,154 @@ def test_the_interval_is_a_day_and_the_deadline_covers_two_requests() -> None:
     assert hv.INTERVAL_SECONDS == 86400
     assert hv.TICK_TIMEOUT_SECONDS > 2 * hv.HTTP_TIMEOUT_SECONDS
     assert hv.PER_PAGE == 100
+
+
+# ----------------------------------------------------------------------------- the collector
+#
+# The plugin makes the request itself, in its own worker thread under a deadline, through the
+# same ``Flights`` as Grok and Kimi: no LLM, no agent session, no agent tool. A hung or failing
+# GitHub costs this one line its answer and nothing else: not the gateway's event loop (which
+# the agent shares), not the rest of the screen.
+
+
+def _env(tmp_path: Path) -> Environment:
+    payload = {
+        "pid": 4242,
+        "gateway_state": "running",
+        "updated_at": "2026-09-25T16:38:00+00:00",
+        "platforms": {"telegram": {"state": "running", "writer_pid": 4242}},
+    }
+    (tmp_path / "gateway_state.json").write_text(json.dumps(payload), encoding="utf-8")
+    return Environment(hermes_home=tmp_path, limits_enabled=False)
+
+
+class Runner:
+    def run(self, argv, *, timeout_seconds):
+        return CommandResult(0, "", "")
+
+
+def _local() -> tuple[str | None, str | None]:
+    return "0.21.3", None
+
+
+def _collect(tmp_path: Path, **kwargs: Any) -> Any:
+    return asyncio.run(collect_all_async(_env(tmp_path), Runner(), now=NOW, **kwargs))
+
+
+def test_the_line_exists_only_where_a_durable_cache_is_kept(tmp_path: Path) -> None:
+    fetch = CountingFetch(_available())
+
+    without = _collect(tmp_path, version_fetch=fetch, version_local=_local)
+    cache: dict[str, Any] = {}
+    with_cache = _collect(tmp_path, version_cache=cache, version_fetch=fetch, version_local=_local)
+
+    assert without.version is None
+    assert fetch.calls == 1
+    assert with_cache.version.running == "0.21.3"
+    assert with_cache.version.latest == "0.21.5"
+    assert with_cache.version.behind == 2
+    assert cache["item"]["status"] == "available"
+
+
+def test_the_line_is_not_a_source_and_moves_neither_status_nor_coverage(tmp_path: Path) -> None:
+    failed = hv.fetch_item(now=NOW, get=_http(latest=(429, "{}")))
+
+    plain = _collect(tmp_path)
+    with_line = _collect(
+        tmp_path, version_cache={}, version_fetch=CountingFetch(failed), version_local=_local
+    )
+
+    assert with_line.version.reason == "GitHub rate limit"
+    assert [s.name for s in with_line.sources] == [s.name for s in plain.sources]
+    assert with_line.overall == plain.overall
+    assert with_line.coverage == plain.coverage
+    assert with_line.incidents == plain.incidents
+
+
+def test_a_hung_github_stalls_neither_the_loop_nor_the_rest_of_the_screen(
+    tmp_path: Path,
+) -> None:
+    release = threading.Event()
+    calls: list[datetime] = []
+
+    def hung(*, now: datetime) -> dict[str, Any]:
+        calls.append(now)
+        release.wait(10)
+        return _available(checked_at=now.isoformat())
+
+    async def scenario() -> tuple[Any, Any, Any, int, float]:
+        plain = await collect_all_async(_env(tmp_path), Runner(), now=NOW, flights=Flights())
+        flights = Flights()
+        beats = 0
+        done = asyncio.Event()
+
+        async def heartbeat() -> None:
+            nonlocal beats
+            while not done.is_set():
+                await asyncio.sleep(0.01)
+                beats += 1
+
+        pulse = asyncio.ensure_future(heartbeat())
+        started = time.monotonic()
+        env = _env(tmp_path)
+        common: dict[str, Any] = {
+            "flights": flights,
+            "version_cache": {},
+            "version_fetch": hung,
+            "version_local": _local,
+            "version_timeout_seconds": 0.3,
+        }
+        first = await collect_all_async(env, Runner(), now=NOW, **common)
+        second = await collect_all_async(env, Runner(), now=NOW + timedelta(minutes=5), **common)
+        elapsed = time.monotonic() - started
+        done.set()
+        await pulse
+        release.set()  # the abandoned worker returns; asyncio.run waits for it on shutdown
+        return plain, first, second, beats, elapsed
+
+    plain, first, second, beats, elapsed = asyncio.run(scenario())
+
+    assert first.version.reason == "no answer within 0.3 s"
+    assert first.version.running == "0.21.3"
+    assert second.version.reason == "previous request has not returned"
+    assert len(calls) == 1  # the busy worker is not started a second time
+    assert elapsed < 3
+    assert beats >= 10  # the loop kept running while GitHub hung
+    # The rest of the screen is exactly what a tick without the line collects.
+    assert first.gateway == plain.gateway and first.gateway is not None
+    assert first.backup == plain.backup and first.drift == plain.drift
+    assert first.capacity == plain.capacity and first.capacity.quotas
+    assert first.sources == plain.sources and first.incidents == plain.incidents
+    render_dashboard(first, now=NOW, zone=UTC, period_seconds=300)
+
+
+def test_a_crashing_check_is_an_incident_and_the_screen_still_renders(tmp_path: Path) -> None:
+    def crash(*, now: datetime) -> dict[str, Any]:
+        raise RuntimeError("boom at /var/lib/secret/path")
+
+    snapshot = _collect(tmp_path, version_cache={}, version_fetch=crash, version_local=_local)
+
+    assert snapshot.version.running == "0.21.3"
+    assert snapshot.version.reason == "collector crashed: RuntimeError"
+    titles = [incident.title for incident in snapshot.incidents]
+    assert "Collector hermes_version crashed (RuntimeError)" in titles
+    text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
+    assert "/var/lib/secret" not in text
+
+
+def test_a_crashing_version_read_keeps_the_upstream_answer(tmp_path: Path) -> None:
+    def broken() -> tuple[str | None, str | None]:
+        raise AttributeError("no hermes here")
+
+    snapshot = _collect(
+        tmp_path,
+        version_cache={},
+        version_fetch=CountingFetch(_available()),
+        version_local=broken,
+    )
+
+    assert snapshot.version.running is None
+    assert snapshot.version.local_reason == "collector crashed: AttributeError"
+    assert snapshot.version.latest == "0.21.5"
+    titles = [incident.title for incident in snapshot.incidents]
+    assert "Collector hermes_version crashed (AttributeError)" in titles
