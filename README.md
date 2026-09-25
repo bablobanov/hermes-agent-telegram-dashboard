@@ -46,17 +46,20 @@ Grok · usage not started            a state in words is never turned into a num
 Kimi 3% (29d)                       every window, in the provider's own order
 Gemini · no data
 
+🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release
+
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
-                                    time, the reason of every "no data"
+                                    time, release dates, the reason of every "no data"
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
 status line, and the message under it carries the rest: gateway and Telegram state, the last
-backup, config drift, the account limits of every provider with the time to each reset, and a
-collapsed details block with the reasons and the timestamps. Nothing to open, nothing to install
+backup, config drift, the account limits of every provider with the time to each reset, the
+Hermes version the gateway runs next to the latest upstream release, and a collapsed details
+block with the reasons and the timestamps. Nothing to open, nothing to install
 on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
 
 <img src="docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
@@ -96,7 +99,8 @@ message is logged at ERROR, recorded, recreated once, and announced in the new m
 
 ## Compatibility across Hermes versions
 
-The dashboard probes capabilities, never version numbers. `telegram_dashboard/compat_matrix.json`
+The dashboard probes capabilities, never version numbers. The version line shows a number and
+decides nothing by it (see "The Hermes version line"). `telegram_dashboard/compat_matrix.json`
 records per source how it is probed and on which versions it was verified. A new release lowers
 coverage and names what is missing instead of breaking.
 
@@ -221,7 +225,9 @@ file, not on the journal; an empty `grep probe:` in the journal means nothing.
 The record also carries `limits_cache`, one entry per provider read on its own cadence
 (`grok`, `kimi`), each with the last attempt (`attempted_at`) and its item, so the interval
 survives a restart and the state file shows when the provider was last asked. A record from
-before Kimi (Grok's attempt at the top level) is moved under `grok` once.
+before Kimi (Grok's attempt at the top level) is moved under `grok` once. Beside it,
+`release_cache` holds the once-a-day check of the latest Hermes release the same way
+(`attempted_at` and its item).
 
 ### The backup line
 
@@ -236,6 +242,47 @@ database or the copy. A failed run is loud on the line (`Backup ⚠️ failed 6 
 the details and an event; no `backup_status` configured is `not observed`. The status shape is
 the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
 produces the same keys works.
+
+### The Hermes version line
+
+`🤖 Hermes 0.21.3 → 0.21.5` sits after the limits: the version the running gateway serves, then
+the release upstream (`NousResearch/hermes-agent`) marks Latest. The same release reads
+`🤖 Hermes 0.21.5 ✓`; no answer from upstream reads `🤖 Hermes 0.21.3 · no data`, with the reason
+in the details. The details carry both release dates, how many releases lie between them and
+when upstream was last checked (`Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24`,
+`2 releases behind · checked Sep 25 16:40`).
+
+The line informs, nothing more. Updating Hermes is a process, not a restart: the line carries no
+mark, no threshold, no button, no command and no advice to update. Update by your own process.
+
+- **The version** is `hermes_cli.__version__` of the module the gateway imported at start-up,
+  looked up in `sys.modules`: a capability, not a version gate. Not the files on disk, not
+  `importlib.metadata` (an editable install keeps the dist-info of install time), not the
+  engine's `build_info.get_code_identity(refresh=True)` (inside the gateway it would restamp the
+  gateway's own `code_sha`)
+- **The latest release** comes from two unauthenticated GETs to `api.github.com`, at most once a
+  day: `releases/latest` and `releases?per_page=100` (about 1 MB, the list carries every
+  release's notes). The version is the one in the release name
+  (`Hermes Agent v0.21.5 (v2026.9.24)`); releases behind are positions on upstream's list, never
+  arithmetic on version numbers; drafts and pre-releases are not counted. The engine's own
+  update check (`check_for_updates` in `hermes_cli/banner.py`) counts commits behind `main` and
+  is not used
+- **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
+  own worker thread, under the same single-flight deadline (`Flights`, 25 s) and cache policy as
+  Grok and Kimi. The agent, its sessions and its tools take no part. A GitHub that hangs costs
+  this line its answer for the tick (`no answer within 25 s`) and nothing else: the gateway's
+  event loop keeps running, the rest of the screen is collected as usual, and a hung request is
+  not started a second time. `tests/test_hermes_version.py` pins all three
+- **Once a day, failures too.** The attempt lives in the record under `release_cache` and
+  survives a restart; a failed check (`GitHub rate limit`, `HTTP 503`,
+  `request failed: URLError`, `answer shape: …`) is `no data` until the next attempt a day
+  later, never a number. A reason never quotes the answer: GitHub's rate-limit message carries
+  the caller's IP
+- **Not a source.** The line moves neither the status nor the coverage, so a GitHub outage does
+  not turn the screen ⚪. A crash of the collector itself is still an event, like any
+  collector's
+- The cron fallback tick (`python -m telegram_dashboard`) has no version line: it runs outside
+  the gateway, where there is no gateway version to read, and keeps no durable cache
 
 ### Limits: three kinds that never mix
 
@@ -400,8 +447,9 @@ ruff check . && ruff format --check . && mypy --strict -p telegram_dashboard
 
 `pyproject.toml` points pytest and mypy at the package inside the plugin folder. Every run prints
 `telegram_dashboard.__file__` in the header: a green run that does not say which tree it tested
-proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the Grok and Kimi attempts are stubbed by an autouse
-fixture in `tests/conftest.py` unless a test passes its own fake; a plugin loaded by the test
+proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the Grok, Kimi and GitHub attempts are stubbed by an autouse
+fixture in `tests/conftest.py` unless a test passes its own fake, and the running Hermes version
+there is a fixed one; a plugin loaded by the test
 helpers takes that same patched package, not a second copy of it under the plugin's name
 (`tests/probe_fakes.py`, `load_plugin`). `tests/test_probe_plugin.py` skips unless the Hermes engine is
 importable; to run it, use an interpreter with the engine and `python-telegram-bot` installed

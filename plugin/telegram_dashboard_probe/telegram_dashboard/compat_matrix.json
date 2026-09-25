@@ -86,6 +86,16 @@
         "own-script": "read-by-code, agent/deploy/state-db-backup/state_db_publish.py (publish and record status shapes) and deploy/state-db-fts-check/fts_health_check.py check_backup (the 26 h threshold); rendered lines pinned in tests/test_backup.py"
       }
     },
+    "hermes_version": {
+      "probe": "sys.modules['hermes_cli'].__version__ is a non-empty string: the module the gateway imported at start-up, looked up, never imported; absent = the line says no data (not on this installation). Never importlib.metadata (an editable install keeps the dist-info of install time), never hermes_cli.build_info.get_code_identity(refresh=True) (it would restamp the running gateway's code_sha)",
+      "contract": "GET https://api.github.com/repos/NousResearch/hermes-agent/releases/latest and /releases?per_page=100, no token, at most once a day (release_cache in the plugin record, failures cached too), in the plugin's own worker under a 25 s deadline; version from the release name 'Hermes Agent vX.Y.Z (...)', releases behind = position on the list (drafts and pre-releases skipped), never arithmetic on version numbers. Observed without a token on 2026-09-25: 36 releases, every name in that form, newest first. Not a source: moves neither the status nor the coverage. The engine's banner.check_for_updates (commits behind main) is not used",
+      "verified": {
+        "0.21.1": "read-by-code, tag v2026.9.7: hermes_cli/__init__.py defines __version__",
+        "0.21.3": "read-by-code, tag v2026.9.14: hermes_cli/__init__.py:6 __version__, gateway/run.py:42 imports hermes_cli at start-up, gateway/platforms/api_server.py:185-190 takes hermes_cli.__version__ as the canonical version",
+        "0.21.5": "read-by-code, tag v2026.9.24: the same constant"
+      },
+      "caveat": "information only: no mark, no threshold, no advice to update; updating Hermes is the operator's process, not a restart"
+    },
     "hermes_send": {
       "probe": "not probed in MVP; alert path candidate",
       "contract": "hermes send --to platform:chat_id:thread_id --json; sends a NEW message, cannot edit or pin",

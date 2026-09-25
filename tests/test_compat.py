@@ -21,6 +21,14 @@ def test_bundled_matrix_loads_and_describes_every_mvp_source() -> None:
         assert isinstance(entry.get("verified"), dict), name
 
 
+def test_the_version_line_is_described_as_a_capability_and_an_unauthenticated_read() -> None:
+    entry = load_matrix()["sources"]["hermes_version"]
+
+    assert "sys.modules" in entry["probe"] and "importlib.metadata" in entry["probe"]
+    assert "api.github.com" in entry["contract"] and "no token" in entry["contract"]
+    assert {"0.21.1", "0.21.3"} <= set(entry["verified"])
+
+
 def test_verification_is_honest_about_unknown_versions() -> None:
     matrix = load_matrix()
 
