@@ -111,7 +111,7 @@ def test_the_tick_delivers_the_screen_not_a_counter(monkeypatch, tmp_path: Path)
     text, parse_mode = adapter.html_edits[-1]
     assert parse_mode == "HTML"
     assert text.splitlines()[0].startswith(STATUS_MARKS) and " · " in text.splitlines()[0]
-    assert "<b>Limits</b>" in text and "no data" in text  # limits disabled: named, never zero
+    assert "<b>Limits used</b>" in text and "no data" in text  # limits disabled: named, never zero
     assert "<blockquote expandable><b>Details</b>" in text
     assert "> Period" not in text and "Period 1 min" in text
     assert "dashboard probe · tick" not in text
@@ -649,7 +649,7 @@ def test_a_refused_html_edit_falls_back_to_plain_in_the_same_tick_and_probes_aga
         await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
         assert len(adapter.html_edits) == 1  # one refusal, then plain without asking again
         assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
-        assert "<b>" not in adapter.edits[0] and "LIMITS" in adapter.edits[0]
+        assert "<b>" not in adapter.edits[0] and "LIMITS USED" in adapter.edits[0]
         assert ctx.state.data["probe"]["last_status"] == "edited"
         assert ctx.state.data["probe"]["screen_format"] == "plain"
         assert ctx.state.data["probe"]["html_error"] == "RuntimeError"

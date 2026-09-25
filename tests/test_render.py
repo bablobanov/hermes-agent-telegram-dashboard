@@ -1,4 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from telegram_dashboard.freshness import DeliveryRecord
 from telegram_dashboard.render import (
@@ -170,10 +172,10 @@ def test_local_usage_never_becomes_a_provider_quota_percentage() -> None:
 
     assert "OpenAI · locally 120,000 tokens" in rendered.splitlines()
     assert "> OpenAI: remaining unknown, counted locally" in rendered.splitlines()
-    assert "%" not in rendered and "▓" not in rendered and "░" not in rendered
+    assert "%" not in rendered  # a count is never shown as a share
 
 
-def test_official_quota_with_limit_renders_the_spent_share_as_a_bar() -> None:
+def test_official_quota_with_limit_renders_the_spent_share_and_the_time_to_its_reset() -> None:
     snapshot = DashboardSnapshot(
         overall="normal",
         observed_at="2026-09-09T00:00:00Z",
@@ -192,11 +194,11 @@ def test_official_quota_with_limit_renders_the_spent_share_as_a_bar() -> None:
 
     rendered = render_dashboard(snapshot)
 
-    assert "OpenAI ▓▓▓▓░ 75%" in rendered.splitlines()
-    assert "> OpenAI tomorrow 00:00" in rendered.splitlines()  # the reset, relative to the data day
+    # The reset counts from the data time when no ``now`` is given.
+    assert "OpenAI 75%(24h)" in rendered.splitlines()
 
 
-def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_bar() -> None:
+def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number() -> None:
     snapshot = DashboardSnapshot(
         overall="normal",
         observed_at="2026-09-25T07:21:00Z",
@@ -206,16 +208,14 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_bar() 
                 QuotaMetric(
                     "Codex",
                     "official",
-                    windows=(QuotaWindow("Session", 98.0, "2026-09-26T11:14:00Z"),),
+                    windows=(QuotaWindow("Session", 98.0, "2026-09-25T08:42:00Z"),),
                     fetched_at="2026-09-25T07:21:00Z",
                 ),
                 QuotaMetric(
                     "Grok",
                     "official",
                     windows=(
-                        QuotaWindow(
-                            "SuperGrok week", None, "2026-10-01T19:25:00Z", note="usage not started"
-                        ),
+                        QuotaWindow("7d", None, "2026-10-01T19:25:00Z", note="usage not started"),
                     ),
                     fetched_at="2026-09-25T07:21:00Z",
                 ),
@@ -236,21 +236,68 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_bar() 
     rendered = render_dashboard(snapshot, now=NOW, period_seconds=300)
     lines = rendered.splitlines()
 
-    assert "⚠️ Codex ▓▓▓▓▓ 98%" in lines  # 90% and above: the mark, only on this line
-    assert "Grok · usage not started" in lines  # the provider's words, no bar, no zero
-    assert "Kimi ░░░░░ 3% month · 5h 0%" in lines  # the most spent window owns the bar
+    assert "## Limits used" in lines  # every percent on the screen is the spent share
+    assert "⚠️ Codex 5h:98%(1h21m)" in lines  # 90% and above: the mark, only on this line
+    assert "Grok · usage not started" in lines  # the provider's words, no zero
+    assert "Kimi 5h:0%(4h13m) · month:3%(29d)" in lines  # the provider's order
     assert "Claude · no data" in lines and "Gemini · no data" in lines
     assert "🟡" not in rendered and lines[0] == "🟢 Healthy · Sep 25 07:21 UTC"
-    # Reasons, resets and the odd minute live in the details, grouped.
-    assert "> ## Resets" in lines
-    assert "> Codex tomorrow 11:14" in lines
-    assert "> Grok Oct 1" in lines
-    assert "> Kimi 5h 11:34 · month Oct 25" in lines
+    # Reasons and the odd minute live in the details, grouped; the resets are on the lines.
+    assert "> ## Resets" not in lines
     assert "> Data 07:21 · Kimi 07:16" in lines
     assert "> ## No data" in lines
     assert "> Claude: no account token" in lines
     assert "> Gemini: source not confirmed" in lines
     assert "> Period 5 min" in lines
+
+
+def _codex_line(*windows: QuotaWindow) -> str:
+    snapshot = DashboardSnapshot(
+        overall="normal",
+        observed_at=NOW.isoformat(),
+        capacity=CapacitySummary((QuotaMetric("Codex", "official", windows=windows),)),
+    )
+    lines = render_dashboard(snapshot, now=NOW).splitlines()
+    return next(line for line in lines if "Codex" in line and not line.startswith(">"))
+
+
+@pytest.mark.parametrize(
+    ("ahead", "words"),
+    [
+        (timedelta(minutes=-5), "0m"),  # a reset behind the data time: due now
+        (timedelta(seconds=30), "1m"),  # whole minutes, rounded up
+        (timedelta(minutes=45), "45m"),
+        (timedelta(hours=1), "1h"),
+        (timedelta(hours=1, minutes=21), "1h21m"),
+        (timedelta(days=1), "24h"),
+        (timedelta(days=1, hours=5, minutes=40), "1d5h"),
+        (timedelta(days=2, hours=23, minutes=59), "2d"),  # from two days on, whole days
+    ],
+)
+def test_the_time_to_a_reset_is_written_in_the_status_line_form(
+    ahead: timedelta, words: str
+) -> None:
+    reset = (NOW + ahead).isoformat()
+
+    assert _codex_line(QuotaWindow("Session", 14.0, reset)) == f"Codex 5h:14%({words})"
+
+
+def test_a_reset_date_that_cannot_be_read_is_a_question_mark_not_a_silence() -> None:
+    assert _codex_line(QuotaWindow("Session", 14.0, "soon")) == "Codex 5h:14%(?)"
+    assert _codex_line(QuotaWindow("Session", 14.0, None)) == "Codex 5h:14%"
+
+
+def test_the_engine_s_window_words_become_short_labels_in_the_provider_s_order() -> None:
+    """``agent/account_usage.py`` names Claude's windows ``Current session``/``Current week`` and
+    Codex's ``Session``/``Weekly``; a label the table does not know is shown as given."""
+    line = _codex_line(
+        QuotaWindow("Session", 37.0, (NOW + timedelta(hours=3)).isoformat()),
+        QuotaWindow("Weekly", 95.0, (NOW + timedelta(days=4, hours=2)).isoformat()),
+        QuotaWindow("Subscription", 5.0, None),
+    )
+
+    # The more spent window keeps its place; the mark belongs to the line.
+    assert line == "⚠️ Codex 5h:37%(3h) · 7d:95%(4d) · Subscription:5%"
 
 
 def test_the_first_line_is_the_status_with_the_dated_stamp_and_the_details_follow_the_screen() -> (

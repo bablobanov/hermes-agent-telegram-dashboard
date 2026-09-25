@@ -11,8 +11,8 @@ from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT, render_dashboard, to_
 from telegram_dashboard.states import NOW, PERIOD_SECONDS, all_states
 
 STATES = all_states()
-# A phone shows about 30 characters per line and about 15 lines of a message; block glyphs and
-# emoji are wider than letters, so the budget is tighter than the count suggests.
+# A phone shows about 30 characters per line and about 15 lines of a message; emoji are wider
+# than letters, so the budget is tighter than the count suggests.
 PHONE_LINES = 14
 PHONE_COLUMNS = 32
 
@@ -60,10 +60,9 @@ def test_state_1_all_normal_is_green_and_names_coverage() -> None:
     assert lines[0] == "🟢 Healthy · Sep 9 21:00 UTC"
     assert "Gateway ✓ · Telegram ✓" in lines
     assert "Drift ✓ 0 of 474" in lines
-    # Two windows: the most spent one owns the bar, the other follows in words; both resets in
-    # the details, each with its own label, because one date after two numbers says nothing.
-    assert "Claude ▓▓░░░ 37% 5h · 7d 12%" in lines
-    assert "> Claude 5h tomorrow 00:00 · 7d Sep 14" in lines
+    # Two windows in the provider's order, each with its label and the time to its own reset:
+    # one countdown after two numbers would say nothing.
+    assert "Claude 5h:37%(3h) · 7d:12%(4d)" in lines
     assert "Gemini · no data" in lines
     assert "> Gemini: source not confirmed" in lines
     assert "> Profiles 1/1 · sources 3/3" in lines
@@ -78,9 +77,9 @@ def test_state_1_is_this_exact_screen() -> None:
         "Gateway ✓ · Telegram ✓",
         "Drift ✓ 0 of 474",
         "",
-        "## Limits",
-        "Claude ▓▓░░░ 37% 5h · 7d 12%",
-        "Codex ▓▓▓░░ 61%",
+        "## Limits used",
+        "Claude 5h:37%(3h) · 7d:12%(4d)",
+        "Codex 5h:61%(2h30m)",
         "Gemini · no data",
         "Grok · no data",
         "",
@@ -90,10 +89,6 @@ def test_state_1_is_this_exact_screen() -> None:
         "> Profiles 1/1 · sources 3/3",
         ">",
         "> Drift checked 08:00",
-        ">",
-        "> ## Resets",
-        "> Claude 5h tomorrow 00:00 · 7d Sep 14",
-        "> Codex 23:30",
         ">",
         "> ## No data",
         "> Gemini: source not confirmed",

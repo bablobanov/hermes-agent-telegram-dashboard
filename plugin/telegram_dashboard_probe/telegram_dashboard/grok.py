@@ -41,7 +41,7 @@ DEFAULT_INTERVAL_SECONDS = 900.0
 HTTP_TIMEOUT_SECONDS = 10.0
 # The worker deadline covers both requests plus thread start-up.
 TICK_TIMEOUT_SECONDS = 25.0
-WINDOW_LABEL = "week"
+WINDOW_LABEL = "7d"
 NOT_STARTED_NOTE = "usage not started"
 
 TokenResolver = Callable[[], str]
@@ -183,9 +183,11 @@ def fetch_item(
     except ValueError as exc:  # ShapeError and a body that is not JSON
         item["reason"] = f"answer shape: {_public(exc) or 'not JSON'}"
         return item
+    # The plan name rides on the item, not on the window label: the line names every window
+    # (``7d:27%(5d)``), and a plan in it would cost a phone line its width.
     tier = _tier(headers, get)
     if tier:
-        window["label"] = f"{tier} {WINDOW_LABEL}"
+        item["plan"] = tier
     item["status"] = "available"
     item["fetched_at"] = now.isoformat()
     item["windows"] = [window]

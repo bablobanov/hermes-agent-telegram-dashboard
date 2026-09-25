@@ -47,7 +47,7 @@ TICK_TIMEOUT_SECONDS = 15.0
 # Payload key -> label on the screen, in the order the official client shows them.
 WINDOWS: tuple[tuple[str, str], ...] = (
     ("limit_5h", "5h"),
-    ("limit_7d", "week"),
+    ("limit_7d", "7d"),
     ("limit_month_total", "month"),
 )
 

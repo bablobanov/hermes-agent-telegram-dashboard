@@ -113,7 +113,7 @@ def test_the_usages_url_is_derived_from_the_engine_s_base_url_not_a_second_host(
 def test_a_legacy_plan_is_a_5h_window_and_a_weekly_window_with_their_own_resets() -> None:
     assert kimi.parse_usages(LEGACY) == [
         {"label": "5h", "used_percent": 12.0, "reset_at": RESET_5H},
-        {"label": "week", "used_percent": 40.0, "reset_at": RESET_7D},
+        {"label": "7d", "used_percent": 40.0, "reset_at": RESET_7D},
     ]
 
 
@@ -165,7 +165,7 @@ def test_one_attempt_sends_the_engine_s_client_header_with_the_bearer_key_and_ne
 
     assert item["status"] == "available" and item["fetched_at"] == NOW.isoformat()
     assert item["source"] == kimi.SOURCE and item["provider"] == "kimi"
-    assert [w["label"] for w in item["windows"]] == ["5h", "week"]
+    assert [w["label"] for w in item["windows"]] == ["5h", "7d"]
     assert [url for url, _ in http.calls] == [USAGES_URL]
     headers = http.calls[0][1]
     assert headers["Authorization"] == f"Bearer {_creds()[0]}"
@@ -231,7 +231,7 @@ AVAILABLE = {
     "fetched_at": None,
     "windows": [
         {"label": "5h", "used_percent": 12.0, "reset_at": RESET_5H},
-        {"label": "week", "used_percent": 40.0, "reset_at": RESET_7D},
+        {"label": "7d", "used_percent": 40.0, "reset_at": RESET_7D},
     ],
 }
 FAILED = {**AVAILABLE, "status": "unavailable", "reason": "HTTP 503", "windows": []}
@@ -300,13 +300,13 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
             QuotaMetric(
                 "Kimi",
                 "official",
-                windows=(QuotaWindow("5h", 12.0, RESET_5H), QuotaWindow("week", 40.0, RESET_7D)),
+                windows=(QuotaWindow("5h", 12.0, RESET_5H), QuotaWindow("7d", 40.0, RESET_7D)),
                 fetched_at="2026-09-22T13:25:00+00:00",
             ),
             QuotaMetric(
                 "Grok",
                 "official",
-                windows=(QuotaWindow("week", 27.0, "2026-09-24T19:25:30+00:00"),),
+                windows=(QuotaWindow("7d", 27.0, "2026-09-24T19:25:30+00:00"),),
                 fetched_at="2026-09-22T13:25:00+00:00",
             ),
         )
@@ -314,12 +314,11 @@ def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
 
     text = _render(capacity)
 
-    # The most spent window gets the bar and its label; the other follows in words.
-    assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
-    assert "Grok ▓░░░░ 27%" in text.splitlines()
-    # Resets and stamps live in the details: a reset today is a time, a later one a date.
-    assert "> Kimi 5h 16:32 · week Sep 26" in text.splitlines()
-    assert "> Grok Sep 24" in text.splitlines()
+    # Every window in the provider's order, the more spent one included, each with the time to
+    # its own reset: minutes under a day, whole days from two days on.
+    assert "Kimi 5h:12%(2h53m) · 7d:40%(3d)" in text.splitlines()
+    assert "Grok 7d:27%(2d)" in text.splitlines()
+    assert "## Resets" not in text
     assert "> Data 13:40 · Kimi 13:25 · Grok 13:25" in text.splitlines()
 
 
@@ -336,8 +335,8 @@ def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
 
     text = _render(capacity)
 
-    assert "Kimi ▓░░░░ 12% 5h · month 8%" in text.splitlines()
-    assert "> Kimi month Oct 22" in text.splitlines()  # only the window that has a reset
+    # Only the window that has a reset carries a countdown.
+    assert "Kimi 5h:12% · month:8%(29d)" in text.splitlines()
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -404,8 +403,7 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Kimi ▓▓░░░ 40% week · 5h 12%" in text.splitlines()
-    assert "> Kimi 5h 16:32 · week Sep 26" in text.splitlines()
+    assert "Kimi 5h:12%(2h53m) · 7d:40%(3d)" in text.splitlines()
     assert "Data 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]

@@ -2,11 +2,11 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "Limits", and everything that explains a line (reasons, reset times, per-source
-stamps, coverage) in a details block that Telegram shows collapsed. Nothing is dropped, only
-moved: a line without a number still names its reason, in the details. Work and automation
-blocks render only when the snapshot carries them; ``None`` means the block is not observed on
-this installation and nothing is invented for it.
+provider under "Limits used" with the time to every reset, and everything that explains a line
+(reasons, per-source stamps, coverage) in a details block that Telegram shows collapsed.
+Nothing is dropped, only moved: a line without a number still names its reason, in the
+details. Work and automation blocks render only when the snapshot carries them; ``None`` means
+the block is not observed on this installation and nothing is invented for it.
 
 The text is transport-neutral: ``## `` marks a bold line, ``> `` marks a details line, and
 ``to_telegram_html``/``to_telegram_plain`` turn it into what a transport accepts.
@@ -15,8 +15,9 @@ The text is transport-neutral: ``## `` marks a bold line, ``> `` marks a details
 from __future__ import annotations
 
 import html
+import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, datetime, tzinfo
 
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
@@ -33,13 +34,11 @@ from .schema import (
 )
 from .timeparse import (
     age_seconds,
-    day_words,
     format_day_time,
     format_in_zone,
     format_stamp,
     is_from_the_future,
     parse_timestamp,
-    to_zone,
 )
 
 TELEGRAM_TEXT_LIMIT = 4096
@@ -49,10 +48,23 @@ _SAFE_LIMIT = 3900
 # phone (tried on 25.09), the plain glyph reads the same everywhere.
 OK_MARK = "✓"
 WARN_MARK = "⚠️"
-# Five cells, one per 20%: a wider bar wraps on a phone next to the provider and the number.
-BAR_WIDTH = 5
-BAR_FULL = "▓"
-BAR_EMPTY = "░"
+# No bar (decision of 25.09): the shade glyphs came from a fallback font and read as noise, the
+# solid ones sat below the letters or wrapped the line, and a bar by fifths added nothing to the
+# number after it. Every percent on the screen is the spent share; the heading says so.
+LIMITS_HEADING = "Limits used"
+_MINUTES_PER_DAY = 1440
+# The engine's usage facade names its windows in words (``agent/account_usage.py``, 0.21.1 and
+# 0.21.3: Codex ``Session``/``Weekly``, Claude ``Current session``/``Current week``); the line
+# names every window, so the words become the short labels the other providers already carry.
+# A label not listed here is shown as the source gave it.
+_WINDOW_LABELS = {
+    "Session": "5h",
+    "Current session": "5h",
+    "Weekly": "7d",
+    "Current week": "7d",
+    "Opus week": "Opus 7d",
+    "Sonnet week": "Sonnet 7d",
+}
 # A limit this far spent gets the warning mark on its line (decision of 25.09). Only the line:
 # the overall status and the incidents come from the collectors, not from this number.
 QUOTA_WARN_PERCENT = 90
@@ -105,15 +117,14 @@ def _plural(count: int, one: str, many: str) -> str:
 
 @dataclass
 class _Details:
-    """What the collapsed block says, grouped: the screen itself, backup and drift, resets,
-    reasons for every "no data"."""
+    """What the collapsed block says, grouped: the screen itself, backup and drift, reasons for
+    every "no data"."""
 
     confirmed: str | None = None
     data: str | None = None
     period: str | None = None
     coverage: str | None = None
     state: list[str] = field(default_factory=list)
-    resets: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
@@ -121,7 +132,6 @@ class _Details:
         groups = [
             screen,
             self.state,
-            ["## Resets", *self.resets] if self.resets else [],
             ["## No data", *self.missing] if self.missing else [],
         ]
         body: list[str] = []
@@ -167,9 +177,9 @@ def render_dashboard(
             f"- {sanitize_public_text(incident.title)}" for incident in snapshot.incidents[:5]
         )
     if snapshot.capacity.quotas:
-        lines.extend(["", "## Limits"])
+        lines.extend(["", f"## {LIMITS_HEADING}"])
         for quota in snapshot.capacity.quotas:
-            lines.append(_quota_line(quota, reference, zone, details))
+            lines.append(_quota_line(quota, reference, details))
         details.data = _data_stamps(snapshot, zone)
     if snapshot.work is not None:
         work = snapshot.work
@@ -321,9 +331,7 @@ def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
     return f"Drift: {label}"
 
 
-def _quota_line(
-    quota: QuotaMetric, reference: datetime | None, zone: tzinfo, details: _Details
-) -> str:
+def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Details) -> str:
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
         details.missing.append(f"{provider}: remaining unknown, counted locally")
@@ -339,87 +347,79 @@ def _quota_line(
         details.missing.append(f"{provider}: {reason}")
         return f"{provider} · no data"
     if quota.windows:
-        _note_resets(provider, quota.windows, reference, zone, details)
-        return _windows_line(provider, quota.windows)
+        return _windows_line(provider, quota.windows, reference)
     if quota.used is not None and quota.limit:
-        if quota.reset_at:
-            details.resets.append(f"{provider} {_reset_words(quota.reset_at, reference, zone)}")
-        return _bar_line(provider, round((quota.used / quota.limit) * 100))
+        percent = round((quota.used / quota.limit) * 100)
+        return f"{_warn(percent)}{provider} {percent}%{_reset_suffix(quota.reset_at, reference)}"
     details.missing.append(f"{provider}: windows not received")
     return f"{provider} · no data"
 
 
-def _windows_line(provider: str, windows: tuple[QuotaWindow, ...]) -> str:
-    """The window with the most spent gets the bar; the others follow in words. The bar's own
-    label is written only when there is more than one window to tell apart."""
-    numbered = [window for window in windows if window.used_percent is not None]
+def _windows_line(
+    provider: str, windows: tuple[QuotaWindow, ...], reference: datetime | None
+) -> str:
+    """``Claude 5h:37%(3h) · 7d:12%(4d)``: every window in the provider's own order, each with
+    the time to its reset. A single window without a number says its state in words."""
+    numbered = [window.used_percent for window in windows if window.used_percent is not None]
+    if not numbered and len(windows) == 1:
+        return f"{provider} · {_window_words(windows[0], reference, with_label=False)}"
+    words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
-        if len(windows) == 1:
-            return f"{provider} · {_window_words(windows[0], with_label=False)}"
-        return f"{provider} · " + " · ".join(_window_words(window) for window in windows)
-    bar_window = max(numbered, key=lambda window: window.used_percent or 0.0)
-    line = _bar_line(provider, bar_window.used_percent or 0.0)
-    if len(windows) > 1:
-        rest = [_window_words(window) for window in windows if window is not bar_window]
-        line += f" {bar_window.label} · " + " · ".join(rest)
-    return line
+        return f"{provider} · {words}"
+    return f"{_warn(max(numbered))}{provider} {words}"
 
 
-def _window_words(window: QuotaWindow, *, with_label: bool = True) -> str:
-    """``label N%``; the provider's state in words when it gave no number; ``?`` otherwise."""
+def _window_words(
+    window: QuotaWindow, reference: datetime | None, *, with_label: bool = True
+) -> str:
+    """``label:N%(reset)``; the provider's state in words when it gave no number; ``?``
+    otherwise. A state in words never becomes a number."""
+    label = _WINDOW_LABELS.get(window.label, window.label)
     if window.used_percent is not None:
-        return f"{window.label} {window.used_percent:.0f}%"
+        suffix = _reset_suffix(window.reset_at, reference)
+        return f"{label}:{window.used_percent:.0f}%{suffix}"
     if window.note:
-        return f"{window.label}: {window.note}" if with_label else window.note
-    return f"{window.label} ?"
+        return f"{label}: {window.note}" if with_label else window.note
+    return f"{label}:?"
 
 
-def _bar_line(provider: str, percent: float) -> str:
-    """``⚠️ Codex ▓▓▓▓▓ 98%``: the mark from ``QUOTA_WARN_PERCENT`` on, the bar by fifths, the
-    exact number after it. A state in words never becomes a bar; that is the caller's job."""
-    cells = round(max(0.0, min(100.0, percent)) / (100 / BAR_WIDTH))
-    bar = BAR_FULL * cells + BAR_EMPTY * (BAR_WIDTH - cells)
-    warn = f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
-    return f"{warn}{provider} {bar} {percent:.0f}%"
+def _warn(percent: float) -> str:
+    """The mark from ``QUOTA_WARN_PERCENT`` on, for the most spent window of the line."""
+    return f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
 
 
-def _note_resets(
-    provider: str,
-    windows: tuple[QuotaWindow, ...],
-    reference: datetime | None,
-    zone: tzinfo,
-    details: _Details,
-) -> None:
-    with_reset = [
-        (window, _reset_words(window.reset_at, reference, zone))
-        for window in windows
-        if window.reset_at
-    ]
-    if not with_reset:
-        return
-    if len(windows) == 1:
-        details.resets.append(f"{provider} {with_reset[0][1]}")
-        return
-    details.resets.append(
-        f"{provider} " + " · ".join(f"{window.label} {words}" for window, words in with_reset)
-    )
+def _reset_suffix(value: object, reference: datetime | None) -> str:
+    """``(3h)``: the time to the reset; ``(?)`` when it cannot be counted; nothing without a
+    reset date at all."""
+    if not value:
+        return ""
+    return f"({_until(value, reference) or '?'})"
 
 
-def _reset_words(value: object, reference: datetime | None, zone: tzinfo) -> str:
-    """A reset on the reference day is a time, the next day is ``tomorrow HH:MM``, anything
-    else is a date: a phone line has no room for both when the reader can tell the day."""
+def _until(value: object, reference: datetime | None) -> str | None:
+    """Whole minutes to ``value`` from ``reference``, rounded up, in ``_duration_words``; a
+    reset already behind the data time is ``0m``. ``None`` when either side is unreadable."""
     moment = parse_timestamp(value)
-    local = to_zone(moment, zone) if moment is not None else None
-    if local is None:
-        return "date unreadable"
-    reference_local = to_zone(reference, zone) if reference is not None else None
-    if reference_local is None:
-        return f"{day_words(local)} {local:%H:%M}"
-    if local.date() == reference_local.date():
-        return f"{local:%H:%M}"
-    if local.date() == reference_local.date() + timedelta(days=1):
-        return f"tomorrow {local:%H:%M}"
-    return day_words(local)
+    if moment is None or reference is None:
+        return None
+    ahead = age_seconds(reference, moment)
+    if ahead is None:
+        return None
+    return _duration_words(max(0, math.ceil(ahead / 60)))
+
+
+def _duration_words(minutes: int) -> str:
+    """The status-line form: whole days from two days on (``4d``), ``1d5h`` or ``24h`` on the
+    first day, then ``1h21m``, ``3h`` and ``45m``."""
+    days, rest = divmod(minutes, _MINUTES_PER_DAY)
+    hours, mins = divmod(rest, 60)
+    if days >= 2:
+        return f"{days}d"
+    if days == 1:
+        return f"1d{hours}h" if hours else "24h"
+    if hours:
+        return f"{hours}h{mins}m" if mins else f"{hours}h"
+    return f"{mins}m"
 
 
 def _data_stamps(snapshot: DashboardSnapshot, zone: tzinfo) -> str | None:

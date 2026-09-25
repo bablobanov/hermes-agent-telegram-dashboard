@@ -85,7 +85,7 @@ def _token() -> str:
 def test_the_probed_answer_is_one_weekly_window_with_the_provider_s_reset_date() -> None:
     window = grok.parse_weekly(BILLING, now=NOW)
 
-    assert window == {"label": "week", "used_percent": 27.0, "reset_at": END}
+    assert window == {"label": "7d", "used_percent": 27.0, "reset_at": END}
     assert grok.parse_tier(SETTINGS) == "SuperGrok"
 
 
@@ -164,7 +164,7 @@ AFTER_RESET_CONFIG: dict[str, Any] = {
 }
 AFTER_RESET = {"config": AFTER_RESET_CONFIG}
 NOT_STARTED_WINDOW = {
-    "label": "week",
+    "label": "7d",
     "used_percent": None,
     "note": "usage not started",
     "reset_at": NEXT_END,
@@ -220,7 +220,8 @@ def test_one_attempt_reads_the_pool_with_the_cli_client_header_and_never_logs_th
     item = grok.fetch_item(now=NOW, resolve=_token, get=http)
 
     assert item["status"] == "available" and item["fetched_at"] == NOW.isoformat()
-    assert item["windows"] == [{"label": "SuperGrok week", "used_percent": 27.0, "reset_at": END}]
+    assert item["windows"] == [{"label": "7d", "used_percent": 27.0, "reset_at": END}]
+    assert item["plan"] == "SuperGrok"  # beside the window, never inside its label
     assert [url for url, _ in http.calls] == [grok.BILLING_URL, grok.SETTINGS_URL]
     headers = http.calls[0][1]
     assert headers["x-xai-token-auth"] == "xai-grok-cli"
@@ -234,14 +235,16 @@ def test_a_week_not_started_is_an_answer_with_its_reset_date_and_the_plan_name()
     item = grok.fetch_item(now=AFTER_RESET_AT, resolve=_token, get=http)
 
     assert item["status"] == "available" and item["fetched_at"] == AFTER_RESET_AT.isoformat()
-    assert item["windows"] == [{**NOT_STARTED_WINDOW, "label": "SuperGrok week"}]
+    assert item["windows"] == [NOT_STARTED_WINDOW]
+    assert item["plan"] == "SuperGrok"
 
 
 def test_the_tier_is_optional_and_its_absence_never_costs_the_number() -> None:
     item = grok.fetch_item(now=NOW, resolve=_token, get=_http(SETTINGS_URL=(503, "")))
 
     assert item["status"] == "available"
-    assert item["windows"][0]["label"] == "week"
+    assert item["windows"][0]["label"] == "7d"
+    assert "plan" not in item
 
 
 @pytest.mark.parametrize(
@@ -297,7 +300,7 @@ AVAILABLE = {
     "reason": None,
     "source": grok.SOURCE,
     "fetched_at": None,
-    "windows": [{"label": "week", "used_percent": 27.0, "reset_at": END}],
+    "windows": [{"label": "7d", "used_percent": 27.0, "reset_at": END}],
 }
 FAILED = {**AVAILABLE, "status": "unavailable", "reason": "HTTP 503", "windows": []}
 
@@ -375,7 +378,7 @@ def test_a_week_not_started_is_a_fresh_source_and_its_words_survive_the_cache() 
     json.loads(json.dumps(cache))  # the state file keeps the cache as JSON
 
     assert metric.kind == "official"
-    assert metric.windows == (QuotaWindow("week", None, NEXT_END, note="usage not started"),)
+    assert metric.windows == (QuotaWindow("7d", None, NEXT_END, note="usage not started"),)
     assert source.state == "fresh"
 
 
@@ -405,13 +408,13 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
             QuotaMetric(
                 "Codex",
                 "official",
-                windows=(QuotaWindow("Session", 14.0, "2026-09-19T08:12:00+00:00"),),
+                windows=(QuotaWindow("Session", 14.0, "2026-09-12T16:12:00+00:00"),),
                 fetched_at="2026-09-12T13:38:48+00:00",
             ),
             QuotaMetric(
                 "Grok",
                 "official",
-                windows=(QuotaWindow("SuperGrok week", 27.0, END),),
+                windows=(QuotaWindow("7d", 27.0, END),),
                 fetched_at="2026-09-12T13:25:00+00:00",
             ),
             QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
@@ -422,19 +425,19 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     lines = text.splitlines()
 
     assert "Claude · no data" in lines
-    assert "Codex ▓░░░░ 14%" in lines
-    assert "Grok ▓░░░░ 27%" in lines
+    # The engine's ``Session`` is the five-hour window; every reset rides on its own window.
+    assert "Codex 5h:14%(2h32m)" in lines
+    assert "Grok 7d:27%(5d)" in lines
     assert "Gemini · no data" in lines
     # The details carry what the line does not: each number's own minute when it differs from
-    # the screen's, each reset, each reason.
+    # the screen's, each reason.
     assert "> Data 13:40 · Codex 13:38 · Grok 13:25" in lines
-    assert "> Codex Sep 19" in lines and "> Grok Sep 17" in lines
     assert "> Claude: no account token" in lines
     assert "> Gemini: source not confirmed" in lines
 
 
-def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as_a_zero() -> None:
-    window = QuotaWindow("SuperGrok week", None, NEXT_END, note="usage not started")
+def test_a_week_not_started_reads_as_words_with_its_stamp_never_as_a_zero() -> None:
+    window = QuotaWindow("7d", None, NEXT_END, note="usage not started")
     capacity = CapacitySummary(
         (
             QuotaMetric(
@@ -446,8 +449,9 @@ def test_a_week_not_started_reads_as_words_with_the_reset_and_the_stamp_never_as
     lines = _render(capacity).splitlines()
     line = next(line for line in lines if line.startswith("Grok"))
 
-    assert line == "Grok · usage not started"  # words, no bar, no percent
-    assert "> Grok Oct 1" in lines
+    # Words, no percent, no countdown: nothing is spent yet, the reset of an unused week says
+    # nothing the reader acts on.
+    assert line == "Grok · usage not started"
     assert "> Data 13:40 · Grok 13:25" in lines
 
 
@@ -557,8 +561,7 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     assert grok_quota.kind == "official" and grok_quota.fetched_at == NOW.isoformat()
     text = render_dashboard(second, now=NOW, zone=UTC, period_seconds=300)
     lines = text.splitlines()
-    assert "Grok ▓░░░░ 27%" in lines
-    assert "> Grok Sep 17" in lines
+    assert "Grok 7d:27%(5d)" in lines
     # Both cached numbers keep their own minute next to the screen's.
     assert "> Data 13:45 · Codex 13:40 · Grok 13:40" in lines
     assert "Claude · no data" in lines and "> Claude: no account token" in lines
@@ -583,7 +586,6 @@ def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(
 
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
     assert "Grok · usage not started" in text.splitlines()
-    assert "> Grok Oct 1" in text.splitlines()
     assert next(s for s in snapshot.sources if s.name == "grok_quota").state == "fresh"
     assert "creditUsagePercent" not in text
 
