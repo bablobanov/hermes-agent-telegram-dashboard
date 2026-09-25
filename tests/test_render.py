@@ -236,7 +236,7 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
     rendered = render_dashboard(snapshot, now=NOW, period_seconds=300)
     lines = rendered.splitlines()
 
-    assert "## Limits used" in lines  # every percent on the screen is the spent share
+    assert "## 🧠 Limits used" in lines  # every percent on the screen is the spent share
     assert "⚠️ Codex 98% (1h21m)" in lines  # 90% and above: the mark, only on this line
     assert "Grok · usage not started" in lines  # the provider's words, no zero
     assert "Kimi 0% (4h13m) · 3% (29d)" in lines  # the provider's order

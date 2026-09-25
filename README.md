@@ -39,7 +39,7 @@ Gateway ✓ · Telegram ✓              words when something is off: stopped, d
 Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
 Drift ✓ 0 of 481                    keys that differ from the approved baseline
 
-Limits used
+🧠 Limits used
 Claude · no data                    a line without a number never shows a zero
 ⚠️ Codex 98% (1h21m)                the spent share, the time to the reset; the mark from 90%
 Grok · usage not started            a state in words is never turned into a number
@@ -250,7 +250,7 @@ provider's number, and a local count is not.
 
 An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
-screen is spent, never remaining, from every source; the heading says `Limits used`) and the
+screen is spent, never remaining, from every source; the heading says `🧠 Limits used`) and the
 time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
 days from two days on (`4d`), `(?)` when the reset date cannot be read. The mark comes from 90%
 spent in any window. A window carries no length label: the share and its reset are what the

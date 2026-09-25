@@ -77,7 +77,7 @@ def test_state_1_is_this_exact_screen() -> None:
         "Gateway ✓ · Telegram ✓",
         "Drift ✓ 0 of 474",
         "",
-        "## Limits used",
+        "## 🧠 Limits used",
         "Claude 37% (3h) · 12% (4d)",
         "Codex 61% (2h30m)",
         "Gemini · no data",
@@ -110,7 +110,7 @@ def test_state_2_polling_dead_puts_the_incident_first() -> None:
 
     assert text.startswith("🔴 Critical · Sep 9 21:00 UTC")
     assert "Gateway ✓ · Telegram error" in text.splitlines()
-    assert text.index("Telegram disconnected") < text.index("## Limits")
+    assert text.index("Telegram disconnected") < text.index("Limits used")
 
 
 def test_state_3_delivery_failed_is_critical_without_work_block() -> None:

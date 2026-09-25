@@ -148,7 +148,8 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         # headings and the details in a collapsed quote reach the Bot call as such.
         assert edited.get("parse_mode") == "HTML"
         assert (
-            "<b>Limits used</b>" in edited["text"] and "<blockquote expandable>" in edited["text"]
+            "<b>🧠 Limits used</b>" in edited["text"]
+            and "<blockquote expandable>" in edited["text"]
         )
         assert runtime.record["screen_format"] == "html"
         assert runtime.record["message_id"] == "101"

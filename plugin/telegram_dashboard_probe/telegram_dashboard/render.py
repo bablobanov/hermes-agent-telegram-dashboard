@@ -2,7 +2,7 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "Limits used" with the time to every reset, and everything that explains a line
+provider under "🧠 Limits used" with the time to every reset, and everything that explains a line
 (reasons, per-source stamps, coverage) in a details block that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
 details. Work and automation blocks render only when the snapshot carries them; ``None`` means
@@ -50,8 +50,9 @@ OK_MARK = "✓"
 WARN_MARK = "⚠️"
 # No bar (decision of 25.09): the shade glyphs came from a fallback font and read as noise, the
 # solid ones sat below the letters or wrapped the line, and a bar by fifths added nothing to the
-# number after it. Every percent on the screen is the spent share; the heading says so.
-LIMITS_HEADING = "Limits used"
+# number after it. Every percent on the screen is the spent share; the heading says so, and its
+# brain names the block at a glance: bold alone hardly shows in Telegram Desktop (25.09).
+LIMITS_HEADING = "🧠 Limits used"
 _MINUTES_PER_DAY = 1440
 # Windows carry no length label (decision of 25.09): the spent share and the time to its reset
 # answer what the reader acts on, the owner of the account knows the plan, and a length the
