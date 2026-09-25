@@ -141,9 +141,14 @@ DRIFT_CLEAN = """Сверка эталона с живым конфигом
 [2] ТОЛЬКО В ЭТАЛОНЕ, на сервере нет: 0
 [3] ЗНАЧЕНИЯ РАСХОДЯТСЯ: 0
 [4] СЕКРЕТЫ, сравнивается только пусто/заполнено: 0
+
+ИТОГ: дрейфа нет, эталон описывает прод точно
+keys_changed=0 keys_total=474
 """
-DRIFT_DIRTY = DRIFT_CLEAN.replace("РАСХОДЯТСЯ: 0", "РАСХОДЯТСЯ: 2").replace(
-    "эталон не знает: 0", "эталон не знает: 1"
+DRIFT_DIRTY = (
+    DRIFT_CLEAN.replace("РАСХОДЯТСЯ: 0", "РАСХОДЯТСЯ: 2")
+    .replace("эталон не знает: 0", "эталон не знает: 1")
+    .replace("keys_changed=0", "keys_changed=3")
 )
 
 
@@ -159,6 +164,17 @@ def test_drift_output_parsing() -> None:
     assert parse_drift_output("garbage", 1, checked_at=None).state == "unknown"
 
 
+def test_drift_numbers_come_from_the_counts_line_not_the_words() -> None:
+    # The counts line alone is enough: the words above it are never read.
+    alone = parse_drift_output("keys_changed=2 keys_total=481\n", 1, checked_at=None)
+    assert (alone.state, alone.changed_keys, alone.total_keys) == ("drift", 2, 481)
+
+    # Output from before the counts line: the sections still count, the total word does not.
+    before = DRIFT_CLEAN.replace("keys_changed=0 keys_total=474\n", "")
+    old = parse_drift_output(before, 0, checked_at=None)
+    assert (old.state, old.changed_keys, old.total_keys) == ("clean", 0, None)
+
+
 def test_drift_from_command_and_report(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(1, DRIFT_DIRTY, ""))
     env = Environment(hermes_home=tmp_path, drift_command=("python", "check_drift.py"))
@@ -172,7 +188,7 @@ def test_drift_from_command_and_report(tmp_path: Path) -> None:
 
 
 def test_drift_without_a_total_counts_the_keys_in_words(tmp_path: Path) -> None:
-    # Another script's sections without the "ключей N" line: no total, the count stands alone.
+    # Another script's sections without the counts line: no total, the count stands alone.
     one_key = "[1] only on the server: 1\n[2] only in the baseline: 0\n[3] values differ: 0\n"
     runner = FakeRunner(CommandResult(1, one_key, ""))
     env = Environment(hermes_home=tmp_path, drift_command=("python", "check_drift.py"))

@@ -58,9 +58,9 @@
     },
     "drift": {
       "probe": "configured report file exists, or configured argv is runnable",
-      "contract": "stdout of deploy/config/check_drift.py: lines '[1]..[4] ...: N' and 'ключей N'; exit 0 clean, 1 drift, 2 error",
+      "contract": "stdout of deploy/config/check_drift.py: the line 'keys_changed=N keys_total=M' (its last), else the lines '[1]..[4] ...: N' with no total; exit 0 clean, 1 drift, 2 error",
       "verified": {
-        "own-script": "read-by-code, agent/deploy/config/check_drift.py (185 lines); output format parsed by collect.parse_drift_output"
+        "own-script": "read-by-code, agent/deploy/config/check_drift.py (195 lines, the counts line last; 187 lines before it, sections only for this reader); output format parsed by collect.parse_drift_output"
       }
     },
     "grok_quota": {

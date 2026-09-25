@@ -290,25 +290,32 @@ def _telegram_platform(
 # ----------------------------------------------------------------------------- drift
 
 _SECTION_RE = re.compile(r"^\[(\d)\][^:\n]*:\s*(\d+)\s*$", re.MULTILINE)
-_KEYS_RE = re.compile(r"ключей\s+(\d+)")
+# The line check_drift.py prints last for machines; the words above it are never read.
+_COUNTS_RE = re.compile(r"^keys_changed=(\d+) keys_total=(\d+)\s*$", re.MULTILINE)
 
 
 def parse_drift_output(
     stdout: str, exit_code: int | None, *, checked_at: str | None
 ) -> DriftSummary:
-    """Reduce check_drift.py output to a number. Exit 2 or unparseable output is ``unknown``."""
+    """Reduce check_drift.py output to a number. Exit 2 or unparseable output is ``unknown``.
+
+    The numbers come from its ``keys_changed=N keys_total=M`` line; output without that line
+    (an older script, another one) falls back to the ``[N] …: count`` sections, with no total."""
     if exit_code not in (0, 1):
         return DriftSummary("unknown", checked_at=checked_at, detail=f"exit code {exit_code}")
+    counts = _COUNTS_RE.findall(stdout)
     sections = {int(number): int(count) for number, count in _SECTION_RE.findall(stdout)}
-    keys = _KEYS_RE.findall(stdout)
-    total = int(keys[0]) if keys else None
-    if not sections:
-        if exit_code == 0:
-            return DriftSummary("clean", 0, total, checked_at, detail="output without sections")
+    total: int | None
+    if counts:
+        changed, total = int(counts[-1][0]), int(counts[-1][1])
+    elif sections:
+        changed, total = sum(sections.values()), None
+    elif exit_code == 0:
+        return DriftSummary("clean", 0, None, checked_at, detail="output without sections")
+    else:
         return DriftSummary(
-            "unknown", None, total, checked_at, detail="drift present, output not parsed"
+            "unknown", None, None, checked_at, detail="drift present, output not parsed"
         )
-    changed = sum(sections.values())
     if exit_code == 0 and changed == 0:
         return DriftSummary("clean", 0, total, checked_at)
     if changed > 0:

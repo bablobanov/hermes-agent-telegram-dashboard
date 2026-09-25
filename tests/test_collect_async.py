@@ -21,7 +21,9 @@ from telegram_dashboard.collect import CommandResult, collect_all_async
 from telegram_dashboard.compat import Environment
 
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
-DRIFT_CLEAN = "[1] изменённые: 0\n[2] лишние: 0\n[3] отсутствующие: 0\n[4] типы: 0\nключей 474\n"
+DRIFT_CLEAN = (
+    "[1] only on the server: 0\n[2] only in the baseline: 0\nkeys_changed=0 keys_total=474\n"
+)
 
 
 class BlockingRunner:

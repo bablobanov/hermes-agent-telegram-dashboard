@@ -204,11 +204,12 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
-   The drift reader parses the output of our own `check_drift.py` (numbered sections
-   `[N] …: count`, and the total from its `ключей N` line, `_KEYS_RE` in `collect.py`), which is
-   not universal: another script with the sections but without that line gives no total and
-   reads `Drift ✓ N keys`, and output without the sections reads `Drift: unknown` when the exit
-   code says drift (exit 0 without them still reads as clean, `Drift ✓ 0 keys`).
+   The drift reader takes numbers, never words: a `drift_command` prints a line
+   `keys_changed=N keys_total=M` (positions that differ, keys in the baseline) and exits 0 when
+   clean, 1 on drift, 2 when it could not check; our own `check_drift.py` prints it last. Output
+   without that line falls back to numbered sections `[N] …: count` and has no total
+   (`Drift ✓ N keys`); output with neither reads `Drift: unknown` when the exit code says drift
+   (exit 0 without them still reads as clean, `Drift ✓ 0 keys`).
    A source that hangs is not started again until its worker returns (one worker per
    source across ticks), so a stuck facade or command cannot fill the gateway's executor.
 3. restart the gateway; the message appears in the configured chat and its screen moves
