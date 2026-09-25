@@ -52,11 +52,15 @@ def test_a_failed_tick_reaches_the_record_and_the_loop_survives(
         async def boom(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("chat_id=-100999 secret detail")
 
+        # Both verbs raise: the HTML one is caught and answered with the plain one, whose
+        # exception is the tick's own failure.
+        adapter._edit_text = boom  # type: ignore[method-assign]
         adapter.edit_message = boom  # type: ignore[method-assign]
         await _until(lambda: runtime.record.get("last_status") == "tick_failed")
         assert runtime.record["last_error"] == "RuntimeError"  # class only, no message text
         assert ctx.state.data["probe"]["last_status"] == "tick_failed"
 
+        adapter._edit_text = FakeAdapter._edit_text.__get__(adapter)  # type: ignore[method-assign]
         adapter.edit_message = FakeAdapter.edit_message.__get__(adapter)  # type: ignore[method-assign]
         await _until(lambda: runtime.record.get("last_status") == "edited")
         runtime.task.cancel()

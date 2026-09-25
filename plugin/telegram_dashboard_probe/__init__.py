@@ -18,10 +18,17 @@ Two traps this plugin is built around (found by reading 0.21.1, see the report):
 Also: the factory fires BEFORE the adapter finishes ``initialize()``/``start()``, so the first
 tick waits for ``is_connected`` instead of sending into a bot that is not initialised yet.
 
-The screen is plain text on purpose: ``edit_message`` without ``finalize`` sets no parse mode,
-and its MarkdownV2 path splits an over-long payload into NEW messages, which a pinned dashboard
-must never do. Whatever happens while composing, the message is edited: a screen that could not
-be built is replaced by a loud one-screen notice with the time, never left as yesterday's text.
+The screen goes out as HTML when the adapter lets it, plain otherwise. The public
+``edit_message`` without ``finalize`` sets no parse mode, and its MarkdownV2 path splits an
+over-long payload into NEW messages, which a pinned dashboard must never do. The adapter's own
+``_edit_text(chat, id, text, parse_mode)`` (the same on 0.21.1, 0.21.3 and 0.21.5) takes a parse
+mode and raises on refusal, so every tick tries it with ``HTML`` (bold headings, the details in
+a collapsed quote) and, on any failure, edits plain through the public verb in the same tick. A
+plain edit that succeeds right after a failed HTML one means the HTML form was refused: plain
+from then on, the record says ``screen_format: plain`` and why, and HTML is tried again after
+``HTML_RETRY_TICKS``. Whatever happens while composing, the message is edited: a screen that
+could not be built is replaced by a loud one-screen plain notice with the time, never left as
+yesterday's text.
 
 The ``telegram_dashboard`` package is looked up beside this file first (the deployment copies
 both directories into the same plugin folder), then in the interpreter. Settings come from the
@@ -80,8 +87,14 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     "collect": ("collect_all_async", "SubprocessRunner", "Flights"),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
-    "render": ("render_dashboard", "to_telegram_plain"),
+    "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
 }
+# The Bot API name of the parse mode, passed as a string: ``telegram.constants.ParseMode.HTML``
+# is that string, and importing it would tie the plugin to the engine's PTB.
+HTML_PARSE_MODE = "HTML"
+# After a refused HTML edit the screen is plain for this many ticks, then HTML is tried once
+# more: an hour at the pilot's period, so a transient failure does not lock plain in for good.
+HTML_RETRY_TICKS = 12
 
 Collector = Callable[[datetime], Awaitable[Any]]
 
@@ -109,6 +122,24 @@ class Dashboard:
     freshness: Any
     render: Any
     origin: str
+
+
+@dataclass(frozen=True)
+class Screen:
+    """One tick's text in both forms. ``html`` is ``None`` for the notice: the loud path stays
+    plain so that nothing can be refused on the way to the chat."""
+
+    plain: str
+    html: str | None = None
+
+
+@dataclass(frozen=True)
+class _EditResult:
+    """What ``_edit`` answers when the HTML verb took the text: the public verb's ``SendResult``
+    is not constructed by the plugin, so a shape with the two fields the tick reads."""
+
+    success: bool
+    error: str | None = None
 
 
 def read_settings(ctx: Any) -> Settings | None:
@@ -295,6 +326,10 @@ class ProbeRuntime:
         self._generations: dict[int, int] = {}
         self.ticks = 0
         self.record: dict[str, Any] = {}
+        # ``None`` until the first edit answers; ``False`` while HTML is refused, with the tick
+        # from which it is worth trying again.
+        self.html: bool | None = None
+        self.html_retry_tick = 0
 
     # ------------------------------------------------------------------ factory (connect-time)
 
@@ -363,7 +398,7 @@ class ProbeRuntime:
             return
         self.ticks += 1
         now = datetime.now(UTC)
-        text = await self.compose(now)
+        screen = await self.compose(now)
         live = self.live_adapter()
         if live is None:
             self._note(status="waiting", error="no connected Telegram adapter")
@@ -372,7 +407,7 @@ class ProbeRuntime:
         chat = self.settings.chat_id
         message_id = self.record.get("message_id")
         if message_id and self.record.get("chat_id") == chat:
-            result = await live.edit_message(chat, str(message_id), text)
+            result = await self._edit(live, chat, str(message_id), screen)
             if result.success:
                 self._note(status="edited", error=None, generation=generation, confirmed=True)
                 return
@@ -384,8 +419,10 @@ class ProbeRuntime:
             else:
                 self._note(status="edit_failed", error=error, generation=generation)
                 return
+        # Creation goes through the public verb as plain text (the adapter's own markdown
+        # conversion, which the screen has no constructs for); the next tick edits it as HTML.
         metadata = {"thread_id": self.settings.thread_id} if self.settings.thread_id else None
-        result = await live.send(chat, text, metadata=metadata)
+        result = await live.send(chat, screen.plain, metadata=metadata)
         if result.success and result.message_id:
             if self.record.get("lost_at"):
                 self.record["recreated_at"] = now.isoformat()
@@ -398,14 +435,72 @@ class ProbeRuntime:
             status="send_failed", error=str(result.error or "no message id"), generation=generation
         )
 
+    # ------------------------------------------------------------------ the edit
+
+    async def _edit(self, live: Any, chat: str, message_id: str, screen: Screen) -> Any:
+        """HTML through the adapter's ``_edit_text`` when it takes it, plain through the public
+        ``edit_message`` otherwise; the record says which form is on the screen.
+
+        The two verbs cannot tell "HTML refused" from "network down" on their own: the plain edit
+        right after a failed HTML one does. Plain succeeded, HTML did not: the form was refused.
+        Both failed: no verdict, the tick's own error handling takes the plain result."""
+        reason: str | None = None
+        if screen.html is not None and self._html_wanted():
+            edit_text = getattr(live, "_edit_text", None)
+            if not asyncio.iscoroutinefunction(edit_text):
+                reason = "no _edit_text"
+            else:
+                try:
+                    await edit_text(chat, message_id, screen.html, HTML_PARSE_MODE)
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except BaseException as exc:
+                    if "not modified" in str(exc).lower():
+                        # Telegram compared our text with the live message: it exists and
+                        # already says this, in HTML.
+                        self._html_verdict(True, None)
+                        return _EditResult(success=True)
+                    # Class name only: the message may carry chat ids.
+                    reason = type(exc).__name__
+                else:
+                    self._html_verdict(True, None)
+                    return _EditResult(success=True)
+        result = await live.edit_message(chat, message_id, screen.plain)
+        if reason is not None and result.success:
+            self._html_verdict(False, reason)
+        return result
+
+    def _html_wanted(self) -> bool:
+        return self.html is not False or self.ticks >= self.html_retry_tick
+
+    def _html_verdict(self, ok: bool, reason: str | None) -> None:
+        if ok:
+            if self.html is not True:
+                logger.info("probe: the screen is edited as HTML through the adapter")
+            self.html = True
+        else:
+            if self.html is not False:
+                logger.warning(
+                    "probe: HTML edit refused (%s); plain text, HTML tried again in %d ticks",
+                    reason,
+                    HTML_RETRY_TICKS,
+                )
+            self.html = False
+            self.html_retry_tick = self.ticks + HTML_RETRY_TICKS
+        # Saved with the tick's own note, right after this edit.
+        self.record["screen_format"] = "html" if ok else "plain"
+        self.record["html_error"] = reason
+
     # ------------------------------------------------------------------ the screen
 
-    async def compose(self, now: datetime) -> str:
-        """The first screen as plain text, or a loud one-screen notice. Never raises."""
+    async def compose(self, now: datetime) -> Screen:
+        """The first screen in both forms, or a loud one-screen plain notice. Never raises."""
         dashboard = self.dashboard
         if dashboard is None:
             self.record["last_render_error"] = "ImportError"
-            return self._notice(now, "пакет telegram_dashboard не импортируется, экран не собран")
+            return Screen(
+                self._notice(now, "пакет telegram_dashboard не импортируется, экран не собран")
+            )
         try:
             snapshot = await self.collector(now)
             record = dashboard.freshness.record_from_plugin_state(
@@ -419,6 +514,7 @@ class ProbeRuntime:
                 zone=self.zone,
             )
             plain: str = dashboard.render.to_telegram_plain(text)
+            html: str = dashboard.render.to_telegram_html(text)
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except BaseException as exc:
@@ -431,9 +527,9 @@ class ProbeRuntime:
             else:
                 logger.exception("probe: screen not composed; the message gets a notice instead")
             self.record["last_render_error"] = reason
-            return self._notice(now, f"экран не собран: {reason}")
+            return Screen(self._notice(now, f"экран не собран: {reason}"))
         self.record["last_render_error"] = None
-        return plain
+        return Screen(plain=plain, html=html)
 
     def _record_as_delivered(self, now: datetime) -> dict[str, Any]:
         """The record as it will be once this text lands.

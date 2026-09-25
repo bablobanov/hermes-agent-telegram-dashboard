@@ -77,26 +77,54 @@ class FakeContext:
 
 
 class FakeAdapter:
+    """The two verbs the plugin uses on the engine's Telegram adapter, the way 0.21.x has them:
+    the public ``edit_message`` (plain text, a ``SendResult``) and the private ``_edit_text``
+    (a parse mode, raises on refusal). ``reject_html`` is the message Telegram would answer the
+    HTML edit with; ``fail_plain`` makes the public edit fail the same way every time."""
+
     platform = "telegram"
 
-    def __init__(self) -> None:
+    def __init__(self, *, reject_html: str | None = None, fail_plain: str | None = None) -> None:
         self.gateway_runner = SimpleNamespace(adapters={"telegram": self})
         self.is_connected = True
+        self.reject_html = reject_html
+        self.fail_plain = fail_plain
         self.sent: list[str] = []
-        self.edits: list[str] = []
+        self.edits: list[str] = []  # plain, through edit_message
+        self.html_edits: list[tuple[str, Any]] = []  # (text, parse_mode), through _edit_text
+        self.texts: list[str] = []  # everything that reached Telegram, in order
 
     async def send(self, chat: str, text: str, metadata: Any = None) -> Any:
         self.sent.append(text)
+        self.texts.append(text)
         return SimpleNamespace(success=True, message_id="101", error=None)
 
     async def edit_message(self, chat: str, message_id: str, text: str) -> Any:
+        if self.fail_plain is not None:
+            return SimpleNamespace(success=False, error=self.fail_plain)
         self.edits.append(text)
+        self.texts.append(text)
         return SimpleNamespace(success=True, error=None)
+
+    async def _edit_text(
+        self, chat_id: str, message_id: str, text: str, parse_mode: Any = None
+    ) -> None:
+        self.html_edits.append((text, parse_mode))
+        if self.reject_html is not None:
+            raise RuntimeError(self.reject_html)
+        self.texts.append(text)
 
     @property
     def last_text(self) -> str | None:
-        """Whatever reached Telegram last, by either verb."""
-        return self.edits[-1] if self.edits else (self.sent[-1] if self.sent else None)
+        """Whatever reached Telegram last, by any verb."""
+        return self.texts[-1] if self.texts else None
+
+
+class PlainOnlyAdapter(FakeAdapter):
+    """An adapter of an engine that has no ``_edit_text``: the attribute exists on the class as
+    ``None`` so ``getattr`` finds nothing callable, the way a missing method reads."""
+
+    _edit_text = None  # type: ignore[assignment]
 
 
 async def until(predicate: Any, *, timeout: float = 3.0) -> None:

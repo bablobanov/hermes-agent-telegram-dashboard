@@ -3,11 +3,15 @@
 Load-bearing property, from the task card: a tick whose collection or render fails must STILL
 edit the message. Leaving yesterday's text on a pinned dashboard is worse than an empty screen,
 because it looks exactly like a calm system.
+
+Since 25.09 the screen goes out as HTML through the adapter's ``_edit_text`` and falls back to
+plain through the public ``edit_message``; the second half of this module is that probe.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import shutil
@@ -16,7 +20,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from probe_fakes import CHAT, PLUGIN_DIR, FakeAdapter, FakeContext, load_plugin, until
+from probe_fakes import (
+    CHAT,
+    PLUGIN_DIR,
+    FakeAdapter,
+    FakeContext,
+    PlainOnlyAdapter,
+    load_plugin,
+    until,
+)
 
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
 from telegram_dashboard.states import all_states
@@ -27,6 +39,7 @@ _STATUS_LABELS = {
     "critical": "🔴 Требует внимания",
     "unknown": "⚪ Состояние неизвестно",
 }
+STATUS_MARKS = ("🟢", "🟡", "🔴", "⚪")
 STATES = all_states()
 
 
@@ -78,6 +91,11 @@ def _run(runtime: Any, adapter: FakeAdapter, scenario: Any) -> None:
     asyncio.run(body())
 
 
+def _remembered(ctx: FakeContext, message_id: str = "4242") -> None:
+    """A record that already points at a message: the tick edits instead of sending."""
+    ctx.state.set("probe", {"message_id": message_id, "chat_id": CHAT, "last_status": "edited"})
+
+
 def test_the_tick_delivers_the_screen_not_a_counter(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
@@ -86,20 +104,22 @@ def test_the_tick_delivers_the_screen_not_a_counter(monkeypatch, tmp_path: Path)
     adapter = FakeAdapter()
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
+        await until(lambda: len(adapter.html_edits) >= 1)
 
     _run(runtime, adapter, scenario)
 
-    text = adapter.edits[-1]
-    assert text.splitlines()[0] == "HERMES DASHBOARD"
-    assert "Данные: " in text and "Сообщение подтверждено: " in text
-    assert "Обновлено: " in text
-    assert "Gateway: " in text
-    assert "ЛИМИТЫ" in text and "нет данных" in text  # limits disabled: named, never zero
+    text, parse_mode = adapter.html_edits[-1]
+    assert parse_mode == "HTML"
+    assert text.splitlines()[0].startswith(STATUS_MARKS) and " · " in text.splitlines()[0]
+    assert "<b>Лимиты</b>" in text and "нет данных" in text  # limits disabled: named, never zero
+    assert "<blockquote expandable><b>Подробности</b>" in text
+    assert "> Период" not in text and "Период 1 мин" in text
     assert "dashboard probe · tick" not in text
     assert "#" not in text
     assert _utf16_units(text) <= TELEGRAM_TEXT_LIMIT
     assert ctx.state.data["probe"]["last_status"] == "edited"
+    assert ctx.state.data["probe"]["screen_format"] == "html"
+    assert ctx.state.data["probe"]["html_error"] is None
 
 
 @pytest.mark.parametrize("stage", ["collector", "render"])
@@ -107,7 +127,7 @@ def test_a_failed_stage_still_edits_the_message_with_a_loud_stamp(
     monkeypatch, tmp_path: Path, stage: str
 ) -> None:
     """Yesterday's text must not survive a tick whose screen could not be built, whether the
-    collection or the render is what failed."""
+    collection or the render is what failed. The notice is plain, through the public verb."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     runtime = plugin.register(ctx)
@@ -133,19 +153,20 @@ def test_a_failed_stage_still_edits_the_message_with_a_loud_stamp(
         monkeypatch.setattr(runtime.dashboard.render, "render_dashboard", real_render)
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
-        edits_before = len(adapter.edits)
+        await until(lambda: len(adapter.texts) >= 1)
+        texts_before = len(adapter.texts)
         break_it()
-        await until(lambda: len(adapter.edits) > edits_before + 1)
-        text = adapter.edits[-1]
+        await until(lambda: len(adapter.texts) > texts_before + 1)
+        text = adapter.texts[-1]
         assert text.startswith("⚠️")
+        assert text in adapter.edits  # the notice takes the plain verb
         assert "RuntimeError" in text and "-100999" not in text
         assert "Обновлено: " in text
         assert ctx.state.data["probe"]["last_status"] == "edited"
         assert ctx.state.data["probe"]["last_render_error"] == "RuntimeError"
 
         mend_it()
-        await until(lambda: adapter.edits[-1].startswith("HERMES DASHBOARD"))
+        await until(lambda: adapter.texts[-1].startswith(STATUS_MARKS))
         assert ctx.state.data["probe"]["last_render_error"] is None
 
     _run(runtime, adapter, scenario)
@@ -160,24 +181,26 @@ def test_without_the_dashboard_package_the_message_says_so(monkeypatch, tmp_path
     adapter = FakeAdapter()
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
+        await until(lambda: len(adapter.texts) >= 1)
 
     _run(runtime, adapter, scenario)
 
-    text = adapter.edits[-1]
+    text = adapter.texts[-1]
     assert text.startswith("⚠️")
     assert "telegram_dashboard" in text
     assert "Обновлено: " in text
+    assert adapter.html_edits == []  # nothing to build a form from: plain only
 
 
 @pytest.mark.parametrize("state", STATES[:10], ids=[f"{s.number:02d}" for s in STATES[:10]])
 def test_each_research_state_reaches_telegram_through_the_tick(
     monkeypatch, tmp_path: Path, state: Any
 ) -> None:
-    """Section 11 of the research, through the plugin's own path: collector → render → plain
-    text → ``edit_message``. A smoke run over the ten snapshots: each reaches Telegram intact,
-    with its status label, its incidents and no markup. (Whether a state's status is derived
-    correctly is ``derive_overall``'s job, tested with the collectors; here it is injected.)"""
+    """Section 11 of the research, through the plugin's own path: collector → render → HTML →
+    ``_edit_text``. A smoke run over the ten snapshots: each reaches Telegram intact, with its
+    status label first, its incidents and no heading markers. (Whether a state's status is
+    derived correctly is ``derive_overall``'s job, tested with the collectors; here it is
+    injected.)"""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     runtime = plugin.register(ctx)
@@ -190,20 +213,21 @@ def test_each_research_state_reaches_telegram_through_the_tick(
     runtime.collector = snapshot
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
+        await until(lambda: len(adapter.html_edits) >= 1)
 
     _run(runtime, adapter, scenario)
 
-    text = adapter.edits[-1]
+    text, parse_mode = adapter.html_edits[-1]
     lines = text.splitlines()
-    assert lines[0] == "HERMES DASHBOARD"
-    assert lines[1] == _STATUS_LABELS[state.expect_overall]
+    assert parse_mode == "HTML"
+    assert lines[0].startswith(_STATUS_LABELS[state.expect_overall] + " · ")
+    assert lines[0].endswith("09.09 21:00 UTC")
     for incident in state.snapshot.incidents:
-        assert incident.title in text
+        assert html.escape(incident.title) in text
     if state.expect_overall != "normal":
         assert "🟢 Норма" not in text
-    assert "Данные: 21:00 UTC" in text
-    assert "#" not in text and "<b>" not in text
+    assert "#" not in text and "> " not in text
+    assert "<blockquote expandable>" in text
     assert _utf16_units(text) <= TELEGRAM_TEXT_LIMIT
 
 
@@ -232,11 +256,11 @@ def test_state_11_a_record_not_confirmed_for_two_periods_banners_the_first_line(
     runtime.collector = snapshot
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
+        await until(lambda: len(adapter.texts) >= 1)
 
     _run(runtime, adapter, scenario)
 
-    text = adapter.edits[-1]
+    text = adapter.texts[-1]
     assert text.startswith("🔴 ДАШБОРД УСТАРЕЛ")
     assert "🟢 Норма" in text  # the data is fine; the message is the problem, and both are said
     assert not adapter.sent  # the remembered message was edited, not replaced
@@ -247,7 +271,8 @@ def test_state_12_a_lost_record_is_announced_and_the_message_is_sent_anew(
 ) -> None:
     """The text is composed before the send that recreates the message, so it must speak of
     the message it will become: any text that lands IS the recreation, and a first line saying
-    "НЕ восстановлено" on it would be false for a whole period."""
+    "НЕ восстановлено" on it would be false for a whole period. Creation is plain text through
+    the public verb; the HTML form follows with the first edit."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
     ctx.state.set(
@@ -277,6 +302,7 @@ def test_state_12_a_lost_record_is_announced_and_the_message_is_sent_anew(
 
     text = adapter.sent[0]
     assert text.startswith("🔴 Закреплённое сообщение пропало (21:00 UTC), создано заново")
+    assert "<b>" not in text and "ПОДРОБНОСТИ" in text  # the plain form, headings upper-case
     assert runtime.record["message_id"] == "101"
     assert runtime.record["recreated_at"]
 
@@ -358,12 +384,13 @@ def test_a_healthy_cadence_never_shows_the_lagging_banner(monkeypatch, tmp_path:
     runtime.collector = slow
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 2, timeout=6.0)
+        await until(lambda: len(adapter.html_edits) >= 2, timeout=6.0)
 
     _run(runtime, adapter, scenario)
 
-    first_lines = [text.splitlines()[0] for text in adapter.edits]
-    assert first_lines == ["HERMES DASHBOARD"] * len(first_lines), first_lines
+    # The edits, not the creation: the first message of all is never confirmed yet and says so.
+    first_lines = [text.splitlines()[0] for text, _ in adapter.html_edits]
+    assert first_lines == ["🟢 Норма · 09.09 21:00 UTC"] * len(first_lines), first_lines
 
 
 def test_a_collector_that_exits_the_interpreter_still_gets_a_notice(
@@ -381,15 +408,15 @@ def test_a_collector_that_exits_the_interpreter_still_gets_a_notice(
         raise SystemExit(3)
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 1)
-        edits_before = len(adapter.edits)
+        await until(lambda: len(adapter.texts) >= 1)
+        texts_before = len(adapter.texts)
         runtime.collector = exit_
-        await until(lambda: len(adapter.edits) > edits_before + 1)
+        await until(lambda: len(adapter.texts) > texts_before + 1)
 
     _run(runtime, adapter, scenario)
 
-    assert adapter.edits[-1].startswith("⚠️")
-    assert "SystemExit" in adapter.edits[-1]
+    assert adapter.texts[-1].startswith("⚠️")
+    assert "SystemExit" in adapter.texts[-1]
     assert ctx.state.data["probe"]["last_render_error"] == "SystemExit"
 
 
@@ -428,7 +455,7 @@ def test_home_is_taken_from_the_state_path_before_the_environment(
 
 
 def test_a_package_without_the_screen_api_is_rejected_at_import(monkeypatch) -> None:
-    """An older ``telegram_dashboard`` in the interpreter (no ``to_telegram_plain``) must be
+    """An older ``telegram_dashboard`` in the interpreter (no ``to_telegram_html``, say) must be
     refused up front, not fail with ``AttributeError`` on every tick."""
     import sys
     from types import ModuleType
@@ -436,6 +463,7 @@ def test_a_package_without_the_screen_api_is_rejected_at_import(monkeypatch) -> 
     plugin = load_plugin()
     stale = ModuleType("telegram_dashboard.render")
     stale.render_dashboard = lambda *a, **k: ""  # type: ignore[attr-defined]
+    stale.to_telegram_plain = lambda text: text  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "telegram_dashboard.render", stale)
 
     assert plugin.import_dashboard() is None
@@ -456,7 +484,7 @@ def test_a_persistent_failure_logs_one_traceback_not_one_per_tick(
     runtime.collector = boom
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= 4)
+        await until(lambda: len(adapter.texts) >= 4)
 
     with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
         _run(runtime, adapter, scenario)
@@ -567,3 +595,140 @@ def test_a_record_from_before_kimi_keeps_its_grok_attempt_under_the_provider_key
     assert caches == {"grok": legacy, "kimi": {}}
     assert runtime.record["limits_cache"] is caches
     assert runtime.quota_caches() is caches  # stable across ticks
+
+
+# ----------------------------------------------------------------------- the HTML probe
+
+
+def _static(runtime: Any) -> None:
+    async def snapshot(now: Any) -> Any:
+        return STATES[0].snapshot
+
+    runtime.collector = snapshot
+
+
+def test_the_screen_is_edited_as_html_through_the_adapter_s_own_verb(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert all(parse_mode == "HTML" for _, parse_mode in adapter.html_edits)
+    assert adapter.edits == [] and adapter.sent == []  # never the plain verb, never a new message
+    assert "<blockquote expandable>" in adapter.html_edits[0][0]
+    assert runtime.html is True
+    assert ctx.state.data["probe"]["screen_format"] == "html"
+    assert ctx.state.data["probe"]["html_error"] is None
+
+
+def test_a_refused_html_edit_falls_back_to_plain_in_the_same_tick_and_probes_again_later(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Telegram's answer to a form it does not take: the same tick edits plain through the
+    public verb, the record says so, HTML is not tried again for HTML_RETRY_TICKS ticks."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter(reject_html="Bad Request: can't parse entities: unsupported start tag")
+    retry = plugin.HTML_RETRY_TICKS
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
+        assert len(adapter.html_edits) == 1  # one refusal, then plain without asking again
+        assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
+        assert "<b>" not in adapter.edits[0] and "ЛИМИТЫ" in adapter.edits[0]
+        assert ctx.state.data["probe"]["last_status"] == "edited"
+        assert ctx.state.data["probe"]["screen_format"] == "plain"
+        assert ctx.state.data["probe"]["html_error"] == "RuntimeError"
+        await until(lambda: len(adapter.html_edits) >= 2, timeout=10.0)  # the probe returns
+        assert runtime.ticks >= retry + 1
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    refused = [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
+    assert len(refused) == 1, "one warning per verdict, not one per tick"
+    assert "RuntimeError" in refused[0].getMessage()
+    assert "-100" not in refused[0].getMessage()
+
+
+def test_not_modified_from_the_html_verb_is_a_confirmation(monkeypatch, tmp_path: Path) -> None:
+    """Telegram compared our HTML with the live message and found it equal: the message exists
+    and already says this. No plain edit, no failure, the record stays on HTML."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter(reject_html="Bad Request: message is not modified")
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.edits == []
+    assert ctx.state.data["probe"]["last_status"] == "edited"
+    assert ctx.state.data["probe"]["screen_format"] == "html"
+
+
+def test_an_adapter_without_the_verb_gets_plain_text_and_the_record_says_why(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PlainOnlyAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.edits) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.html_edits == []
+    # A record without a confirmation banners the first edit; the status line follows it.
+    assert "🟢 Норма · 09.09 21:00 UTC" in adapter.edits[0].splitlines()[:2]
+    assert "ПОДРОБНОСТИ" in adapter.edits[0] and "<" not in adapter.edits[0]
+    assert ctx.state.data["probe"]["screen_format"] == "plain"
+    assert ctx.state.data["probe"]["html_error"] == "no _edit_text"
+
+
+def test_when_plain_fails_too_there_is_no_verdict_and_html_is_tried_next_tick(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Both verbs failing looks like the network, not the form: the tick fails as before and
+    the next one tries HTML first again."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter(reject_html="Timed out", fail_plain="Timed out")
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert runtime.html is None
+    assert ctx.state.data["probe"]["last_status"] == "edit_failed"
+    assert "screen_format" not in ctx.state.data["probe"]
+    assert not adapter.sent  # a network failure is not a lost message
