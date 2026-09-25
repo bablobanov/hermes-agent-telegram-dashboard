@@ -34,32 +34,35 @@ One phone screen, about thirty characters per line, then a details block that Te
 collapsed:
 
 ```
-🟢 Норма · 25.09 12:21 +05          status and the dated data stamp (the pinned header shows it)
-Gateway ✓ · Telegram ✓              words when something is off: остановлен, не подключён
-Бэкап ✓ 6 ч назад                   the last state.db backup; ⚠️ when it failed or is older than 26 h
-Дрейф ✓ 0 из 481                    keys that differ from the approved baseline
+🟢 Healthy · Sep 25 12:21 +05       status and the dated data stamp (the pinned header shows it)
+Gateway ✓ · Telegram ✓              words when something is off: stopped, disconnected
+Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
+Drift ✓ 0 of 481                    keys that differ from the approved baseline
 
-Лимиты
-Claude · нет данных                 a line without a number never shows a zero
-⚠️ Codex ▓▓▓▓▓ 98%                  the mark from 90% spent; the bar is the provider's own number
-Grok · расход не начат              a state in words is never turned into a bar
-Kimi ░░░░░ 3% мес · 5 ч 0%          the most spent window owns the bar, the others follow in words
-Gemini · нет данных
+Limits used
+Claude · no data                    a line without a number never shows a zero
+⚠️ Codex 5h:98%(1h21m)              the spent share, the time to the reset; the mark from 90%
+Grok · usage not started            a state in words is never turned into a number
+Kimi 5h:0%(4h13m) · month:3%(29d)   every window, in the provider's own order
+Gemini · no data
 
-▎Подробности                        collapsed: confirmation time, the odd data minute, period,
+▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
-                                    time, every reset, the reason of every "нет данных"
+                                    time, the reason of every "no data"
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
 status line, and the message under it carries the rest: gateway and Telegram state, the last
-backup, config drift, the account limits of every provider with a bar, and a collapsed details
-block with the reasons, the resets and the timestamps. Nothing to open, nothing to install on
-the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
+backup, config drift, the account limits of every provider with the time to each reset, and a
+collapsed details block with the reasons and the timestamps. Nothing to open, nothing to install
+on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
 
-<img src="docs/dashboard-preview.jpg" width="600" alt="The pinned dashboard: status line, gateway, backup, drift, usage limits with bars, details and resets">
+<img src="docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
+
+The picture is an illustration of what the message carries; the message itself is the plain
+text above.
 
 Up to five events that need attention come right after the top block, before the limits.
 Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
@@ -70,10 +73,8 @@ reason, in the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
-(`Профили 1/1 · источники 6/6`) lives in the details and comes up to the screen only when it is
-incomplete (`Охват профилей 2/3`, `Не наблюдается: …`, `Устарело: …`).
-
-The screen text is in Russian; there is no other language yet.
+(`Profiles 1/1 · sources 6/6`) lives in the details and comes up to the screen only when it is
+incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`).
 
 ## Freshness is a load-bearing requirement
 
@@ -196,9 +197,14 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok and Kimi are asked (not every tick) |
-   | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "не наблюдается" |
+   | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
+   The drift reader parses the output of our own `check_drift.py` (numbered sections
+   `[N] …: count`, and the total from its `ключей N` line, `_KEYS_RE` in `collect.py`), which is
+   not universal: another script with the sections but without that line gives no total and
+   reads `Drift ✓ N keys`, and output without the sections reads `Drift: unknown` when the exit
+   code says drift (exit 0 without them still reads as clean, `Drift ✓ 0 keys`).
    A source that hangs is not started again until its worker returns (one worker per
    source across ticks), so a stuck facade or command cannot fill the gateway's executor.
 3. restart the gateway; the message appears in the configured chat and its screen moves
@@ -219,15 +225,15 @@ before Kimi (Grok's attempt at the top level) is moved under `grok` once.
 
 ### The backup line
 
-`Бэкап ✓ 6 ч назад` sits in the top block, beside the gateway line, in every state: a screen
+`Backup ✓ 6 h ago` sits in the top block, beside the gateway line, in every state: a screen
 silent about the norm makes silence indistinguishable from confirmation. The absolute time and
-the integrity verdict are in the details (`Бэкап 24.09 05:31 · integrity ok`). The source is a
+the integrity verdict are in the details (`Backup Sep 24 05:31 · integrity ok`). The source is a
 JSON status a backup job writes on every run (`ok`, `phase`, `reason`, `integrity`,
 `finished_epoch` or `finished_at`); the dashboard reads that file only and never opens the
-database or the copy. A failed run is loud on the line (`Бэкап ⚠️ не состоялся 6 ч назад`, the
+database or the copy. A failed run is loud on the line (`Backup ⚠️ failed 6 h ago`, the
 `<phase>: <reason>` in the details) and an event; a status older than 26 h is marked
-(`⚠️ старше 26 ч`) and an event; a missing or unreadable file is `нет данных` with the reason in
-the details and an event; no `backup_status` configured is `не наблюдается`. The status shape is
+(`⚠️ older than 26 h`) and an event; a missing or unreadable file is `no data` with the reason in
+the details and an event; no `backup_status` configured is `not observed`. The status shape is
 the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
 produces the same keys works.
 
@@ -236,21 +242,28 @@ produces the same keys works.
 Every limit line is one of three things, and the caption says which: an **official quota**
 (a number the provider itself reports, with its own reset date), **local accounting** (tokens
 this installation counted; it never knows the remaining quota, nor spend outside the agent), or
-**"нет данных" with a reason**. "Official" means *the number came from the provider*, not
+**"no data" with a reason**. "Official" means *the number came from the provider*, not
 *the surface is in the provider's docs*: the engine's own Anthropic and Codex fetchers read
 undocumented surfaces (`api/oauth/usage`, the ChatGPT backend), and so does the Grok reader.
 A documented surface would be preferable; an undocumented provider number is still the
 provider's number, and a local count is not.
 
-An official line is one line: `⚠️ Codex ▓▓▓▓▓ 98%`, the mark from 90% spent, a five-cell bar
-of the provider's own number, the exact percent; with several windows the most spent one owns
-the bar and the others follow in words (`Kimi ░░░░░ 3% мес · 5 ч 0%`). A state the provider
-reports in words is never turned into a bar or a zero (`Grok · расход не начат`). Resets are in
-the details, one line per provider (`Codex завтра 16:14`, `Kimi 5 ч 16:34 · мес 25.10`: a time
-for the data day, `завтра HH:MM` for the next, a date beyond). A number read on its own cadence
-must not borrow the screen's stamp: the details line `Данные 12:21 · Kimi 12:16` names every
-number read at another minute than the screen, and a cached number is never shown older than
-its refresh interval (`quota_cache.py`), after two intervals the source is `Устарело` on the
+An official line is one line: `⚠️ Codex 5h:98%(1h21m)`. Every window the provider reports is on
+it, in the provider's own order, as `label:N%(time to reset)`: the spent share (every percent on
+the screen is spent, never remaining, from every source; the heading says `Limits used`) and the
+time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
+days from two days on (`4d`), `(?)` when the reset date cannot be read. The mark comes from 90%
+spent in any window. The engine names its windows in words (Codex `Session`/`Weekly`, Claude
+`Current session`/`Current week`); they become `5h` and `7d`, the labels Grok and Kimi carry
+too, and Kimi's monthly window is `month` (`Kimi 5h:0%(4h13m) · month:3%(29d)`). A state the
+provider reports in words is never turned into a number or a zero (`Grok · usage not started`).
+There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
+less than the number after it; Telegram has no text colour either, so the mark is the only
+emphasis. The countdown counts from the data time on the first line: a message that stopped
+updating is the freshness banner's business, not the countdown's. A number read on its own
+cadence must not borrow the screen's stamp: the details line `Data 12:21 · Kimi 12:16` names
+every number read at another minute than the screen, and a cached number is never shown older
+than its refresh interval (`quota_cache.py`), after two intervals the source is `Stale` on the
 screen. A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
 block must never do.
 
@@ -259,19 +272,19 @@ from `https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the token 
 already holds for `xai-oauth`, obtained through the engine's own resolver
 (`hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials`, so the screen shows the quota
 of exactly the grant inference uses) and the client header the Grok CLI sends. The plan name
-comes from `…/v1/settings` (`subscription_tier_display`), optional. Probed on 2026-09-12: the
+comes from `…/v1/settings` (`subscription_tier_display`), optional, and rides on the item
+(`plan`, not shown on the screen yet). Probed on 2026-09-12: the
 inference host `api.x.ai` answers 404 for this path, so the proxy host is required. Policy:
-one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "нет данных"
+one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "no data"
 with its reason until the next interval; a cached number older than the interval is not shown.
 The shape is checked strictly (`currentPeriod.type == USAGE_PERIOD_TYPE_WEEKLY`, a finite
 percent in 0..100, a readable end date); anything else is named, not guessed. One answer is a
 state rather than a changed shape: right after the weekly reset the proxy leaves
 `creditUsagePercent` out altogether until the first request of the new period (probed
-2026-09-25). The line then reads `Grok · расход не начат` with the reset date in the details,
-never a zero, and only while the period is the current one and on-demand spend is an explicit
-zero; a percent
-missing under any other conditions is named (`нет creditUsagePercent`). Grok is its own source
-on the coverage line (`квота Grok`).
+2026-09-25). The line then reads `Grok · usage not started`, never a zero, and only while the
+period is the current one and on-demand spend is an explicit zero; a percent missing under any
+other conditions is named (`no creditUsagePercent`). Grok is its own source on the coverage
+line (`Grok quota`).
 
 **Kimi** (`telegram_dashboard/kimi.py`): the windows of the Kimi Code subscription, read from
 `<base URL>/v1/usages` on the very host the engine uses for Kimi inference. The key and the base
@@ -281,15 +294,14 @@ credential pool, then the key-prefix redirect), so the screen shows the quota of
 credential inference uses, and the request carries the client header the engine sends to that
 host. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
 `managed-usage.ts`): `usages.limit_5h`, `usages.limit_7d` (legacy plans), `usages.limit_month_total`
-(new plans), each with `used_ratio` in 0..1 and a `reset_time`; the most spent window owns the
-bar on the line (`Kimi ▓▓░░░ 40% неделя · 5 ч 12%`) and every window keeps its own reset in the
-details (`Kimi 5 ч 03:10 · неделя 26.09`). Same policy and
-cache as Grok; the request never goes through the credential pool's rotation, so a failed
-request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named, not
-guessed. Kimi is its own source on the coverage line (`квота Kimi`).
+(new plans), each with `used_ratio` in 0..1 and a `reset_time`; every window is on the line with
+its own reset (`Kimi 5h:12%(2h53m) · 7d:40%(3d)`). Same policy and cache as Grok; the request
+never goes through the credential pool's rotation, so a failed request cannot mark the pool
+exhausted. Not in Kimi's docs; a changed shape is named, not guessed. Kimi is its own source on
+the coverage line (`Kimi quota`).
 
-**Claude on an installation without an Anthropic credential**: the line says `нет данных` and
-the details say `нет учётного токена`, a reason, never a zero.
+**Claude on an installation without an Anthropic credential**: the line says `no data` and the
+details say `no account token`, a reason, never a zero.
 
 The check for the plugin path is the same `--check`, pointed at that file:
 

@@ -69,7 +69,7 @@
       "verified": {
         "0.21.1": "live on the pilot installation 2026-09-12 (HTTP 200, weekly pool, tier SuperGrok); parser pinned to that answer in tests/test_grok.py"
       },
-      "caveat": "a changed answer shape is 'нет данных (форма ответа: ...)', never a number; the inference host api.x.ai answers 404 for this path, the CLI proxy host is required"
+      "caveat": "a changed answer shape is 'no data (answer shape: ...)', never a number; the inference host api.x.ai answers 404 for this path, the CLI proxy host is required"
     },
     "kimi_quota": {
       "probe": "in-process import of hermes_cli.auth.resolve_api_key_provider_credentials('kimi-coding') at call time: the key and base URL by the runtime's own rules (.env, then the credential pool, then the sk-kimi- prefix redirect); import failure or no key = unavailable with the reason",
