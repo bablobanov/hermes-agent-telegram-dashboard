@@ -271,7 +271,7 @@ def test_the_first_line_is_the_status_with_the_dated_stamp_and_the_details_follo
     assert _main_part(rendered) == [
         "🟢 Норма · 25.09 07:21 UTC",
         "Gateway ✓ · Telegram ✓",
-        "Бэкап ✓ 6 ч назад",
+        "Бэкап ✓ 6 h ago",
         "Дрейф ✓ 0 из 481",
         "",
     ]

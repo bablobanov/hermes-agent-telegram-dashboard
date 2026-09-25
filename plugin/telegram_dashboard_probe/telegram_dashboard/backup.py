@@ -21,7 +21,7 @@ from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 
 SOURCE_NAME = "backup"
 STALE_SECONDS = 26 * 3600
-STALE_WORDS = "старше 26 ч"
+STALE_WORDS = f"older than {STALE_SECONDS // 3600} h"
 
 BackupPart = tuple[BackupSummary, SourceObservation, tuple[Incident, ...]]
 
@@ -29,12 +29,12 @@ BackupPart = tuple[BackupSummary, SourceObservation, tuple[Incident, ...]]
 def describe_age(seconds: float) -> str:
     """An age in words the reader does not have to compute."""
     if seconds < 60:
-        return "менее минуты назад"
+        return "less than a minute ago"
     if seconds < 3600:
-        return f"{int(seconds // 60)} мин назад"
+        return f"{int(seconds // 60)} min ago"
     if seconds < 48 * 3600:
-        return f"{int(seconds // 3600)} ч назад"
-    return f"{int(seconds // 86400)} дн назад"
+        return f"{int(seconds // 3600)} h ago"
+    return f"{int(seconds // 86400)} d ago"
 
 
 def finished_at_of(payload: dict[str, object]) -> str | None:
@@ -53,14 +53,14 @@ def finished_at_of(payload: dict[str, object]) -> str | None:
 def summarize(payload: object, *, now: datetime) -> BackupPart:
     """The status as a block, a source observation and the events it warrants."""
     if not isinstance(payload, dict):
-        return _no_data("статус не объект", incident=True)
+        return _no_data("status is not an object", incident=True)
     finished = finished_at_of(payload)
     if finished is None:
-        return _no_data("в статусе нет времени", incident=False)
+        return _no_data("status has no time", incident=False)
     moment = parse_timestamp(finished)
     age = age_seconds(moment, now) if moment is not None else None
     if age is None or is_from_the_future(age):
-        return _no_data("статус датирован будущим", incident=False)
+        return _no_data("status dated in the future", incident=False)
 
     ok = payload.get("ok") is True
     integrity = payload.get("integrity")
@@ -74,18 +74,18 @@ def summarize(payload: object, *, now: datetime) -> BackupPart:
             integrity=sanitize_public_text(str(integrity), limit=24) if integrity else None,
         )
     else:
-        detail = ": ".join(part for part in (phase, reason) if part) or "причина не записана"
+        detail = ": ".join(part for part in (phase, reason) if part) or "reason not recorded"
         summary = BackupSummary(
             "failed", finished_at=finished, phase=phase, reason=reason, detail=detail
         )
-        incidents.append(Incident("backup:failed", "warning", f"Бэкап не состоялся: {detail}"))
+        incidents.append(Incident("backup:failed", "warning", f"Backup failed: {detail}"))
     state: SourceState = "stale" if age > STALE_SECONDS else "fresh"
     if state == "stale":
         incidents.append(
             Incident(
                 "backup:stale",
                 "warning",
-                f"Бэкап {STALE_WORDS}: последний прогон {describe_age(age)}",
+                f"Backup {STALE_WORDS}: last run {describe_age(age)}",
             )
         )
     source = SourceObservation(SOURCE_NAME, "derived", state, observed_at=finished)
@@ -96,20 +96,20 @@ def collect_backup(env: Environment, *, now: datetime) -> BackupPart:
     """Read the configured status file; every failure to read is named, none raises."""
     path = env.backup_status
     if path is None:
-        summary = BackupSummary("unsupported", detail="источник бэкапа не настроен")
+        summary = BackupSummary("unsupported", detail="backup source not configured")
         source = SourceObservation(SOURCE_NAME, "derived", "unsupported", detail=summary.detail)
         return summary, source, ()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return _no_data("файл статуса отсутствует", incident=True)
+        return _no_data("status file missing", incident=True)
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        return _no_data(f"статус нечитаем: {type(exc).__name__}", incident=True)
+        return _no_data(f"status unreadable: {type(exc).__name__}", incident=True)
     return summarize(payload, now=now)
 
 
 def _no_data(detail: str, *, incident: bool) -> BackupPart:
     summary = BackupSummary("unknown", detail=detail)
     source = SourceObservation(SOURCE_NAME, "derived", "unavailable", detail=detail)
-    incidents = (Incident("backup:unreadable", "warning", f"Бэкап: {detail}"),) if incident else ()
+    incidents = (Incident("backup:unreadable", "warning", f"Backup: {detail}"),) if incident else ()
     return summary, source, incidents

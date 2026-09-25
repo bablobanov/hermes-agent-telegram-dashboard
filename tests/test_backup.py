@@ -90,7 +90,7 @@ def test_a_failed_run_is_named_and_becomes_an_event() -> None:
     assert summary.finished_at == FINISHED.isoformat()
     assert source.state == "fresh"  # the status itself is fresh; the run it describes failed
     assert [i.severity for i in incidents] == ["warning"]
-    assert incidents[0].title == f"Бэкап не состоялся: snapshot: {FAILED_REASON}"
+    assert incidents[0].title == f"Backup failed: snapshot: {FAILED_REASON}"
 
 
 def test_a_status_older_than_the_watchdog_s_threshold_is_stale_and_an_event() -> None:
@@ -101,7 +101,7 @@ def test_a_status_older_than_the_watchdog_s_threshold_is_stale_and_an_event() ->
 
     assert summary.state == "ok"
     assert source.state == "stale"
-    assert [i.title for i in incidents] == ["Бэкап старше 26 ч: последний прогон 30 ч назад"]
+    assert [i.title for i in incidents] == ["Backup older than 26 h: last run 30 h ago"]
 
 
 def test_finished_at_is_read_when_finished_epoch_is_missing() -> None:
@@ -121,7 +121,7 @@ def test_a_status_without_a_time_is_unknown_with_the_reason() -> None:
 
     summary, source, incidents = backup.summarize(status, now=NOW)
 
-    assert summary.state == "unknown" and summary.detail == "в статусе нет времени"
+    assert summary.state == "unknown" and summary.detail == "status has no time"
     assert source.state == "unavailable"
     assert incidents == ()
 
@@ -130,19 +130,19 @@ def test_a_status_dated_in_the_future_is_not_fresh() -> None:
     ahead = NOW + timedelta(hours=2)
     summary, source, _ = backup.summarize(_status(finished_epoch=int(ahead.timestamp())), now=NOW)
 
-    assert summary.state == "unknown" and summary.detail == "статус датирован будущим"
+    assert summary.state == "unknown" and summary.detail == "status dated in the future"
     assert source.state == "unavailable"
 
 
 @pytest.mark.parametrize(
     ("seconds", "words"),
     [
-        (20, "менее минуты назад"),
-        (59 * 60, "59 мин назад"),
-        (6 * 3600, "6 ч назад"),
-        (47 * 3600 + 1800, "47 ч назад"),
-        (48 * 3600, "2 дн назад"),
-        (10 * 86400, "10 дн назад"),
+        (20, "less than a minute ago"),
+        (59 * 60, "59 min ago"),
+        (6 * 3600, "6 h ago"),
+        (47 * 3600 + 1800, "47 h ago"),
+        (48 * 3600, "2 d ago"),
+        (10 * 86400, "10 d ago"),
     ],
 )
 def test_the_age_is_said_in_words_the_reader_does_not_have_to_compute(
@@ -157,7 +157,7 @@ def test_the_age_is_said_in_words_the_reader_does_not_have_to_compute(
 def test_an_unconfigured_source_is_unsupported_not_an_alarm(tmp_path: Path) -> None:
     summary, source, incidents = backup.collect_backup(Environment(hermes_home=tmp_path), now=NOW)
 
-    assert summary.state == "unsupported" and summary.detail == "источник бэкапа не настроен"
+    assert summary.state == "unsupported" and summary.detail == "backup source not configured"
     assert source.state == "unsupported" and incidents == ()
     assert probe_backup(Environment(hermes_home=tmp_path)).status == "unsupported"
 
@@ -167,9 +167,9 @@ def test_a_missing_status_file_is_no_data_with_the_reason_and_an_event(tmp_path:
 
     summary, source, incidents = backup.collect_backup(env, now=NOW)
 
-    assert summary.state == "unknown" and summary.detail == "файл статуса отсутствует"
+    assert summary.state == "unknown" and summary.detail == "status file missing"
     assert source.state == "unavailable"
-    assert [i.title for i in incidents] == ["Бэкап: файл статуса отсутствует"]
+    assert [i.title for i in incidents] == ["Backup: status file missing"]
     assert probe_backup(env).status == "unsupported"
 
 
@@ -180,7 +180,7 @@ def test_an_unreadable_status_file_names_the_failure_class_not_its_text(tmp_path
 
     summary, source, incidents = backup.collect_backup(env, now=NOW)
 
-    assert summary.state == "unknown" and summary.detail == "статус нечитаем: JSONDecodeError"
+    assert summary.state == "unknown" and summary.detail == "status unreadable: JSONDecodeError"
     assert source.state == "unavailable"
     assert len(incidents) == 1
     assert probe_backup(env).status == "supported"
@@ -194,7 +194,7 @@ def test_a_status_that_is_not_an_object_is_no_data(tmp_path: Path) -> None:
         Environment(hermes_home=tmp_path, backup_status=path), now=NOW
     )
 
-    assert summary.state == "unknown" and summary.detail == "статус не объект"
+    assert summary.state == "unknown" and summary.detail == "status is not an object"
     assert source.state == "unavailable"
 
 
@@ -221,7 +221,8 @@ def test_the_line_carries_the_time_the_age_in_words_and_the_verdict() -> None:
     lines = _render(summary).splitlines()
 
     # The verdict and the age on the screen; the absolute time and integrity in the details.
-    assert "Бэкап ✓ 6 ч назад" in lines
+    # The line words are the renderer's and go English in the render commit.
+    assert "Бэкап ✓ 6 h ago" in lines
     assert "> Бэкап 21.09 15:56 · integrity ok" in lines
 
 
@@ -230,7 +231,7 @@ def test_the_line_is_in_the_reader_s_zone() -> None:
 
     lines = _render(summary, zone=ZoneInfo("Asia/Tokyo")).splitlines()
 
-    assert "Бэкап ✓ 6 ч назад" in lines
+    assert "Бэкап ✓ 6 h ago" in lines
     assert "> Бэкап 22.09 00:56 · integrity ok" in lines  # the zone is on the first line
 
 
@@ -240,7 +241,7 @@ def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
 
     lines = _render(summary).splitlines()
 
-    assert "Бэкап ✓ 30 ч назад ⚠️ старше 26 ч" in lines
+    assert "Бэкап ✓ 30 h ago ⚠️ older than 26 h" in lines
     assert "> Бэкап 20.09 15:56 · integrity ok" in lines
 
 
@@ -249,7 +250,7 @@ def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> No
 
     lines = _render(summary).splitlines()
 
-    assert "Бэкап ⚠️ не состоялся 6 ч назад" in lines
+    assert "Бэкап ⚠️ не состоялся 6 h ago" in lines
     assert f"> Бэкап 21.09 15:56 · snapshot: {FAILED_REASON}" in lines
 
 
@@ -263,9 +264,9 @@ def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None
     unconfigured_lines = _render(unconfigured).splitlines()
 
     assert "Бэкап: нет данных" in missing_lines
-    assert "> Бэкап: файл статуса отсутствует" in missing_lines
+    assert "> Бэкап: status file missing" in missing_lines
     assert "Бэкап: не наблюдается" in unconfigured_lines
-    assert "> Бэкап: источник бэкапа не настроен" in unconfigured_lines
+    assert "> Бэкап: backup source not configured" in unconfigured_lines
 
 
 def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
@@ -307,7 +308,7 @@ def test_the_tick_reads_the_status_file_and_counts_the_source(tmp_path: Path) ->
     source = next(s for s in snapshot.sources if s.name == "backup")
     assert source.state == "fresh"
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Бэкап ✓ 6 ч назад" in text.splitlines()
+    assert "Бэкап ✓ 6 h ago" in text.splitlines()
     assert "> Бэкап 21.09 15:56 · integrity ok" in text.splitlines()
     assert "бэкап" not in text.split("Не наблюдается:")[-1].split("\n")[0]
 
