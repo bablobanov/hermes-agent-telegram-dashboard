@@ -759,23 +759,9 @@ async def collect_all_async(
     release check; without it (no durable record) the version line is not collected at all.
     """
     flights = flights or Flights()
-    gateway, gateway_source, gateway_incidents = _gateway_guarded(env, now=now)
-    backup, backup_source, backup_incidents = _backup_guarded(env, now=now)
-    (
-        (drift, drift_source, drift_incidents),
-        (capacity, limits_source, limits_incidents),
-        (version, version_incidents),
-    ) = await asyncio.gather(
-        _drift_off_loop(
-            env, runner, now=now, timeout_seconds=drift_timeout_seconds, flights=flights
-        ),
-        _limits_guarded(
-            env,
-            now=now,
-            resolve=resolve_limits,
-            timeout_seconds=limits_timeout_seconds,
-            flights=flights,
-        ),
+    # The upstream release check starts with the tick and runs beside every other source: a
+    # GitHub that hangs holds back nothing but its own line.
+    version_task = asyncio.ensure_future(
         _version_guarded(
             version_cache,
             now=now,
@@ -784,67 +770,88 @@ async def collect_all_async(
             flights=flights,
             fetch=version_fetch or version_fetch_item,
             local=version_local or running_version,
-        ),
+        )
     )
-    grok_incidents: tuple[Incident, ...] = ()
-    kimi_incidents: tuple[Incident, ...] = ()
-    if env.limits_enabled and limits_source.state != "unsupported":
+    try:
+        gateway, gateway_source, gateway_incidents = _gateway_guarded(env, now=now)
+        backup, backup_source, backup_incidents = _backup_guarded(env, now=now)
         (
-            (grok, grok_source, grok_incidents),
-            (kimi, kimi_source, kimi_incidents),
+            (drift, drift_source, drift_incidents),
+            (capacity, limits_source, limits_incidents),
         ) = await asyncio.gather(
-            _quota_guarded(
-                "grok",
-                GROK_LABEL,
-                grok_cache if grok_cache is not None else {},
-                now=now,
-                interval_seconds=grok_interval_seconds,
-                timeout_seconds=grok_timeout_seconds,
-                flights=flights,
-                fetch=grok_fetch or grok_fetch_item,
+            _drift_off_loop(
+                env, runner, now=now, timeout_seconds=drift_timeout_seconds, flights=flights
             ),
-            _quota_guarded(
-                "kimi",
-                KIMI_LABEL,
-                kimi_cache if kimi_cache is not None else {},
+            _limits_guarded(
+                env,
                 now=now,
-                interval_seconds=kimi_interval_seconds,
-                timeout_seconds=kimi_timeout_seconds,
+                resolve=resolve_limits,
+                timeout_seconds=limits_timeout_seconds,
                 flights=flights,
-                fetch=kimi_fetch or kimi_fetch_item,
             ),
         )
-    else:
-        grok, grok_source = grok_off_for(capacity), _quota_off_source("grok", limits_source)
-        kimi, kimi_source = (
-            quota_off_for(KIMI_LABEL, capacity),
-            _quota_off_source("kimi", limits_source),
+        grok_incidents: tuple[Incident, ...] = ()
+        kimi_incidents: tuple[Incident, ...] = ()
+        if env.limits_enabled and limits_source.state != "unsupported":
+            (
+                (grok, grok_source, grok_incidents),
+                (kimi, kimi_source, kimi_incidents),
+            ) = await asyncio.gather(
+                _quota_guarded(
+                    "grok",
+                    GROK_LABEL,
+                    grok_cache if grok_cache is not None else {},
+                    now=now,
+                    interval_seconds=grok_interval_seconds,
+                    timeout_seconds=grok_timeout_seconds,
+                    flights=flights,
+                    fetch=grok_fetch or grok_fetch_item,
+                ),
+                _quota_guarded(
+                    "kimi",
+                    KIMI_LABEL,
+                    kimi_cache if kimi_cache is not None else {},
+                    now=now,
+                    interval_seconds=kimi_interval_seconds,
+                    timeout_seconds=kimi_timeout_seconds,
+                    flights=flights,
+                    fetch=kimi_fetch or kimi_fetch_item,
+                ),
+            )
+        else:
+            grok, grok_source = grok_off_for(capacity), _quota_off_source("grok", limits_source)
+            kimi, kimi_source = (
+                quota_off_for(KIMI_LABEL, capacity),
+                _quota_off_source("kimi", limits_source),
+            )
+        version, version_incidents = await version_task
+        return build_snapshot(
+            now=now,
+            gateway=gateway,
+            drift=drift,
+            backup=backup,
+            version=version,
+            capacity=merge_quotas(capacity, grok, kimi),
+            sources=(
+                gateway_source,
+                limits_source,
+                grok_source,
+                kimi_source,
+                drift_source,
+                backup_source,
+            ),
+            incidents=(
+                *gateway_incidents,
+                *drift_incidents,
+                *backup_incidents,
+                *limits_incidents,
+                *grok_incidents,
+                *kimi_incidents,
+                *version_incidents,
+            ),
         )
-    return build_snapshot(
-        now=now,
-        gateway=gateway,
-        drift=drift,
-        backup=backup,
-        version=version,
-        capacity=merge_quotas(capacity, grok, kimi),
-        sources=(
-            gateway_source,
-            limits_source,
-            grok_source,
-            kimi_source,
-            drift_source,
-            backup_source,
-        ),
-        incidents=(
-            *gateway_incidents,
-            *drift_incidents,
-            *backup_incidents,
-            *limits_incidents,
-            *grok_incidents,
-            *kimi_incidents,
-            *version_incidents,
-        ),
-    )
+    finally:
+        version_task.cancel()  # a no-op once done; a cancelled tick leaves no task behind
 
 
 def _gateway_guarded(env: Environment, *, now: datetime) -> GatewayPart:
@@ -1038,7 +1045,12 @@ async def _version_attempt(
     except BaseException as exc:
         source, incident = _collector_crashed(VERSION_FLIGHT, "official", exc)
         incidents.append(incident)
-        return _version_missed(now, source.detail or "collector crashed")
+        missed = _version_missed(now, source.detail or "collector crashed")
+        # A crash is an attempt too, cached for the day: a parsing bug must not ask GitHub on
+        # every tick. The worker has returned (it raised); nothing else writes the cache now.
+        cache["attempted_at"] = now.isoformat()
+        cache["item"] = missed
+        return missed
 
 
 def _version_missed(now: datetime, reason: str) -> dict[str, Any]:

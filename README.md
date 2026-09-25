@@ -270,9 +270,11 @@ mark, no threshold, no button, no command and no advice to update. Update by you
 - **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
   own worker thread, under the same single-flight deadline (`Flights`, 25 s) and cache policy as
   Grok and Kimi. The agent, its sessions and its tools take no part. A GitHub that hangs costs
-  this line its answer for the tick (`no answer within 25 s`) and nothing else: the gateway's
-  event loop keeps running, the rest of the screen is collected as usual, and a hung request is
-  not started a second time. `tests/test_hermes_version.py` pins all three
+  this line its answer for the tick (`no answer within 25 s`) and nothing else: the check starts
+  with the tick and runs beside every other source, the gateway's event loop keeps running, the
+  tick waits for it no longer than that deadline, and a hung request is not started a second
+  time. `tests/test_hermes_version.py` pins each of these; a crash of the check is cached for
+  the day like a failed answer, so a bug cannot ask GitHub on every tick
 - **Once a day, failures too.** The attempt lives in the record under `release_cache` and
   survives a restart; a failed check (`GitHub rate limit`, `HTTP 503`,
   `request failed: URLError`, `answer shape: …`) is `no data` until the next attempt a day

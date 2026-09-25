@@ -553,3 +553,73 @@ def test_a_redirect_is_followed_only_while_it_stays_on_api_github_com() -> None:
     assert moved is not None
     with pytest.raises(urllib.error.HTTPError):
         handler.redirect_request(request, None, 302, "Found", {}, "https://example.com/x")
+
+
+def test_a_crashing_check_is_cached_for_the_day_not_retried_every_tick(tmp_path: Path) -> None:
+    calls: list[datetime] = []
+
+    def crash(*, now: datetime) -> dict[str, Any]:
+        calls.append(now)
+        raise RuntimeError("parser bug")
+
+    cache: dict[str, Any] = {}
+
+    async def two_ticks() -> tuple[Any, Any]:
+        flights = Flights()
+        common: dict[str, Any] = {
+            "flights": flights,
+            "version_cache": cache,
+            "version_fetch": crash,
+            "version_local": _local,
+        }
+        env = _env(tmp_path)
+        first = await collect_all_async(env, Runner(), now=NOW, **common)
+        second = await collect_all_async(env, Runner(), now=NOW + timedelta(minutes=5), **common)
+        return first, second
+
+    first, second = asyncio.run(two_ticks())
+
+    assert len(calls) == 1
+    assert cache["attempted_at"] == NOW.isoformat()
+    assert second.version.reason == "collector crashed: RuntimeError"
+    assert [i.title for i in first.incidents] == ["Collector hermes_version crashed (RuntimeError)"]
+
+
+def _facade():
+    def fetch(provider: str):
+        return None
+
+    return fetch
+
+
+def test_a_hung_github_does_not_hold_back_the_other_sources(tmp_path: Path) -> None:
+    """The check starts with the tick and runs beside every other source: Grok's attempt starts
+    while GitHub still hangs. Held back until GitHub gave up, Grok would never start here."""
+    grok_started = threading.Event()
+
+    def github(*, now: datetime) -> dict[str, Any]:
+        if grok_started.wait(2):
+            return _available(checked_at=now.isoformat())
+        return {"status": "unavailable", "reason": "Grok never started", "checked_at": None}
+
+    def grok(*, now: datetime) -> dict[str, Any]:
+        grok_started.set()
+        return {"provider": "grok", "status": "unavailable", "reason": "x", "windows": []}
+
+    env = Environment(hermes_home=_env(tmp_path).hermes_home, limits_enabled=True)
+    snapshot = asyncio.run(
+        collect_all_async(
+            env,
+            Runner(),
+            now=NOW,
+            resolve_limits=_facade,
+            grok_cache={},
+            grok_fetch=grok,
+            version_cache={},
+            version_fetch=github,
+            version_local=_local,
+            version_timeout_seconds=5,
+        )
+    )
+
+    assert snapshot.version.latest == "0.21.5", snapshot.version.reason
