@@ -116,6 +116,27 @@ class GatewaySummary:
 
 
 @dataclass(frozen=True, slots=True)
+class VersionSummary:
+    """The Hermes version the running gateway serves against the latest upstream release.
+
+    Information only: no status, incident or coverage is derived from it. ``running`` is
+    ``None`` when this installation cannot say (``local_reason``); ``latest`` is ``None`` when
+    the upstream check has no answer (``reason``). ``behind`` is the position of ours on
+    upstream's release list relative to Latest: above zero behind, zero the same release, below
+    zero newer; ``None`` when ours is not among the ``list_size`` releases read."""
+
+    running: str | None = None
+    latest: str | None = None
+    running_published_at: str | None = None
+    latest_published_at: str | None = None
+    behind: int | None = None
+    list_size: int | None = None
+    checked_at: str | None = None
+    reason: str | None = None
+    local_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     overall: Severity
     observed_at: str
@@ -129,3 +150,5 @@ class DashboardSnapshot:
     gateway: GatewaySummary | None = None
     backup: BackupSummary | None = None
     sources: tuple[SourceObservation, ...] = ()
+    # Not a source: the line informs and never moves the status or the coverage.
+    version: VersionSummary | None = None
