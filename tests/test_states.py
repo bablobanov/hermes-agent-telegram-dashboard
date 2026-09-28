@@ -1,5 +1,5 @@
-"""Ten static states from section 11 of the research, two for the message itself and one for
-the Hermes version line.
+"""Ten static states from section 11 of the research, two for the message itself, one for the
+Hermes version line and one showcase state for the catalog screenshots.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -29,8 +29,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_thirteen_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 14))
+def test_fourteen_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 15))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -193,3 +193,40 @@ def test_state_13_is_three_releases_behind_as_information_only() -> None:
     assert "> 3 releases behind · checked Sep 9 21:00" in lines
     assert "⚠" not in text
     assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+
+
+def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_screen() -> None:
+    """The screenshot state for the catalog: a healthy installation with all six sources and
+    every line the screen can show, made-up numbers, one warning mark on a spent limit. Not a
+    verification state: the thirteen above keep their golden texts."""
+    state = STATES[13]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Showcase: every line of a healthy screen"
+    assert main == [
+        "🟢 Healthy · Sep 9 21:00 UTC",
+        "Gateway ✓ · Telegram ✓",
+        "Backup ✓ 10 h ago",
+        "Drift ✓ 0 of 481",
+        "",
+        "## 🧠 Limits used",
+        "Claude 42% (2h10m) · 67% (3d)",
+        "⚠️ Codex 93% (1h20m) · 58% (5d)",
+        "Gemini · no data",
+        "Grok 31% (6d)",
+        "Kimi 8% (3h40m) · 46% (21d)",
+        "",
+        "🤖 Hermes 0.21.3 → 0.21.5",
+        "",
+    ]
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
+    assert "Needs attention" not in text
+    assert "> Profiles 1/1 · sources 6/6" in lines
+    assert "> Backup Sep 9 11:00 · integrity ok" in lines
+    assert "> Drift checked 08:00" in lines
+    assert "> Hermes 0.21.3 of Aug 30, latest 0.21.5 of Sep 7" in lines
+    assert "> 2 releases behind · checked Sep 9 21:00" in lines
+    assert "> Gemini: source not confirmed" in lines

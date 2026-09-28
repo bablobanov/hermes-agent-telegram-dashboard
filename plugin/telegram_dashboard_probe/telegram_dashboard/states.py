@@ -1,6 +1,6 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
-for the pinned message itself and one for the Hermes version line. No real Hermes is touched:
-every state is a snapshot literal.
+for the pinned message itself, one for the Hermes version line and one showcase state for the
+catalog screenshots. No real Hermes is touched: every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from .freshness import DeliveryRecord
 from .schema import (
+    BackupSummary,
     CapacitySummary,
     Coverage,
     DashboardSnapshot,
@@ -121,6 +122,81 @@ def _version(running: str, published: str, behind: int) -> VersionSummary:
         list_size=_RELEASES_KNOWN,
         checked_at=_T,
     )
+
+
+# The showcase state (14): a healthy installation with all six sources and every line the screen
+# can show, for the catalog screenshots. Every number is made up; the verification states keep
+# their golden texts untouched.
+_SHOWCASE_BACKUP = "2026-09-09T11:00:00+00:00"
+_SHOWCASE_V0_21_3 = "2026-08-30T10:00:00Z"
+_SHOWCASE_V0_21_5 = "2026-09-07T18:00:00Z"
+
+
+def _showcase_limits() -> CapacitySummary:
+    return CapacitySummary(
+        (
+            QuotaMetric(
+                "Claude",
+                "official",
+                windows=(
+                    QuotaWindow("5h", 42.0, "2026-09-09T23:10:00+00:00"),
+                    QuotaWindow("7d", 67.0, "2026-09-12T21:00:00+00:00"),
+                ),
+                detail="official",
+            ),
+            QuotaMetric(
+                "Codex",
+                "official",
+                windows=(
+                    QuotaWindow("5h", 93.0, "2026-09-09T22:20:00+00:00"),
+                    QuotaWindow("7d", 58.0, "2026-09-14T21:00:00+00:00"),
+                ),
+                detail="official",
+            ),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
+            QuotaMetric(
+                "Grok",
+                "official",
+                windows=(QuotaWindow("7d", 31.0, "2026-09-15T21:00:00+00:00"),),
+            ),
+            QuotaMetric(
+                "Kimi",
+                "official",
+                windows=(
+                    QuotaWindow("5h", 8.0, "2026-09-10T00:40:00+00:00"),
+                    QuotaWindow("month", 46.0, "2026-09-30T21:00:00+00:00"),
+                ),
+            ),
+        )
+    )
+
+
+def _showcase() -> State:
+    snapshot = DashboardSnapshot(
+        overall="normal",
+        observed_at=_T,
+        coverage=Coverage(expected_profiles=1, observed_profiles=1),
+        capacity=_showcase_limits(),
+        drift=DriftSummary("clean", 0, 481, _DRIFT_08),
+        gateway=GatewaySummary("running", "connected", _T_MINUS_2M),
+        backup=BackupSummary("ok", _SHOWCASE_BACKUP, integrity="ok"),
+        sources=(
+            *_sources(),
+            SourceObservation("backup", "official", "fresh", observed_at=_SHOWCASE_BACKUP),
+            SourceObservation("grok_quota", "official", "fresh", observed_at=_T_MINUS_2M),
+            SourceObservation("kimi_quota", "official", "fresh", observed_at=_T_MINUS_2M),
+        ),
+        version=VersionSummary(
+            running="0.21.3",
+            latest="0.21.5",
+            running_published_at=_SHOWCASE_V0_21_3,
+            latest_published_at=_SHOWCASE_V0_21_5,
+            behind=2,
+            list_size=36,
+            checked_at=_T,
+        ),
+    )
+    return State(14, "Showcase: every line of a healthy screen", snapshot, _delivery_ok(), "normal")
 
 
 def all_states() -> tuple[State, ...]:
@@ -278,4 +354,5 @@ def all_states() -> tuple[State, ...]:
             _delivery_ok(),
             "normal",
         ),
+        _showcase(),
     )
