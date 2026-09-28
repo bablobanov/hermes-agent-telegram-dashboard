@@ -563,3 +563,113 @@ def test_a_long_version_is_cut_to_the_phone_line_and_kept_whole_in_the_details(
     assert len(line) <= 32, line
     assert keeps in line
     assert any(entry.startswith(detail) for entry in lines), lines
+
+
+# ---------------------------------------------------------------- plans, model limits, login (0.8.0)
+
+_IN_2H = (NOW + timedelta(hours=2)).isoformat()
+_IN_4H = (NOW + timedelta(hours=4)).isoformat()
+
+
+def _limits_only(*quotas: QuotaMetric) -> str:
+    snapshot = DashboardSnapshot(
+        overall="normal", observed_at=NOW.isoformat(), capacity=CapacitySummary(quotas)
+    )
+    return render_dashboard(snapshot, now=NOW)
+
+
+def _screen_lines(text: str, provider: str) -> list[str]:
+    return [line for line in text.splitlines() if provider in line and not line.startswith(">")]
+
+
+def _details_lines(text: str) -> list[str]:
+    return [line[2:] for line in text.splitlines() if line.startswith("> ")]
+
+
+def test_a_model_limit_spent_more_than_the_account_gets_its_own_marked_line() -> None:
+    """Decision 4 of the subscription plan: the account's windows on the first line, a model's
+    limit on a line of its own only when it is spent more than any of them; the mark from the
+    provider's severity as well as from 90%."""
+    text = _limits_only(
+        QuotaMetric(
+            "Claude",
+            "official",
+            windows=(
+                QuotaWindow("session", 42.0, _IN_2H, severity="normal"),
+                QuotaWindow("week", 86.0, _IN_4H, severity="warning"),
+                QuotaWindow("week", 100.0, _IN_4H, scope="Fable", severity="critical"),
+            ),
+        )
+    )
+
+    assert _screen_lines(text, "Claude") == [
+        "⚠️ Claude 42% (2h) · 86% (4h)",
+        "⚠️ Claude Fable 100% (4h)",
+    ]
+    assert all(len(line) <= 32 for line in _screen_lines(text, "Claude"))
+
+
+def test_a_model_limit_spent_less_than_the_account_goes_to_the_details() -> None:
+    text = _limits_only(
+        QuotaMetric(
+            "Claude",
+            "official",
+            windows=(
+                QuotaWindow("session", 42.0, _IN_2H),
+                QuotaWindow("week", 71.0, _IN_4H),
+                QuotaWindow("week", 60.0, _IN_4H, scope="Fable", severity="normal"),
+            ),
+        )
+    )
+
+    assert _screen_lines(text, "Claude") == ["Claude 42% (2h) · 71% (4h)"]
+    assert "Claude Fable 60% (4h)" in _details_lines(text)
+
+
+def test_model_limits_alone_stay_on_the_provider_s_line() -> None:
+    text = _limits_only(
+        QuotaMetric(
+            "Claude", "official", windows=(QuotaWindow("week", 30.0, _IN_4H, scope="Fable"),)
+        )
+    )
+
+    assert _screen_lines(text, "Claude") == ["Claude Fable 30% (4h)"]
+
+
+def test_an_expired_login_says_so_instead_of_no_data() -> None:
+    text = _limits_only(
+        QuotaMetric(
+            "Claude",
+            "expired",
+            detail="login expired",
+            plan="Max 5x",
+            login_expires_at="2026-09-20T21:07:24Z",
+        )
+    )
+
+    assert _screen_lines(text, "Claude") == ["Claude · login expired"]
+    details = _details_lines(text)
+    assert "Claude login ended Sep 20" in details
+    assert not any(line.startswith("Claude:") for line in details), details
+
+
+def test_plans_and_the_login_date_are_in_the_details_only_when_known() -> None:
+    text = _limits_only(
+        QuotaMetric(
+            "Claude",
+            "official",
+            windows=(QuotaWindow("session", 12.0, _IN_2H),),
+            plan="Max 5x",
+            login_expires_at="2026-10-27T21:07:24Z",
+        ),
+        QuotaMetric("Codex", "unavailable", detail="HTTP 502", plan="Prolite"),
+        QuotaMetric(
+            "Grok", "official", windows=(QuotaWindow("7d", 31.0, _IN_4H),), plan="SuperGrok"
+        ),
+        QuotaMetric("Kimi", "official", windows=(QuotaWindow("5h", 8.0, _IN_2H),)),
+    )
+
+    details = _details_lines(text)
+    assert "Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in details
+    assert "Claude login until Oct 27" in details
+    assert not any("Kimi" in line and "Plan" in line for line in details)

@@ -122,6 +122,8 @@ def _provider_item(key: str, provider: str, fetch: Fetcher) -> dict[str, Any]:
     item["reason"] = _text(getattr(snapshot, "unavailable_reason", None))
     item["source"] = _text(getattr(snapshot, "source", None))
     item["fetched_at"] = _iso(getattr(snapshot, "fetched_at", None))
+    # The plan the facade names (Codex: ``plan_type`` title-cased); the details show it.
+    item["plan"] = _text(getattr(snapshot, "plan", None))
     for window in getattr(snapshot, "windows", ()) or ():
         used = getattr(window, "used_percent", None)
         item["windows"].append(

@@ -8,7 +8,9 @@ Severity = Literal["normal", "warning", "critical", "unknown"]
 # It renders exactly like ``unavailable`` (reduced coverage), never as zero or green.
 SourceState = Literal["fresh", "stale", "unavailable", "unsupported"]
 Authority = Literal["official", "local", "derived", "unknown"]
-QuotaKind = Literal["official", "local", "unavailable", "unsupported"]
+# ``expired``: the provider answered that the login behind the number has ended; the line says
+# so instead of a number, and the owner signs in again.
+QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired"]
 DriftState = Literal["clean", "drift", "unknown", "unsupported"]
 BackupState = Literal["ok", "failed", "unknown", "unsupported"]
 GatewayProcessState = Literal["running", "stopped", "unknown", "unsupported"]
@@ -64,6 +66,10 @@ class QuotaWindow:
     # The provider's state in words when it gives no number (Grok's week before the first
     # request); shown instead of the percent, never turned into one.
     note: str | None = None
+    # The model the limit applies to (``Fable``); ``None`` is the account's own limit.
+    scope: str | None = None
+    # The provider's own verdict on the window: ``normal``, ``warning`` or ``critical``.
+    severity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +83,10 @@ class QuotaMetric:
     detail: str | None = None
     # When the number was read from the provider; a line older than the screen says so itself.
     fetched_at: str | None = None
+    # The plan as the provider names it (``Max 5x``, ``Prolite``, ``SuperGrok``); details only.
+    plan: str | None = None
+    # When the login behind the number ends; the owner signs in again before that.
+    login_expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

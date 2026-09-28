@@ -58,6 +58,7 @@ from .schema import (
     SourceState,
     VersionSummary,
 )
+from .timeparse import parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,8 @@ _UNCONFIRMED_PROVIDERS = ("Gemini",)
 # What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
 # token resolves): the installation has no credential, not a provider that refused.
 _NO_CREDENTIAL = "no account token"
+# A window's own verdict as the provider states it; anything else is no verdict at all.
+_WINDOW_SEVERITIES = ("normal", "warning", "critical")
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,41 +480,72 @@ def parse_limits_payload(
 
 
 def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
+    """The line for one item. The plan and the login date ride along in every state: a source
+    that cannot give numbers right now may still know both."""
+    plan, login = _plan_of(item), _login_of(item)
+    fetched_at = item.get("fetched_at")
+    fetched = fetched_at if isinstance(fetched_at, str) else None
+    if item.get("status") == "expired":
+        return QuotaMetric(
+            label,
+            "expired",
+            detail="login expired",
+            fetched_at=fetched,
+            plan=plan,
+            login_expires_at=login,
+        )
     if item.get("status") != "available":
         reason = item.get("reason")
         if reason == "none":
             detail = _NO_CREDENTIAL
         else:
             detail = sanitize_public_text(str(reason), limit=60) if reason else "no data"
-        return QuotaMetric(label, "unavailable", detail=detail)
-    windows: list[QuotaWindow] = []
-    for raw in item.get("windows") or ():
-        if not isinstance(raw, dict):
-            continue
-        used = raw.get("used_percent")
-        used_value = float(used) if isinstance(used, (int, float)) and 0 <= used <= 100 else None
-        reset = raw.get("reset_at")
-        note = raw.get("note")
-        windows.append(
-            QuotaWindow(
-                sanitize_public_text(str(raw.get("label") or "window"), limit=24),
-                used_value,
-                reset if isinstance(reset, str) else None,
-                note=sanitize_public_text(note, limit=24) if isinstance(note, str) else None,
-            )
-        )
+        return QuotaMetric(label, "unavailable", detail=detail, plan=plan, login_expires_at=login)
+    windows = [_window_of(raw) for raw in item.get("windows") or () if isinstance(raw, dict)]
     source = item.get("source")
     source_label = sanitize_public_text(str(source), limit=40) if source else None
     if not windows:
-        return QuotaMetric(label, "unavailable", detail="answer without windows")
-    fetched_at = item.get("fetched_at")
+        return QuotaMetric(
+            label, "unavailable", detail="answer without windows", plan=plan, login_expires_at=login
+        )
     return QuotaMetric(
         label,
         "official",
         windows=tuple(windows),
         detail=source_label,
-        fetched_at=fetched_at if isinstance(fetched_at, str) else None,
+        fetched_at=fetched,
+        plan=plan,
+        login_expires_at=login,
     )
+
+
+def _window_of(raw: dict[str, Any]) -> QuotaWindow:
+    used = raw.get("used_percent")
+    used_value = float(used) if isinstance(used, (int, float)) and 0 <= used <= 100 else None
+    reset = raw.get("reset_at")
+    note = raw.get("note")
+    scope = raw.get("scope")
+    severity = raw.get("severity")
+    return QuotaWindow(
+        sanitize_public_text(str(raw.get("label") or "window"), limit=24),
+        used_value,
+        reset if isinstance(reset, str) else None,
+        note=sanitize_public_text(note, limit=24) if isinstance(note, str) else None,
+        scope=sanitize_public_text(scope, limit=24) if isinstance(scope, str) and scope else None,
+        severity=severity if severity in _WINDOW_SEVERITIES else None,
+    )
+
+
+def _plan_of(item: dict[str, Any]) -> str | None:
+    plan = item.get("plan")
+    if not isinstance(plan, str) or not plan.strip():
+        return None
+    return sanitize_public_text(plan.strip(), limit=24)
+
+
+def _login_of(item: dict[str, Any]) -> str | None:
+    value = item.get("login_expires_at")
+    return value if isinstance(value, str) and parse_timestamp(value) is not None else None
 
 
 # ----------------------------------------------------------------------------- Grok, Kimi
@@ -534,7 +568,8 @@ def collect_quota(
     item = quota_tick(cache, now=now, interval_seconds=interval_seconds, fetch=fetch)
     metric = _quota_from_item(label, item)
     name = f"{key}_quota"
-    if metric.kind != "official":
+    # An expired login is an answer: the source is fresh, the line says what it answered.
+    if metric.kind not in ("official", "expired"):
         source = SourceObservation(name, "official", "unavailable", detail=metric.detail)
     else:
         state = classify_freshness(

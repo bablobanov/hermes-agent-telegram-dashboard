@@ -450,3 +450,95 @@ def test_limits_facade_abandoned_by_its_deadline_is_not_called_again_until_it_re
     assert second["ok"] is False and "busy" in second["reason"]
     assert third["ok"] is True
     assert calls == ["anthropic", "openai-codex", "anthropic", "openai-codex"]
+
+
+# ---------------------------------------------------------------- plans, scope, severity (0.8.0)
+
+
+def test_the_facade_s_plan_reaches_the_metric(tmp_path: Path) -> None:
+    """``AccountUsageSnapshot.plan`` (Codex: ``Prolite``, title-cased by the facade) was read and
+    thrown away before 0.8.0; the details show it now."""
+
+    def fetch(provider: str):
+        return _snapshot(plan="Prolite" if provider == "openai-codex" else None)
+
+    capacity, _source, _probe = collect_limits(
+        Environment(hermes_home=tmp_path), now=NOW, resolve=lambda: fetch
+    )
+
+    plans = {quota.provider: quota.plan for quota in capacity.quotas}
+    assert plans["Codex"] == "Prolite" and plans["Claude"] is None
+
+
+def test_an_item_s_plan_scope_severity_and_login_ride_to_the_metric() -> None:
+    from telegram_dashboard.collect import collect_quota
+
+    item = {
+        "provider": "x",
+        "status": "available",
+        "reason": None,
+        "source": "external",
+        "fetched_at": NOW.isoformat(),
+        "plan": "Max 5x",
+        "login_expires_at": "2026-10-27T21:07:24Z",
+        "windows": [
+            {
+                "label": "week",
+                "used_percent": 100,
+                "reset_at": None,
+                "scope": "Fable",
+                "severity": "critical",
+            },
+            {"label": "week", "used_percent": 86, "reset_at": None, "severity": "loud"},
+        ],
+    }
+    metric, source = collect_quota(
+        "x", "Claude", {}, now=NOW, interval_seconds=900, fetch=lambda now: item
+    )
+
+    assert (metric.kind, metric.plan, metric.login_expires_at) == (
+        "official",
+        "Max 5x",
+        "2026-10-27T21:07:24Z",
+    )
+    assert [(w.scope, w.severity) for w in metric.windows] == [("Fable", "critical"), (None, None)]
+    assert source.state == "fresh"
+
+
+def test_an_expired_login_is_its_own_kind_and_the_source_answered() -> None:
+    from telegram_dashboard.collect import collect_quota
+
+    item = {
+        "provider": "x",
+        "status": "expired",
+        "reason": None,
+        "source": "external",
+        "fetched_at": NOW.isoformat(),
+        "plan": "Max 5x",
+        "login_expires_at": "2026-09-01T00:00:00Z",
+        "windows": [],
+    }
+    metric, source = collect_quota(
+        "x", "Claude", {}, now=NOW, interval_seconds=900, fetch=lambda now: item
+    )
+
+    assert metric.kind == "expired" and metric.plan == "Max 5x"
+    assert metric.login_expires_at == "2026-09-01T00:00:00Z"
+    assert source.state == "fresh"
+
+
+def test_grok_s_plan_is_no_longer_dropped() -> None:
+    from telegram_dashboard.collect import collect_grok
+
+    item = {
+        "provider": "grok",
+        "status": "available",
+        "reason": None,
+        "source": "grok_cli_billing",
+        "fetched_at": NOW.isoformat(),
+        "plan": "SuperGrok",
+        "windows": [{"label": "7d", "used_percent": 31.0, "reset_at": None}],
+    }
+    metric, _source = collect_grok({}, now=NOW, interval_seconds=900, fetch=lambda now: item)
+
+    assert metric.plan == "SuperGrok"

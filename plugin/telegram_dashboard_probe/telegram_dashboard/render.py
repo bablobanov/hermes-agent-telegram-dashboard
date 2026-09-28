@@ -2,7 +2,8 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "🧠 Limits used" with the time to every reset, the Hermes version line after them,
+provider under "🧠 Limits used" with the time to every reset (plus a line for a model's limit
+spent more than the account's own), the Hermes version line after them,
 and everything that explains a line (reasons, per-source stamps, coverage) in a details block
 that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
@@ -64,14 +65,16 @@ VERSION_MARK = "🤖"
 _LINE_COLUMNS = 32
 _MINUTES_PER_DAY = 1440
 # Windows carry no length label (decision of 25.09): the spent share and the time to its reset
-# answer what the reader acts on, the owner of the account knows the plan, and a length the
-# source does not state becomes a lie (the engine calls Codex's first window ``Session`` whatever
-# its ``limit_window_seconds``; ``agent/account_usage.py``, 0.21.1 and 0.21.3). A label that
-# narrows the scope stays: a limit for one model is not the account's limit.
+# answer what the reader acts on, the plan (where the provider names it) is in the details, and
+# a length the source does not state becomes a lie (the engine calls Codex's first window
+# ``Session`` whatever its ``limit_window_seconds``; ``agent/account_usage.py``, 0.21.1 and
+# 0.21.3). A label that narrows the scope stays: a limit for one model is not the account's limit.
 _SCOPE_LABELS = {"Opus week": "Opus", "Sonnet week": "Sonnet"}
-# A limit this far spent gets the warning mark on its line (decision of 25.09). Only the line:
-# the overall status and the incidents come from the collectors, not from this number.
+# A limit this far spent gets the warning mark on its line (decision of 25.09), and so does a
+# window the provider itself calls warning or critical. Only the line: the overall status and the
+# incidents come from the collectors, not from this number.
 QUOTA_WARN_PERCENT = 90
+_LOUD_SEVERITIES = ("warning", "critical")
 # One-minute resolution on the screen: a stamp within a minute of the data time is the same.
 _STAMP_SLACK_SECONDS = 60.0
 _DETAILS_PREFIX = "> "
@@ -183,8 +186,9 @@ def render_dashboard(
     if snapshot.capacity.quotas:
         lines.extend(["", f"## {LIMITS_HEADING}"])
         for quota in snapshot.capacity.quotas:
-            lines.append(_quota_line(quota, reference, details))
+            lines.extend(_quota_lines(quota, reference, details))
         details.data = _data_stamps(snapshot, zone)
+        details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
     if snapshot.version is not None:
         lines.extend(["", _version_line(snapshot.version, details, zone)])
     if snapshot.work is not None:
@@ -337,6 +341,57 @@ def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
     return f"Drift: {label}"
 
 
+def _quota_lines(quota: QuotaMetric, reference: datetime | None, details: _Details) -> list[str]:
+    """The provider's line; a model's limit spent more than the account's own gets a line of its
+    own after it (decision 4 of the subscription plan), every other model limit goes to the
+    details. An expired login is said as such: it is an answer, not "no data"."""
+    provider = sanitize_public_text(quota.provider, limit=40)
+    if quota.kind == "expired":
+        return [f"{provider} · login expired"]
+    if quota.kind != "official" or not quota.windows:
+        return [_quota_line(quota, reference, details)]
+    own = tuple(window for window in quota.windows if window.scope is None)
+    if not own:
+        return [_windows_line(provider, quota.windows, reference)]
+    spent = [window.used_percent for window in own if window.used_percent is not None]
+    ceiling = max(spent) if spent else None
+    lines = [_windows_line(provider, own, reference)]
+    for window in quota.windows:
+        if window.scope is None:
+            continue
+        words = f"{provider} {_window_words(window, reference)}"
+        used = window.used_percent
+        if used is not None and (ceiling is None or used > ceiling):
+            lines.append(f"{_mark((window,))}{words}")
+        else:
+            details.state.append(words)
+    return lines
+
+
+def _account_words(
+    quotas: tuple[QuotaMetric, ...], reference: datetime | None, zone: tzinfo
+) -> list[str]:
+    """``Plans: Claude Max 5x · Codex Prolite`` and ``Claude login until Oct 27``: only what a
+    provider names; a plan nobody reports is not guessed."""
+    words: list[str] = []
+    plans = [
+        f"{sanitize_public_text(q.provider, limit=40)} {sanitize_public_text(q.plan, limit=24)}"
+        for q in quotas
+        if q.plan
+    ]
+    if plans:
+        words.append("Plans: " + " · ".join(plans))
+    for quota in quotas:
+        day = format_day(quota.login_expires_at, zone) if quota.login_expires_at else None
+        if day is None:
+            continue
+        moment = parse_timestamp(quota.login_expires_at)
+        ended = moment is not None and reference is not None and moment <= reference
+        provider = sanitize_public_text(quota.provider, limit=40)
+        words.append(f"{provider} login {'ended' if ended else 'until'} {day}")
+    return words
+
+
 def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Details) -> str:
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
@@ -370,13 +425,23 @@ def _windows_line(
     words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
         return f"{provider} · {words}"
-    return f"{_warn(max(numbered))}{provider} {words}"
+    return f"{_mark(windows)}{provider} {words}"
+
+
+def _mark(windows: tuple[QuotaWindow, ...]) -> str:
+    """The warning mark for a line: its most spent window from ``QUOTA_WARN_PERCENT`` on, or any
+    window the provider itself calls warning or critical."""
+    spent = [window.used_percent for window in windows if window.used_percent is not None]
+    loud = any(window.severity in _LOUD_SEVERITIES for window in windows)
+    if loud or (spent and max(spent) >= QUOTA_WARN_PERCENT):
+        return f"{WARN_MARK} "
+    return ""
 
 
 def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
-    """``37% (3h)``, ``Opus 5% (4d)``; the provider's state in words when it gave no number;
-    ``?`` otherwise. A state in words never becomes a number."""
-    scope = _SCOPE_LABELS.get(window.label)
+    """``37% (3h)``, ``Opus 5% (4d)``, ``Fable 100% (4h)``; the provider's state in words when
+    it gave no number; ``?`` otherwise. A state in words never becomes a number."""
+    scope = window.scope or _SCOPE_LABELS.get(window.label)
     head = f"{scope} " if scope else ""
     if window.used_percent is not None:
         return f"{head}{window.used_percent:.0f}%{_reset_suffix(window.reset_at, reference)}"
