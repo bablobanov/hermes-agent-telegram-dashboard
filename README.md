@@ -14,16 +14,24 @@ the plugin API.
 
 ## Install
 
+The plugin is listed in the [Hermes Plugin Catalog](https://hermes-agent.nousresearch.com/docs/plugins/telegram_dashboard_probe)
+under its manifest name; the catalog pins the reviewed commit, and the install checks out exactly
+that commit into the gateway's plugin directory:
+
+```bash
+hermes plugins install telegram_dashboard_probe
+```
+
 The plugin folder `plugin/telegram_dashboard_probe/` is self-contained: the `telegram_dashboard`
 package lives inside it (module paths below, like `telegram_dashboard/grok.py`, are relative to
-that folder). One line puts it into the gateway's plugin directory:
+that folder). Without the catalog, one line puts the folder in place from a clone:
 
 ```bash
 git clone https://github.com/bablobanov/hermes-agent-telegram-dashboard.git && cd hermes-agent-telegram-dashboard && install -d "${HERMES_HOME:-$HOME/.hermes}/plugins" && cp -r plugin/telegram_dashboard_probe "${HERMES_HOME:-$HOME/.hermes}/plugins/"
 ```
 
-Then enable it in `config.yaml` (`plugins.enabled`, the `chat_id` setting; the table under
-"Deploying on a gateway" below), restart the gateway, pin the message it sends. Nothing is
+Either way, then enable it in `config.yaml` (`plugins.enabled`, the `chat_id` setting; the table
+under "Deploying on a gateway" below), restart the gateway, pin the message it sends. Nothing is
 installed into the engine's environment; `SHA256SUMS` in the repository root lists every file of
 the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the gateway's
 `plugins/` directory) verifies a copy.
@@ -109,8 +117,9 @@ What "verified" means here, honestly:
 | Hermes | How |
 |---|---|
 | 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
-| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken) |
-| 0.21.5 (`v2026.9.24`) | `_edit_text` read in the engine source: same signature and body as 0.21.1 and 0.21.3 |
+| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`) |
+| 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3 |
+| main (`485979ddf4`, 2026-09-28) | `edit_message` and `_edit_text` read in the engine source: same signatures, the public verb still without a parse mode |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
 Anything else is not verified. Above these versions the sources are probed at runtime and
@@ -144,7 +153,9 @@ register(ctx) → ctx.register_platform_handler("telegram", wire)
              → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
              → each tick: collect_all_async → render_dashboard → to_telegram_html and
                to_telegram_plain, then adapter = runner.adapters["telegram"] if connected,
-               adapter.send(plain) once, adapter._edit_text(html, "HTML") afterwards,
+               adapter.send(plain) once, then every tick the HTML form through the verb the
+               adapter has for it: edit_message(html, parse_mode="HTML") when its signature
+               takes a parse mode, else the adapter's own _edit_text(html, "HTML"),
                adapter.edit_message(plain) in the same tick when the HTML edit is refused
 ```
 
@@ -154,23 +165,35 @@ forward to the replacement adapter (`send` does). A loop that keeps its first ad
 "Not connected" forever while looking alive. `tests/test_probe_plugin.py` executes the chain
 against the real engine objects with the Telegram `Bot` mocked and simulates the reconnect.
 
-**The screen is HTML when the adapter takes it, plain text otherwise.** The public
-`edit_message` without `finalize` sets no parse mode (the engine builds its PTB application
-without `Defaults`), and its `finalize=True` path converts to MarkdownV2 and, when the escaped
-payload exceeds 4096 UTF-16 units, splits it into NEW continuation messages: a pinned dashboard
-must never do that. The adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on
-0.21.1, 0.21.3 and 0.21.5, takes a parse mode and raises on refusal. Every tick calls it with
-`HTML` (bold headings, the details in one `<blockquote expandable>`, both Bot API 7.4 features
-that any bot may use) and, on any failure but "not modified", edits plain through the public verb
-in the same tick. A plain edit that succeeds right after a failed HTML one means the form was
-refused: the screen stays plain (upper-case headings, the details shown in full), the record says
-`screen_format: plain` with the exception class in `html_error`, one warning goes to the journal,
-and HTML is tried again twelve ticks later. An adapter without `_edit_text` gets the same plain
-form and `html_error: no _edit_text`. The method is private: the plugin treats it as a
-capability, never as a promise (`compat_matrix.json`, row `screen_html`). The one `send` that
-creates the message (and a recreation after a loss) goes through the adapter's own markdown
-conversion as plain text; the next tick edits it into the HTML form. The cron path sends the
-HTML form with its own bot.
+**The screen is HTML when the adapter has a verb for it, plain text otherwise.** Which verb is
+read off the adapter object on every tick, never off a version number, in this order:
+
+1. the public `edit_message` when its signature has a parameter named `parse_mode`
+   (positional-or-keyword or keyword-only; `**kwargs` does not count, a verb that swallowed the
+   keyword would send the markup as plain text and answer success). Called with
+   `parse_mode="HTML"`; a `SendResult` with `success=False` is a refusal of the form
+2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on 0.21.1,
+   0.21.3, 0.21.5 and main, which takes a parse mode and raises on refusal
+3. otherwise plain, with `html_error: no HTML verb (edit_message without parse_mode, no
+   _edit_text)`
+
+On every engine known today the public verb takes no parse mode: without `finalize` it sends
+plain text (the engine builds its PTB application without `Defaults`), and its `finalize=True`
+path converts to MarkdownV2 and, when the escaped payload exceeds 4096 UTF-16 units, splits it
+into NEW continuation messages, which a pinned dashboard must never do. So today the form goes
+through `_edit_text`; the day the public verb takes a parse mode, the plugin switches to it
+without a release. The HTML form is bold headings and the details in one
+`<blockquote expandable>`, both Bot API 7.4 features that any bot may use. On any refusal but
+"not modified" the same tick edits plain through the public verb. A plain edit that succeeds
+right after a failed HTML one means the form was refused: the screen stays plain (upper-case
+headings, the details shown in full), the record says `screen_format: plain` with the reason in
+`html_error` (the exception class, or `edit_message: <its error>`), one warning goes to the
+journal, and HTML is tried again twelve ticks later. The record also names the verb that carries
+the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
+private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`). The
+one `send` that creates the message (and a recreation after a loss) goes through the adapter's
+own markdown conversion as plain text; the next tick edits it into the HTML form. The cron path
+sends the HTML form with its own bot.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -181,7 +204,8 @@ deadlines (`collect_all_async`), so a slow provider never stalls the Telegram ev
 
 Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
 
-1. copy `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`,
+1. `hermes plugins install telegram_dashboard_probe` (the catalog pin), or copy
+   `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`,
    with the `telegram_dashboard/` package inside it as the repository keeps it. The engine loads a
    directory plugin as a package with `__path__`, so the package beside the plugin is imported as
    a relative package and nothing is installed into the engine's environment. A
