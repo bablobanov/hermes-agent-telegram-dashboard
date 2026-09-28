@@ -20,7 +20,7 @@ from .compat import Environment
 from .delivery import DeliveryStore, deliver
 from .freshness import check_exit_code, classify_message_freshness, load_plugin_record
 from .render import render_dashboard, to_telegram_html
-from .states import NOW, PERIOD_SECONDS, all_states
+from .states import PERIOD_SECONDS, all_states
 
 _DEFAULT_TOKEN_ENV = "HERMES_DASHBOARD_BOT_TOKEN"
 logger = logging.getLogger("telegram_dashboard")
@@ -144,7 +144,10 @@ def run_demo(number: int) -> int:
             print(f"[{state.number}] {state.title}\n")
             print(
                 render_dashboard(
-                    state.snapshot, now=NOW, delivery=state.delivery, period_seconds=PERIOD_SECONDS
+                    state.snapshot,
+                    now=state.now,
+                    delivery=state.delivery,
+                    period_seconds=PERIOD_SECONDS,
                 )
             )
             return 0

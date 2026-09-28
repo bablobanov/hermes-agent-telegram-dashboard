@@ -1,5 +1,5 @@
 """Ten static states from section 11 of the research, two for the message itself, one for the
-Hermes version line and one showcase state for the catalog screenshots.
+Hermes version line and three showcase states for the catalog screenshots.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -9,7 +9,7 @@ the first screen is one phone screen, with the explanations in a collapsed detai
 import pytest
 
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT, render_dashboard, to_telegram_html
-from telegram_dashboard.states import NOW, PERIOD_SECONDS, all_states
+from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
 STATES = all_states()
 # A phone shows about 30 characters per line and about 15 lines of a message; emoji are wider
@@ -20,7 +20,7 @@ PHONE_COLUMNS = 32
 
 def _render(state) -> str:
     return render_dashboard(
-        state.snapshot, now=NOW, delivery=state.delivery, period_seconds=PERIOD_SECONDS
+        state.snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
     )
 
 
@@ -29,8 +29,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_fourteen_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 15))
+def test_sixteen_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 17))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -41,7 +41,8 @@ def test_every_state_renders_within_telegram_limit_and_matches_expected_overall(
     assert state.snapshot.overall == state.expect_overall
     assert len(to_telegram_html(text)) <= TELEGRAM_TEXT_LIMIT
     # The status line carries the dated data stamp; a banner may sit above it.
-    assert any(line.endswith(" · Sep 9 21:00 UTC") for line in lines[:2])
+    stamp = f" · {state.now:%b} {state.now.day} {state.now:%H:%M} UTC"
+    assert any(line.endswith(stamp) for line in lines[:2])
     assert any(line.startswith("> Confirmed") for line in lines)
     assert "> Period 5 min" in lines
     assert text.count("- ") <= 40
@@ -195,38 +196,89 @@ def test_state_13_is_three_releases_behind_as_information_only() -> None:
     assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
 
 
+SHOWCASE_HEALTHY = [
+    "🟢 Healthy · Sep 26 21:00 UTC",
+    "Gateway ✓ · Telegram ✓",
+    "Backup ✓ 10 h ago",
+    "Drift ✓ 0 of 481",
+    "",
+    "## 🧠 Limits used",
+    "Claude 42% (2h10m) · 67% (3d)",
+    "⚠️ Codex 93% (1h20m) · 58% (5d)",
+    "Gemini · no data",
+    "Grok 31% (6d)",
+    "Kimi 8% (3h40m) · 46% (21d)",
+    "",
+    "🤖 Hermes 0.21.3 → 0.21.5",
+    "",
+]
+
+
 def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_screen() -> None:
     """The screenshot state for the catalog: a healthy installation with all six sources and
-    every line the screen can show, made-up numbers, one warning mark on a spent limit. Not a
-    verification state: the thirteen above keep their golden texts."""
+    every line the screen can show on 2026-09-26, made-up numbers except upstream's real
+    release dates, one warning mark on a spent limit. Not a verification state: the thirteen
+    above keep their golden texts."""
     state = STATES[13]
     text = _render(state)
     main = _main_part(text)
     lines = text.splitlines()
 
     assert state.title == "Showcase: every line of a healthy screen"
-    assert main == [
-        "🟢 Healthy · Sep 9 21:00 UTC",
-        "Gateway ✓ · Telegram ✓",
-        "Backup ✓ 10 h ago",
-        "Drift ✓ 0 of 481",
-        "",
-        "## 🧠 Limits used",
-        "Claude 42% (2h10m) · 67% (3d)",
-        "⚠️ Codex 93% (1h20m) · 58% (5d)",
-        "Gemini · no data",
-        "Grok 31% (6d)",
-        "Kimi 8% (3h40m) · 46% (21d)",
-        "",
-        "🤖 Hermes 0.21.3 → 0.21.5",
-        "",
-    ]
+    assert main == SHOWCASE_HEALTHY
     assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
+    assert "> Confirmed 20:58" in lines
     assert "> Profiles 1/1 · sources 6/6" in lines
-    assert "> Backup Sep 9 11:00 · integrity ok" in lines
+    assert "> Backup Sep 26 11:00 · integrity ok" in lines
     assert "> Drift checked 08:00" in lines
-    assert "> Hermes 0.21.3 of Aug 30, latest 0.21.5 of Sep 7" in lines
-    assert "> 2 releases behind · checked Sep 9 21:00" in lines
+    assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
+    assert "> 2 releases behind · checked Sep 26 21:00" in lines
     assert "> Gemini: source not confirmed" in lines
+
+
+def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident() -> None:
+    """The same installation with three drifted keys: the status turns yellow, the incident is
+    named above the limits, the drift line carries the mark. Two lines more than the healthy
+    form, so the one-screen budget is not asserted: an exception is never pushed out."""
+    state = STATES[14]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Showcase: the healthy screen with config drift"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        "Gateway ✓ · Telegram ✓",
+        "Backup ✓ 10 h ago",
+        "Drift ⚠️ 3 of 481",
+        "",
+        "## Needs attention",
+        "- Config drift: 3 of 481 keys",
+        *SHOWCASE_HEALTHY[4:],
+    ]
+    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert text.count("⚠") == 2  # the drift line and the spent limit
+    assert "🟢 Healthy" not in text
+    assert "> Confirmed 20:58" in lines
+    assert "> Drift checked 08:00" in lines
+    assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
+
+
+def test_state_16_showcase_stale_is_the_healthy_screen_under_the_banner() -> None:
+    """The same healthy screen when the pinned message itself is unconfirmed for twenty
+    minutes: the banner is the first line, the data below it stays green and unchanged."""
+    state = STATES[15]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Showcase: the healthy screen under the stale banner"
+    assert main == [
+        "🔴 DASHBOARD STALE: last confirmation 20 min ago, threshold 10 min",
+        *SHOWCASE_HEALTHY,
+    ]
+    assert text.count("⚠") == 1
+    assert "> Confirmed 20:40" in lines
+    assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
