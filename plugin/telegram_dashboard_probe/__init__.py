@@ -18,14 +18,18 @@ Two traps this plugin is built around (found by reading 0.21.1, see the report):
 Also: the factory fires BEFORE the adapter finishes ``initialize()``/``start()``, so the first
 tick waits for ``is_connected`` instead of sending into a bot that is not initialised yet.
 
-The screen goes out as HTML when the adapter lets it, plain otherwise. The public
-``edit_message`` without ``finalize`` sets no parse mode, and its MarkdownV2 path splits an
-over-long payload into NEW messages, which a pinned dashboard must never do. The adapter's own
-``_edit_text(chat, id, text, parse_mode)`` (the same on 0.21.1, 0.21.3 and 0.21.5) takes a parse
-mode and raises on refusal, so every tick tries it with ``HTML`` (bold headings, the details in
-a collapsed quote) and, on any failure, edits plain through the public verb in the same tick. A
-plain edit that succeeds right after a failed HTML one means the HTML form was refused: plain
-from then on, the record says ``screen_format: plain`` and why, and HTML is tried again after
+The screen goes out as HTML when the adapter has a verb for it, plain otherwise. Which verb is
+read off the adapter object, never off a version number (``_html_verb``): the public
+``edit_message`` when its signature has a ``parse_mode`` parameter, else the adapter's own
+``_edit_text(chat, id, text, parse_mode)``, else nothing. On 0.21.1 to 0.21.5 and on main the
+public verb takes no parse mode: without ``finalize`` it sends plain text, and its ``finalize``
+path converts to MarkdownV2 and splits an over-long payload into NEW messages, which a pinned
+dashboard must never do; ``_edit_text`` (the same on all of them) takes a parse mode and raises
+on refusal. Every tick tries the HTML form (bold headings, the details in a collapsed quote)
+through the verb it found and, on any refusal, edits plain through the public verb in the same
+tick. A plain edit that succeeds right after a failed HTML one means the HTML form was refused:
+plain from then on, the record says ``screen_format: plain``, why (``html_error``) and which
+verb carries the HTML when one does (``html_verb``), and HTML is tried again after
 ``HTML_RETRY_TICKS``. Whatever happens while composing, the message is edited: a screen that
 could not be built is replaced by a loud one-screen plain notice with the time, never left as
 yesterday's text.
@@ -41,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import math
 import os
@@ -100,6 +105,15 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
 # The Bot API name of the parse mode, passed as a string: ``telegram.constants.ParseMode.HTML``
 # is that string, and importing it would tie the plugin to the engine's PTB.
 HTML_PARSE_MODE = "HTML"
+# The verbs an adapter may edit HTML with, in the order they are asked for: the public one when
+# its signature takes a parse mode (the catalog review's order), the adapter's own otherwise.
+PUBLIC_VERB = "edit_message"
+PRIVATE_VERB = "_edit_text"
+PARSE_MODE_PARAMETER = "parse_mode"
+# A real parameter of that name. ``**kwargs`` does not count: a verb that swallows the keyword
+# would send the markup as plain text and answer success.
+_PARSE_MODE_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+NO_HTML_VERB = "no HTML verb (edit_message without parse_mode, no _edit_text)"
 # After a refused HTML edit the screen is plain for this many ticks, then HTML is tried once
 # more: an hour at the pilot's period, so a transient failure does not lock plain in for good.
 HTML_RETRY_TICKS = 12
@@ -316,6 +330,30 @@ def import_dashboard() -> Dashboard | None:
     return None
 
 
+def _takes_parse_mode(verb: object) -> bool:
+    """Whether ``verb`` is a coroutine function with a ``parse_mode`` parameter of its own."""
+    if not asyncio.iscoroutinefunction(verb):
+        return False
+    try:
+        parameter = inspect.signature(verb).parameters.get(PARSE_MODE_PARAMETER)
+    except (TypeError, ValueError):
+        return False
+    return parameter is not None and parameter.kind in _PARSE_MODE_KINDS
+
+
+def _html_verb(live: Any) -> tuple[str, Any] | None:
+    """The verb this adapter edits HTML with: the public ``edit_message`` when it takes a parse
+    mode, else the adapter's own ``_edit_text``, else nothing. A capability read off the object
+    on every tick (a reconnect brings a new adapter), never a version number."""
+    public = getattr(live, PUBLIC_VERB, None)
+    if _takes_parse_mode(public):
+        return PUBLIC_VERB, public
+    private = getattr(live, PRIVATE_VERB, None)
+    if asyncio.iscoroutinefunction(private):
+        return PRIVATE_VERB, private
+    return None
+
+
 class ProbeRuntime:
     """One per ``register()``; survives adapter replacement, owns exactly one task."""
 
@@ -454,45 +492,57 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ the edit
 
     async def _edit(self, live: Any, chat: str, message_id: str, screen: Screen) -> Any:
-        """HTML through the adapter's ``_edit_text`` when it takes it, plain through the public
-        ``edit_message`` otherwise; the record says which form is on the screen.
+        """HTML through the verb the adapter has for it (``_html_verb``), plain through the
+        public ``edit_message`` otherwise; the record says which form is on the screen and
+        which verb carried it.
 
-        The two verbs cannot tell "HTML refused" from "network down" on their own: the plain edit
+        The verbs cannot tell "HTML refused" from "network down" on their own: the plain edit
         right after a failed HTML one does. Plain succeeded, HTML did not: the form was refused.
         Both failed: no verdict, the tick's own error handling takes the plain result."""
         reason: str | None = None
         if screen.html is not None and self._html_wanted():
-            edit_text = getattr(live, "_edit_text", None)
-            if not asyncio.iscoroutinefunction(edit_text):
-                reason = "no _edit_text"
+            verb = _html_verb(live)
+            if verb is None:
+                reason = NO_HTML_VERB
             else:
+                name, edit_html = verb
                 try:
-                    await edit_text(chat, message_id, screen.html, HTML_PARSE_MODE)
+                    if name == PUBLIC_VERB:
+                        result = await edit_html(
+                            chat, message_id, screen.html, parse_mode=HTML_PARSE_MODE
+                        )
+                        if result.success:
+                            self._html_verdict(True, None, name)
+                            return result
+                        # A SendResult, not an exception; the record keeps the adapter's error
+                        # texts already (last_error), bounded here.
+                        reason = f"{PUBLIC_VERB}: {str(result.error or 'refused')[:80]}"
+                    else:
+                        await edit_html(chat, message_id, screen.html, HTML_PARSE_MODE)
+                        self._html_verdict(True, None, name)
+                        return _EditResult(success=True)
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     raise
                 except BaseException as exc:
                     if "not modified" in str(exc).lower():
                         # Telegram compared our text with the live message: it exists and
                         # already says this, in HTML.
-                        self._html_verdict(True, None)
+                        self._html_verdict(True, None, name)
                         return _EditResult(success=True)
                     # Class name only: the message may carry chat ids.
                     reason = type(exc).__name__
-                else:
-                    self._html_verdict(True, None)
-                    return _EditResult(success=True)
         result = await live.edit_message(chat, message_id, screen.plain)
         if reason is not None and result.success:
-            self._html_verdict(False, reason)
+            self._html_verdict(False, reason, None)
         return result
 
     def _html_wanted(self) -> bool:
         return self.html is not False or self.ticks >= self.html_retry_tick
 
-    def _html_verdict(self, ok: bool, reason: str | None) -> None:
+    def _html_verdict(self, ok: bool, reason: str | None, verb: str | None) -> None:
         if ok:
             if self.html is not True:
-                logger.info("probe: the screen is edited as HTML through the adapter")
+                logger.info("probe: the screen is edited as HTML through %s", verb)
             self.html = True
         else:
             if self.html is not False:
@@ -506,6 +556,7 @@ class ProbeRuntime:
         # Saved with the tick's own note, right after this edit.
         self.record["screen_format"] = "html" if ok else "plain"
         self.record["html_error"] = reason
+        self.record["html_verb"] = verb if ok else None
 
     # ------------------------------------------------------------------ the screen
 

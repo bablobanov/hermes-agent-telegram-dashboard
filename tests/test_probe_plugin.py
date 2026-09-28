@@ -144,14 +144,16 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         assert edited["text"].startswith(SCREEN_FIRST_LINES), edited["text"]
         assert "⚪ Unknown" in edited["text"]  # an empty home: nothing is green
         assert "#" not in edited["text"]
-        # The edit goes through the adapter's _edit_text with the HTML parse mode: bold
-        # headings and the details in a collapsed quote reach the Bot call as such.
+        # The engine's public edit_message takes no parse mode (read by signature, not by
+        # version), so the edit goes through the adapter's _edit_text with the HTML parse mode:
+        # bold headings and the details in a collapsed quote reach the Bot call as such.
         assert edited.get("parse_mode") == "HTML"
         assert (
             "<b>🧠 Limits used</b>" in edited["text"]
             and "<blockquote expandable>" in edited["text"]
         )
         assert runtime.record["screen_format"] == "html"
+        assert runtime.record["html_verb"] == "_edit_text"
         assert runtime.record["message_id"] == "101"
         assert runtime.record["adapter_generation"] == 1
 

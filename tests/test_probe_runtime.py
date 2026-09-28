@@ -14,10 +14,53 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from probe_fakes import CHAT, FakeAdapter, FakeContext, load_plugin, until
+from probe_fakes import (
+    CHAT,
+    FakeAdapter,
+    FakeContext,
+    KwargsOnlyAdapter,
+    PlainOnlyAdapter,
+    PublicHtmlAdapter,
+    load_plugin,
+    until,
+)
 
 _load_plugin = load_plugin
 _until = until
+
+
+def test_the_html_verb_is_read_off_the_signature_never_off_a_version() -> None:
+    """A parameter named exactly ``parse_mode``, positional-or-keyword or keyword-only, on a
+    coroutine function: that is "takes a parse mode". ``**kwargs``, a missing parameter, a plain
+    function or no verb at all are not."""
+    plugin = _load_plugin()
+    takes = plugin._takes_parse_mode
+
+    async def positional(chat: str, message_id: str, text: str, parse_mode: Any = None) -> None:
+        pass
+
+    async def keyword_only(
+        chat: str, message_id: str, text: str, *, finalize: bool = False, parse_mode: Any = None
+    ) -> None:
+        pass
+
+    async def swallows(chat: str, message_id: str, text: str, **kwargs: Any) -> None:
+        pass
+
+    async def without(chat: str, message_id: str, text: str, *, finalize: bool = False) -> None:
+        pass
+
+    def plain_function(chat: str, message_id: str, text: str, parse_mode: Any = None) -> None:
+        pass
+
+    assert takes(positional) and takes(keyword_only)
+    assert not takes(swallows) and not takes(without) and not takes(plain_function)
+    assert not takes(None) and not takes(object()) and not takes(print)
+
+    assert plugin._html_verb(PublicHtmlAdapter())[0] == "edit_message"
+    assert plugin._html_verb(FakeAdapter())[0] == "_edit_text"
+    assert plugin._html_verb(KwargsOnlyAdapter())[0] == "_edit_text"
+    assert plugin._html_verb(PlainOnlyAdapter()) is None
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides: Any) -> dict[str, Any]:

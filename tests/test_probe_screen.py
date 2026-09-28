@@ -4,8 +4,10 @@ Load-bearing property, from the task card: a tick whose collection or render fai
 edit the message. Leaving yesterday's text on a pinned dashboard is worse than an empty screen,
 because it looks exactly like a calm system.
 
-Since 25.09 the screen goes out as HTML through the adapter's ``_edit_text`` and falls back to
-plain through the public ``edit_message``; the second half of this module is that probe.
+Since 25.09 the screen goes out as HTML and falls back to plain through the public
+``edit_message``; since 0.7.0 the HTML verb is read off the adapter (the public ``edit_message``
+when its signature takes a ``parse_mode``, else the adapter's own ``_edit_text``, else plain) and
+the record says which one carried the form. The second half of this module is that probe.
 """
 
 from __future__ import annotations
@@ -25,7 +27,9 @@ from probe_fakes import (
     PLUGIN_DIR,
     FakeAdapter,
     FakeContext,
+    KwargsOnlyAdapter,
     PlainOnlyAdapter,
+    PublicHtmlAdapter,
     load_plugin,
     until,
 )
@@ -731,7 +735,96 @@ def test_the_screen_is_edited_as_html_through_the_adapter_s_own_verb(
     assert "<blockquote expandable>" in adapter.html_edits[0][0]
     assert runtime.html is True
     assert ctx.state.data["probe"]["screen_format"] == "html"
+    assert ctx.state.data["probe"]["html_verb"] == "_edit_text"
     assert ctx.state.data["probe"]["html_error"] is None
+
+
+def test_a_public_verb_that_takes_a_parse_mode_is_preferred_over_the_private_one(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The catalog review's order: the public ``edit_message`` first. It is taken as soon as its
+    signature has a ``parse_mode`` parameter; the adapter's own ``_edit_text`` is then never
+    touched, and the record names the verb that carried the HTML."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PublicHtmlAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.public_html_edits) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert all(parse_mode == "HTML" for _, parse_mode in adapter.public_html_edits)
+    assert adapter.html_edits == []  # the private verb stays untouched while the public one will do
+    assert adapter.edits == [] and adapter.sent == []
+    assert "<blockquote expandable>" in adapter.public_html_edits[0][0]
+    assert runtime.html is True
+    assert ctx.state.data["probe"]["screen_format"] == "html"
+    assert ctx.state.data["probe"]["html_verb"] == "edit_message"
+    assert ctx.state.data["probe"]["html_error"] is None
+
+
+def test_a_public_verb_refusing_the_form_falls_back_to_plain_in_the_same_tick(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The public verb answers with ``success=False`` instead of raising: that is a refusal of the
+    form like any other. Plain through the same verb in the same tick, the record says which verb
+    refused and why, no detour through ``_edit_text`` (Telegram would refuse the same markup)."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PublicHtmlAdapter(
+        reject_public_html="Bad Request: can't parse entities: unsupported start tag"
+    )
+    retry = plugin.HTML_RETRY_TICKS
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
+        assert len(adapter.public_html_edits) == 1  # one refusal, then plain without asking again
+        assert adapter.html_edits == []
+        assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
+        record = ctx.state.data["probe"]
+        assert record["last_status"] == "edited"
+        assert record["screen_format"] == "plain"
+        assert (
+            record["html_error"]
+            == "edit_message: Bad Request: can't parse entities: unsupported start tag"
+        )
+        assert record["html_verb"] is None
+        await until(lambda: len(adapter.public_html_edits) >= 2, timeout=10.0)  # the probe returns
+
+    _run(runtime, adapter, scenario)
+
+
+def test_a_public_verb_swallowing_keywords_does_not_count_as_taking_a_parse_mode(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """``edit_message(..., **kwargs)`` would accept ``parse_mode`` and drop it: the markup would go
+    out as plain text with a success answer. The signature check reads a named parameter only, so
+    this adapter's HTML goes through its ``_edit_text``."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = KwargsOnlyAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.edits == []  # the public verb was never handed the HTML
+    assert ctx.state.data["probe"]["screen_format"] == "html"
+    assert ctx.state.data["probe"]["html_verb"] == "_edit_text"
 
 
 def test_a_refused_html_edit_falls_back_to_plain_in_the_same_tick_and_probes_again_later(
@@ -810,7 +903,10 @@ def test_an_adapter_without_the_verb_gets_plain_text_and_the_record_says_why(
     assert "🟢 Healthy · Sep 9 21:00 UTC" in adapter.edits[0].splitlines()[:2]
     assert "DETAILS" in adapter.edits[0] and "<" not in adapter.edits[0]
     assert ctx.state.data["probe"]["screen_format"] == "plain"
-    assert ctx.state.data["probe"]["html_error"] == "no _edit_text"
+    assert ctx.state.data["probe"]["html_error"] == (
+        "no HTML verb (edit_message without parse_mode, no _edit_text)"
+    )
+    assert ctx.state.data["probe"]["html_verb"] is None
 
 
 def test_when_plain_fails_too_there_is_no_verdict_and_html_is_tried_next_tick(

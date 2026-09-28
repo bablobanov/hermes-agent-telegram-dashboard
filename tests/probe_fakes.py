@@ -127,6 +127,38 @@ class PlainOnlyAdapter(FakeAdapter):
     _edit_text = None  # type: ignore[assignment]
 
 
+class PublicHtmlAdapter(FakeAdapter):
+    """An adapter whose PUBLIC ``edit_message`` takes a parse mode, the shape the catalog review
+    asked the plugin to prefer. ``_edit_text`` is still there: the plugin must pick the public
+    verb over it. ``reject_public_html`` is the error the public verb answers an HTML edit with:
+    a ``SendResult`` with ``success=False``, not an exception."""
+
+    def __init__(self, *, reject_public_html: str | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.reject_public_html = reject_public_html
+        self.public_html_edits: list[tuple[str, Any]] = []  # (text, parse_mode), a mode given
+
+    async def edit_message(
+        self, chat: str, message_id: str, text: str, *, parse_mode: Any = None
+    ) -> Any:
+        if parse_mode is None:
+            return await super().edit_message(chat, message_id, text)
+        self.public_html_edits.append((text, parse_mode))
+        if self.reject_public_html is not None:
+            return SimpleNamespace(success=False, error=self.reject_public_html)
+        self.texts.append(text)
+        return SimpleNamespace(success=True, error=None)
+
+
+class KwargsOnlyAdapter(FakeAdapter):
+    """A public ``edit_message`` that swallows any keyword: a parse mode passed to it would vanish
+    and the markup would go out as plain text with a success answer. The plugin must not read
+    ``**kwargs`` as "takes parse_mode"; its ``_edit_text`` is the verb to use here."""
+
+    async def edit_message(self, chat: str, message_id: str, text: str, **kwargs: Any) -> Any:
+        return await super().edit_message(chat, message_id, text)
+
+
 async def until(predicate: Any, *, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
