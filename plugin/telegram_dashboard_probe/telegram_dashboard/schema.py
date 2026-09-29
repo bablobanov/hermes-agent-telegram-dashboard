@@ -73,6 +73,24 @@ class QuotaWindow:
 
 
 @dataclass(frozen=True, slots=True)
+class Refusal:
+    """The provider's last HTTP 429 as the engine's own log recorded it (``gemini_log.py``).
+
+    ``at`` is ``None`` when the log was read and holds none. Every other field is optional: the
+    provider's message names a ``limit``, a ``model`` and the seconds to retry only sometimes.
+    ``daily`` is a retry longer than a per-minute window, so the quota is out until a reset;
+    ``active_until`` is how long the refusal stays on the screen (the line carries the mark, a
+    daily one is an event). Both are derived on every tick, never stored."""
+
+    at: str | None = None
+    limit: int | None = None
+    retry_seconds: float | None = None
+    model: str | None = None
+    daily: bool = False
+    active_until: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class QuotaMetric:
     provider: str
     kind: QuotaKind
@@ -87,6 +105,8 @@ class QuotaMetric:
     plan: str | None = None
     # When the login behind the number ends; the owner signs in again before that.
     login_expires_at: str | None = None
+    # The last 429 the engine logged for the provider; ``None`` when nobody watches its log.
+    refusal: Refusal | None = None
 
 
 @dataclass(frozen=True, slots=True)
