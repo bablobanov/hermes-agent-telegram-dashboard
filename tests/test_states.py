@@ -287,8 +287,8 @@ def test_state_16_showcase_stale_is_the_healthy_screen_under_the_banner() -> Non
 
 def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login() -> None:
     """The showcase installation with Claude answered by an external limits source (contract 1):
-    the account's two windows on its line, the model's limit spent more than both on a line of
-    its own, a model limit spent less in the details, the plans the providers name and the login
+    the account's two windows on its line, every model's limit on a line of its own without the
+    reset it shares with the week (decision of 29.09), the plans the providers name and the login
     that ends in two days as an incident."""
     state = STATES[16]
     text = _render(state)
@@ -307,13 +307,14 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
         "",
         "## 🧠 Limits used",
         "Claude 42% (2h10m) · 67% (3d)",
-        "⚠️ Claude Fable 100% (3d)",
+        "⚠️ Claude Fable 100%",
+        "Claude Sonnet 20%",
         *SHOWCASE_HEALTHY[7:],
     ]
     # An exception is never pushed out, so only the width is the budget here.
     assert max(len(line) for line in main) <= PHONE_COLUMNS
     assert "> Profiles 1/1 · sources 7/7" in lines
-    assert "> Claude Sonnet 20% (3d)" in lines
+    assert not any(line.startswith("> Claude Sonnet") for line in lines)
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login until Sep 28" in lines
     assert "Data " not in text  # the source answered within the tick: one stamp for all

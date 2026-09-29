@@ -337,8 +337,8 @@ window carries no length label: the share and its reset are what the reader acts
 be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on some
 plans the first one is the week). A limit for one model keeps its scope
 (`Claude 37% (3h) · 12% (4d) · Opus 5% (4d)`). A model's own limit from an external source gets
-a line of its own only while it is spent more than every account window, otherwise it sits in
-the details (see "External limit sources"). A state the provider reports in words is never
+a line of its own under the account's line, `Claude Fable 9%`, without the time when it resets
+together with the account's window of the same label (see "External limit sources"). A state the provider reports in words is never
 turned into a number or a zero (`Grok · usage not started`). The plans the providers name are
 one details line, `Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok`; a plan nobody
 reports is not guessed.
@@ -449,10 +449,11 @@ The answer is `200` with a JSON object of at most 64 KB:
 - `windows`, up to 6, in the order the screen shows them: `used_percent` from 0 to 100 or `null`;
   `resets_at` or `null`; `scope`, the model a limit applies to, `null` for the account's own
   limit; `severity`, one of `normal`, `warning`, `critical`, or `null`; `label` is optional and
-  not shown (windows carry no length label). The account's windows share one line. A model's
-  limit gets a line of its own only while it is spent more than every account window
-  (`⚠️ Claude Fable 100% (3d)`), otherwise it goes to the details. `warning` and `critical` put
-  the mark on the line as 90% does
+  not shown (windows carry no length label). The account's windows share one line. Every
+  model's limit gets a line of its own after it (`⚠️ Claude Fable 100%`); the time to its reset is
+  left out when the account's window with the same `label` resets within the same minute, and
+  said otherwise (`Claude Fable 9% (2h)`). `warning` and `critical` put the mark on the line as
+  90% does
 - `plan`, optional, up to 24 characters: the details line `Plans: …`
 - `login_expires_at`, optional: when the login behind the numbers ends. The details say
   `Claude login until Oct 27`; from three days before it the event

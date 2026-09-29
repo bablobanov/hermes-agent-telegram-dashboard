@@ -586,10 +586,11 @@ def _details_lines(text: str) -> list[str]:
     return [line[2:] for line in text.splitlines() if line.startswith("> ")]
 
 
-def test_a_model_limit_spent_more_than_the_account_gets_its_own_marked_line() -> None:
-    """Decision 4 of the subscription plan: the account's windows on the first line, a model's
-    limit on a line of its own only when it is spent more than any of them; the mark from the
-    provider's severity as well as from 90%."""
+def test_a_model_limit_gets_its_own_marked_line_without_the_shared_reset() -> None:
+    """Decision of 29.09 (replaces decision 4 of the subscription plan): the account's windows on
+    the first line, every model's limit on a line of its own after it; the time to the reset is
+    left out when the account's window of the same length resets at the same moment. The mark
+    from the provider's severity as well as from 90%."""
     text = _limits_only(
         QuotaMetric(
             "Claude",
@@ -604,12 +605,12 @@ def test_a_model_limit_spent_more_than_the_account_gets_its_own_marked_line() ->
 
     assert _screen_lines(text, "Claude") == [
         "⚠️ Claude 42% (2h) · 86% (4h)",
-        "⚠️ Claude Fable 100% (4h)",
+        "⚠️ Claude Fable 100%",
     ]
     assert all(len(line) <= 32 for line in _screen_lines(text, "Claude"))
 
 
-def test_a_model_limit_spent_less_than_the_account_goes_to_the_details() -> None:
+def test_a_model_limit_spent_less_than_the_account_keeps_its_line() -> None:
     text = _limits_only(
         QuotaMetric(
             "Claude",
@@ -622,8 +623,29 @@ def test_a_model_limit_spent_less_than_the_account_goes_to_the_details() -> None
         )
     )
 
-    assert _screen_lines(text, "Claude") == ["Claude 42% (2h) · 71% (4h)"]
-    assert "Claude Fable 60% (4h)" in _details_lines(text)
+    assert _screen_lines(text, "Claude") == ["Claude 42% (2h) · 71% (4h)", "Claude Fable 60%"]
+    assert not any("Fable" in line for line in _details_lines(text))
+
+
+def test_a_model_limit_with_its_own_reset_says_the_time() -> None:
+    """Only the account's window of the same length hides the time: a model's week that resets
+    with the session, not with the week, still says when."""
+    text = _limits_only(
+        QuotaMetric(
+            "Claude",
+            "official",
+            windows=(
+                QuotaWindow("session", 42.0, _IN_2H),
+                QuotaWindow("week", 71.0, _IN_4H),
+                QuotaWindow("week", 9.0, _IN_2H, scope="Fable"),
+            ),
+        )
+    )
+
+    assert _screen_lines(text, "Claude") == [
+        "Claude 42% (2h) · 71% (4h)",
+        "Claude Fable 9% (2h)",
+    ]
 
 
 def test_model_limits_alone_stay_on_the_provider_s_line() -> None:

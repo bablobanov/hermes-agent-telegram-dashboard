@@ -2,8 +2,8 @@
 
 The first line is the status with the data stamp (the pinned-message header shows that line),
 then gateway, backup and drift as one short line each, up to five incidents, one line per
-provider under "🧠 Limits used" with the time to every reset (plus a line for a model's limit
-spent more than the account's own), the Hermes version line after them,
+provider under "🧠 Limits used" with the time to every reset (plus a line for every model's own
+limit), the Hermes version line after them,
 and everything that explains a line (reasons, per-source stamps, coverage) in a details block
 that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import html
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
@@ -342,9 +342,12 @@ def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
 
 
 def _quota_lines(quota: QuotaMetric, reference: datetime | None, details: _Details) -> list[str]:
-    """The provider's line; a model's limit spent more than the account's own gets a line of its
-    own after it (decision 4 of the subscription plan), every other model limit goes to the
-    details. An expired login is said as such: it is an answer, not "no data"."""
+    """The provider's line with the account's windows, then a line of its own for every model's
+    limit (decision of 29.09, replacing decision 4 of the subscription plan: the model's limit is
+    wanted in sight, and next to the account's windows it does not fit a phone line). A model's
+    line leaves out the time to its reset when the account's window of the same label resets at
+    the same moment: the account's line already says it. An expired login is said as such: it is
+    an answer, not "no data"."""
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "expired":
         return [f"{provider} · login expired"]
@@ -353,19 +356,26 @@ def _quota_lines(quota: QuotaMetric, reference: datetime | None, details: _Detai
     own = tuple(window for window in quota.windows if window.scope is None)
     if not own:
         return [_windows_line(provider, quota.windows, reference)]
-    spent = [window.used_percent for window in own if window.used_percent is not None]
-    ceiling = max(spent) if spent else None
     lines = [_windows_line(provider, own, reference)]
     for window in quota.windows:
         if window.scope is None:
             continue
-        words = f"{provider} {_window_words(window, reference)}"
-        used = window.used_percent
-        if used is not None and (ceiling is None or used > ceiling):
-            lines.append(f"{_mark((window,))}{words}")
-        else:
-            details.state.append(words)
+        shown = replace(window, reset_at=None) if _resets_with(window, own) else window
+        lines.append(f"{_mark((window,))}{provider} {_window_words(shown, reference)}")
     return lines
+
+
+def _resets_with(window: QuotaWindow, own: tuple[QuotaWindow, ...]) -> bool:
+    """True when an account window of the same label resets within a minute of ``window``: the
+    source rounds its stamps on its own (the Claude API differs in microseconds)."""
+    moment = parse_timestamp(window.reset_at)
+    if moment is None:
+        return False
+    for other in own:
+        theirs = parse_timestamp(other.reset_at) if other.label == window.label else None
+        if theirs is not None and abs((theirs - moment).total_seconds()) < 60:
+            return True
+    return False
 
 
 def _account_words(
