@@ -8,6 +8,7 @@ itself against a real local server (no redirect, a size cap, the source's own ti
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -15,6 +16,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -336,17 +338,45 @@ def test_the_source_s_own_timeout_bounds_the_request(server: _Server) -> None:
 # ---------------------------------------------------------------- nothing about one source
 
 
+# The names of the author's own source and its port, as SHA-256 of the lower-cased word: the
+# check must not put the names into the public repository itself.
+_UNNAMED = frozenset(
+    {
+        "b9ae76a82c4bdab84c8c00cbf327b8d7620410580700fe7fe80f6e139e1dea49",
+        "87e8cc3ee4a9da18bfd2fd2ba8f44fc7ff24122c4849321e78cd5ff9b0023429",
+        "adfdf777372e4df2c571cb656de68b7be4dfa47fd6220498807842390242ce97",
+    }
+)
+_TEXT_SUFFIXES = (".py", ".json", ".yaml", ".yml", ".md", ".toml", ".txt", ".cfg")
+
+
+def _unnamed_words(text: str) -> set[str]:
+    """Every word and every pair of neighbours joined by ``-`` or ``_`` whose digest is listed."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    pairs = {f"{a}{sep}{b}" for a, b in pairwise(words) for sep in "-_"}
+    return {
+        word
+        for word in {*words, *pairs}
+        if hashlib.sha256(word.encode("utf-8")).hexdigest() in _UNNAMED
+    }
+
+
 def test_the_plugin_knows_no_particular_source() -> None:
-    """Decision of 29.09: the public plugin carries nothing about the author's own source."""
+    """Decision of 29.09: the public repository carries nothing about the author's own source,
+    in the plugin, the README, the tests or anywhere else in the tree."""
+    root = PLUGIN_DIR.parents[1]
     files = [
-        *(p for p in PLUGIN_DIR.rglob("*") if p.suffix in (".py", ".json", ".yaml", ".md")),
-        PLUGIN_DIR.parents[1] / "README.md",
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix in _TEXT_SUFFIXES
+        and not {".git", "__pycache__", ".venv", ".mypy_cache", ".ruff_cache"} & set(path.parts)
     ]
+
+    assert len(files) > 20, "the scan found too few files to mean anything"
     for path in files:
-        if "__pycache__" in path.parts:
-            continue
-        text = path.read_text(encoding="utf-8")
-        assert not re.search(r"claude-runner|claude_runner|\b8328\b", text), path.name
+        found = _unnamed_words(path.read_text(encoding="utf-8"))
+        assert not found, f"{path.relative_to(root)}: {len(found)} unnamed word(s)"
 
 
 def test_only_the_external_module_reads_a_source_key() -> None:
