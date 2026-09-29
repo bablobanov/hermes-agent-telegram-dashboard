@@ -108,3 +108,46 @@ def test_the_one_task_is_spawned_through_the_context_and_nothing_else() -> None:
     assert entry.count("spawn_task(") == 1
     assert not re.search(r"create_task\(|ensure_future\(|threading|Thread\(|atexit|signal\.", entry)
     assert not re.search(r"subprocess|Popen", entry)
+
+
+def test_a_bot_token_variable_is_never_a_source_key(monkeypatch) -> None:
+    """Ilya's amendment of 29.09 to the subscription plan: an external limit source may name the
+    variable its key lives in, but never one that holds the bot token, or the plugin would read
+    the token after all (property 1 above).
+
+    The list: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN`` (v2026.9.14:
+    ``plugins/platforms/telegram/adapter.py:6645``, ``:6655``, ``gateway/config.py:350``); the
+    cron path of this dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``; and any ``*_BOT_TOKEN``, in
+    any case, for safety."""
+    import json
+    from datetime import UTC, datetime
+
+    from telegram_dashboard import external
+    from telegram_dashboard.__main__ import _DEFAULT_TOKEN_ENV
+
+    assert {"TELEGRAM_BOT_TOKEN", _DEFAULT_TOKEN_ENV} == external.BOT_TOKEN_VARIABLES
+    secret = "123456789:AAE-planted-bot-secret-for-this-test-only"
+    now = datetime(2026, 9, 29, tzinfo=UTC)
+    calls: list[object] = []
+
+    def get(*args: object) -> tuple[int, bytes]:
+        calls.append(args)
+        return 200, b"{}"
+
+    names = (
+        "TELEGRAM_BOT_TOKEN",
+        "HERMES_DASHBOARD_BOT_TOKEN",
+        "SOME_BOT_TOKEN",
+        "telegram_bot_token",
+        "Other_Bot_Token",
+    )
+    for name in names:
+        monkeypatch.setenv(name, secret)
+        (source,) = external.read_sources([{"url": "http://127.0.0.1:18080/u", "key_env": name}])
+        assert source.problem == "key_env names a bot token variable", name
+        item = external.fetch_item(source, now=now, get=get)
+        assert secret not in json.dumps(item)
+    # An entry built by hand, past the settings check, is refused just the same.
+    forged = external.Source(1, "http://127.0.0.1:18080/u", "TELEGRAM_BOT_TOKEN", 20.0)
+    item = external.fetch_item(forged, now=now, get=get)
+    assert calls == [] and item["reason"] == "key_env names a bot token variable"

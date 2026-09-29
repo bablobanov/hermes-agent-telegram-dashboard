@@ -89,15 +89,26 @@ QUOTA_CACHE_PROVIDERS = ("grok", "kimi")
 # The once-a-day check of the latest Hermes release upstream keeps its attempt beside them, so a
 # restart does not ask GitHub again.
 RELEASE_CACHE_KEY = "release_cache"
+# External limit sources (``limits_sources``, contract 1) keep one attempt each, by URL
+# digest, under a key of their own.
+EXTERNAL_CACHE_KEY = "external_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
 DASHBOARD_MODULES = ("collect", "compat", "freshness", "render")
 # What the tick calls; a copy of the package that lacks any of it is refused at import time.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
-    # VERSION_FLIGHT came with ``version_cache`` (0.6.0): a copy without it would reject that
-    # argument on every tick.
-    "collect": ("collect_all_async", "SubprocessRunner", "Flights", "VERSION_FLIGHT"),
+    # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
+    # with the external limit sources (0.8.0): a copy without them would reject the tick's
+    # arguments every time.
+    "collect": (
+        "collect_all_async",
+        "SubprocessRunner",
+        "Flights",
+        "VERSION_FLIGHT",
+        "collect_external",
+        "read_sources",
+    ),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
@@ -133,6 +144,8 @@ class Settings:
     limits_refresh_seconds: float
     display_timezone: str
     backup_status: Path | None
+    # External limit sources as the config lists them; the package checks every entry.
+    limits_sources: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -186,7 +199,17 @@ def read_settings(ctx: Any) -> Settings | None:
         ),
         display_timezone=_setting(ctx, "display_timezone", ENV_TZ) or "UTC",
         backup_status=Path(backup_status).expanduser() if backup_status else None,
+        limits_sources=_entries(_raw_setting(ctx, "limits_sources")),
     )
+
+
+def _entries(raw: object) -> tuple[Any, ...]:
+    """``limits_sources`` as a list in the config entry; anything else is "none configured"."""
+    if isinstance(raw, (list, tuple)):
+        return tuple(raw)
+    if raw not in (None, ""):
+        logger.warning("probe: limits_sources must be a list; ignoring %r", type(raw))
+    return ()
 
 
 def _home(ctx: Any) -> Path:
@@ -621,6 +644,7 @@ class ProbeRuntime:
             drift_report=self.settings.drift_report,
             limits_enabled=self.settings.limits_enabled,
             backup_status=self.settings.backup_status,
+            limits_sources=self.settings.limits_sources,
         )
         runner = dashboard.collect.SubprocessRunner()
         caches = self.quota_caches()
@@ -634,6 +658,9 @@ class ProbeRuntime:
             kimi_cache=caches["kimi"],
             kimi_interval_seconds=self.settings.limits_refresh_seconds,
             version_cache=self.release_cache(),
+            external_caches=self.external_cache(),
+            external_interval_seconds=self.settings.limits_refresh_seconds,
+            period_seconds=self.settings.period_seconds,
         )
 
     def quota_caches(self) -> dict[str, dict[str, Any]]:
@@ -661,6 +688,15 @@ class ProbeRuntime:
         if not isinstance(cache, dict):
             cache = {}
             self.record[RELEASE_CACHE_KEY] = cache
+        return cache
+
+    def external_cache(self) -> dict[str, Any]:
+        """The external limit sources' caches inside the record, one per URL digest, the same
+        object on every tick so a worker that returns late still writes into the record."""
+        cache = self.record.get(EXTERNAL_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[EXTERNAL_CACHE_KEY] = cache
         return cache
 
     def _render_period(self) -> int:
@@ -721,6 +757,18 @@ class ProbeRuntime:
             logger.warning("probe: plugin state not saved (%s)", type(exc).__name__)
 
 
+def _announce_sources(runtime: ProbeRuntime) -> None:
+    """The start-up check of ``limits_sources``: a refused entry is named in the log once, and
+    on the screen every tick (its line says why)."""
+    if not runtime.settings.limits_sources or runtime.dashboard is None:
+        return
+    sources = runtime.dashboard.collect.read_sources(runtime.settings.limits_sources)
+    for source in sources:
+        if source.problem:
+            logger.warning("probe: limits source %d refused: %s", source.number, source.problem)
+    logger.info("probe: %d external limits source(s) configured", len(sources))
+
+
 def register(ctx: Any) -> ProbeRuntime | None:
     settings = read_settings(ctx)
     if settings is None:
@@ -729,6 +777,7 @@ def register(ctx: Any) -> ProbeRuntime | None:
         )
         return None
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
+    _announce_sources(runtime)
     ctx.register_platform_handler(PLATFORM, runtime.wire)
     logger.info(
         "probe: registered Telegram handler factory (period %.0fs)", settings.period_seconds

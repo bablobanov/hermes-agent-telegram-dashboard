@@ -39,6 +39,8 @@ class Environment:
     limits_enabled: bool = True
     # The status file the backup timer writes; ``None`` means the line is not observed here.
     backup_status: Path | None = None
+    # ``limits_sources`` from the config as given; ``external.read_sources`` checks each entry.
+    limits_sources: tuple[Any, ...] = ()
 
 
 def probe_gateway_state(env: Environment) -> ProbeResult:

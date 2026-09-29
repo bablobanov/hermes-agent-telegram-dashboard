@@ -38,6 +38,7 @@ def _environment(config: dict[str, object]) -> Environment:
     drift_command = config.get("drift_command")
     drift_report = config.get("drift_report")
     backup_status = config.get("backup_status")
+    sources = config.get("limits_sources")
     return Environment(
         hermes_home=Path(str(home)).expanduser(),
         drift_command=tuple(str(part) for part in drift_command)
@@ -50,6 +51,7 @@ def _environment(config: dict[str, object]) -> Environment:
         backup_status=Path(str(backup_status)).expanduser()
         if isinstance(backup_status, str) and backup_status
         else None,
+        limits_sources=tuple(sources) if isinstance(sources, list) else (),
     )
 
 

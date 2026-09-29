@@ -542,3 +542,179 @@ def test_grok_s_plan_is_no_longer_dropped() -> None:
     metric, _source = collect_grok({}, now=NOW, interval_seconds=900, fetch=lambda now: item)
 
     assert metric.plan == "SuperGrok"
+
+
+# ---------------------------------------------------------------- external limit sources (0.8.0)
+
+EXT_URL = "http://127.0.0.1:18080/v1/usage"
+EXT_ANSWER = {
+    "contract": 1,
+    "provider": "Claude",
+    "state": "ok",
+    "reason": None,
+    "plan": "Max 5x",
+    "login_expires_at": "2026-10-27T21:07:24Z",
+    "fetched_at": "2026-09-09T20:59:00Z",
+    "windows": [
+        {
+            "label": "session",
+            "used_percent": 42,
+            "resets_at": None,
+            "scope": None,
+            "severity": "normal",
+        },
+    ],
+}
+
+
+def _ext_source(url: str = EXT_URL, **fields):
+    from telegram_dashboard.external import read_sources
+
+    (source,) = read_sources([{"url": url, **fields}])
+    return source
+
+
+def _ext_fetch(answer, calls=None):
+    from telegram_dashboard.external import parse_contract
+
+    def fetch(source, *, now):
+        if calls is not None:
+            calls.append(source.url)
+        return parse_contract(answer, now=now)
+
+    return fetch
+
+
+def _ext(answer, cache=None, *, now=NOW, source=None, calls=None):
+    from telegram_dashboard.collect import collect_external
+
+    return collect_external(
+        source or _ext_source(),
+        {} if cache is None else cache,
+        now=now,
+        interval_seconds=900,
+        show_seconds=3600,
+        fetch=_ext_fetch(answer, calls),
+    )
+
+
+def _facade_capacity():
+    capacity, _source, _probe = parse_limits_payload(
+        {
+            "ok": True,
+            "reason": None,
+            "providers": [
+                {"provider": "claude", "status": "unavailable", "reason": "none", "windows": []},
+                {
+                    "provider": "codex",
+                    "status": "available",
+                    "source": "usage_api",
+                    "fetched_at": NOW.isoformat(),
+                    "windows": [{"label": "Session", "used_percent": 12.0, "reset_at": None}],
+                },
+            ],
+        },
+        now=NOW,
+    )
+    return capacity
+
+
+def test_an_external_source_takes_the_built_in_line_s_place() -> None:
+    """A source naming a built-in provider replaces that line where it stands; the facade's
+    "Claude · no data" never shows beside it."""
+    from telegram_dashboard.collect import merge_external
+
+    metric, source, incidents = _ext(EXT_ANSWER)
+    merged = merge_external(_facade_capacity(), [metric])
+
+    assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Gemini"]
+    assert merged.quotas[0].kind == "official" and merged.quotas[0].plan == "Max 5x"
+    assert (source.name, source.state, incidents) == ("Claude limits", "fresh", ())
+
+
+def test_a_new_provider_goes_before_the_unconfirmed_ones() -> None:
+    from telegram_dashboard.collect import merge_external
+
+    metric, _source, _incidents = _ext({**EXT_ANSWER, "provider": "Mistral"})
+    merged = merge_external(_facade_capacity(), [metric])
+
+    assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Mistral", "Gemini"]
+
+
+def test_login_events_come_from_the_contract_and_survive_a_failed_tick() -> None:
+    expired, expired_source, expired_events = _ext(
+        {**EXT_ANSWER, "state": "login_expired", "windows": []}
+    )
+    assert expired.kind == "expired" and expired_source.state == "fresh"
+    assert [(i.incident_id, i.severity, i.title) for i in expired_events] == [
+        ("claude:login_expired", "warning", "Claude login expired")
+    ]
+
+    cache: dict = {}
+    soon = {**EXT_ANSWER, "login_expires_at": "2026-09-11T20:00:00Z"}
+    _metric, _source, events = _ext(soon, cache)
+    assert [(i.incident_id, i.title) for i in events] == [
+        ("claude:login_expiring", "Claude login expires in 2 days")
+    ]
+
+    # Decision 7: the source fails on the 28th day; the warning does not disappear with it.
+    later = NOW.replace(hour=22)
+    down = {"contract": 1, "provider": "Claude", "state": "unavailable", "reason": "HTTP 503"}
+    cache["attempted_at"] = "2026-09-09T00:00:00+00:00"
+    metric, source, events = _ext({**down, "windows": []}, cache, now=later)
+    assert source.state == "unavailable" and metric.login_expires_at == "2026-09-11T20:00:00Z"
+    assert [i.incident_id for i in events] == ["claude:login_expiring"]
+
+    _metric, _source, calm = _ext({**EXT_ANSWER, "login_expires_at": "2026-12-01T00:00:00Z"})
+    assert calm == ()
+
+
+def test_a_failing_source_names_itself_by_number_until_it_has_answered() -> None:
+    down = {"contract": 1, "provider": None, "state": "ok"}
+    metric, source, _events = _ext(down)
+    assert (metric.provider, metric.kind, source.state) == (
+        "Source 1",
+        "unavailable",
+        "unavailable",
+    )
+    assert source.name == "Source 1 limits" and metric.detail == "answer without provider"
+
+    cache = {"provider": "Claude", "attempted_at": "2026-09-09T00:00:00+00:00"}
+    metric, _source, _events = _ext(down, cache)
+    assert metric.provider == "Claude"
+
+
+def test_a_refused_entry_is_never_fetched_and_says_why() -> None:
+    calls: list[str] = []
+    metric, source, _events = _ext(
+        EXT_ANSWER, source=_ext_source("http://10.0.0.5:18080/", key_env="X"), calls=calls
+    )
+
+    assert calls == []
+    assert (metric.kind, metric.detail, source.state) == (
+        "unavailable",
+        "url must be on loopback",
+        "unavailable",
+    )
+
+
+def test_each_url_keeps_its_own_cache_and_the_cron_path_reads_them_too(tmp_path: Path) -> None:
+    from telegram_dashboard.external import read_sources
+
+    entries = ({"url": EXT_URL}, {"url": "http://127.0.0.1:18081/limits"})
+    env = Environment(hermes_home=tmp_path, limits_sources=entries)
+    caches: dict = {}
+    calls: list[str] = []
+
+    snapshot = collect_all(
+        env,
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+        external_caches=caches,
+        external_fetch=_ext_fetch(EXT_ANSWER, calls),
+    )
+
+    assert set(caches) == {source.key for source in read_sources(list(entries))}
+    assert sorted(calls) == sorted(entry["url"] for entry in entries)
+    assert [q.provider for q in snapshot.capacity.quotas].count("Claude") == 2

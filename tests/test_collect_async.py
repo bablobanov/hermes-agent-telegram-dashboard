@@ -251,3 +251,146 @@ def test_a_worker_abandoned_by_its_deadline_is_not_started_again_until_it_return
     assert drift_of(second).state == "unavailable"
     assert "still in progress" in (drift_of(second).detail or "")
     assert drift_of(third).state == "fresh"
+
+
+# ---------------------------------------------------------------- external limit sources (0.8.0)
+
+EXT_URL = "http://127.0.0.1:18080/v1/usage"
+
+
+def _ext_env(tmp_path: Path) -> Environment:
+    base = _env(tmp_path, limits_enabled=True)
+    return Environment(
+        hermes_home=base.hermes_home,
+        drift_command=base.drift_command,
+        limits_enabled=True,
+        limits_sources=({"url": EXT_URL},),
+    )
+
+
+def _claude(snapshot):
+    return next(q for q in snapshot.capacity.quotas if q.provider == "Claude")
+
+
+def _ext_state(snapshot):
+    return next(s for s in snapshot.sources if s.name == "Claude limits")
+
+
+def test_a_slow_external_source_never_holds_the_tick_and_the_screen_keeps_its_line(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Decision 10 of the subscription plan, scaled down: the source answers in 0.6 s, the tick
+    waits for it 0.1 s. The tick ends on time and shows the cached line with its own stamp; the
+    worker is not started twice; its answer is the next tick's line."""
+    from datetime import timedelta
+
+    from telegram_dashboard import external
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    calls: list[datetime] = []
+
+    def fetch(source, *, now):
+        calls.append(now)
+        if len(calls) > 1:
+            time.sleep(0.6)
+        answer = {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "ok",
+            "fetched_at": now.isoformat(),
+            "windows": [{"used_percent": 40 + len(calls), "resets_at": None}],
+        }
+        return external.parse_contract(answer, now=now)
+
+    runner = BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, ""))
+    flights, caches = Flights(), {}
+    early = NOW - timedelta(minutes=30)
+
+    def tick(at):
+        return collect_all_async(
+            _ext_env(tmp_path),
+            runner,
+            now=at,
+            resolve_limits=lambda: None,
+            flights=flights,
+            external_caches=caches,
+            external_interval_seconds=300,
+            external_timeout_seconds=0.1,
+            external_fetch=fetch,
+            period_seconds=1800,
+        )
+
+    async def scenario():
+        first = await tick(early)
+        started = time.monotonic()
+        second = await tick(NOW)
+        took = time.monotonic() - started
+        third = await tick(NOW + timedelta(minutes=1))
+        await asyncio.sleep(0.8)  # the abandoned worker returns and writes the cache
+        fourth = await tick(NOW + timedelta(minutes=2))
+        return first, second, took, third, fourth
+
+    first, second, took, third, fourth = asyncio.run(scenario())
+
+    assert took < 0.5, took
+    assert _claude(first).windows[0].used_percent == 41.0
+    assert _claude(second).fetched_at == early.isoformat()
+    assert _claude(second).windows[0].used_percent == 41.0
+    assert _ext_state(second).state == "fresh", "one missed tick does not grey the status"
+    details = render_dashboard(second, now=NOW).splitlines()
+    assert "> Data 21:00 · Claude 20:30" in details
+    assert _claude(third).fetched_at == early.isoformat()
+    assert len(calls) == 2, "no second worker while the first one runs"
+    assert _claude(fourth).fetched_at == NOW.isoformat()
+    assert _claude(fourth).windows[0].used_percent == 42.0
+    assert len(calls) == 2, "the next tick takes the late answer from the cache"
+
+
+def test_a_cached_line_older_than_two_ticks_is_no_data(tmp_path: Path, pid_alive: None) -> None:
+    from telegram_dashboard.workers import Flights
+
+    def fetch(source, *, now):
+        time.sleep(0.4)
+        return {"provider": "Claude", "status": "unavailable", "reason": "late", "windows": []}
+
+    stale_at = "2026-09-09T17:00:00+00:00"
+    (source_key,) = [
+        s.key
+        for s in __import__("telegram_dashboard.external", fromlist=["read_sources"]).read_sources(
+            [{"url": EXT_URL}]
+        )
+    ]
+    caches = {
+        source_key: {
+            "attempted_at": stale_at,
+            "provider": "Claude",
+            "item": {
+                "provider": "Claude",
+                "status": "available",
+                "reason": None,
+                "source": "external",
+                "fetched_at": stale_at,
+                "windows": [{"label": "w", "used_percent": 5}],
+            },
+        }
+    }
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _ext_env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=Flights(),
+            external_caches=caches,
+            external_interval_seconds=300,
+            external_timeout_seconds=0.1,
+            external_fetch=fetch,
+            period_seconds=1800,
+        )
+    )
+
+    claude = _claude(snapshot)
+    assert (claude.kind, claude.detail) == ("unavailable", "no answer within 0.1 s")
+    assert _ext_state(snapshot).state == "unavailable"

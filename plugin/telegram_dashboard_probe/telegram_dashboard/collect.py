@@ -13,19 +13,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import signal
 import subprocess
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
 from .backup import BackupPart, collect_backup
 from .compat import Environment, ProbeResult
+from .external import TICK_TIMEOUT_SECONDS as EXTERNAL_TICK_TIMEOUT_SECONDS
+from .external import Source as ExternalSource
+from .external import fetch_item as external_fetch_item
+from .external import read_sources
 from .grok import DEFAULT_INTERVAL_SECONDS as GROK_DEFAULT_INTERVAL_SECONDS
 from .grok import TICK_TIMEOUT_SECONDS as GROK_TICK_TIMEOUT_SECONDS
 from .grok import fetch_item as grok_fetch_item
@@ -58,7 +64,7 @@ from .schema import (
     SourceState,
     VersionSummary,
 )
-from .timeparse import parse_timestamp
+from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -625,6 +631,190 @@ def merge_grok(capacity: CapacitySummary, metric: QuotaMetric) -> CapacitySummar
     return merge_quotas(capacity, metric)
 
 
+# ----------------------------------------------------------------------------- external sources
+#
+# Contract 1 (``external.py``): any local process can answer for a provider. A source naming a
+# built-in provider takes that line's place; a new one sits before the unconfirmed. The tick waits
+# for a source no longer than for Grok or Kimi; on a miss it shows the source's last line with
+# that line's own stamp while it is younger than two ticks or two intervals, whichever is longer
+# (decision 10 of the subscription plan), and the late answer is the next tick's line.
+
+# The owner signs in again before the login ends: warned this long before (decision 7).
+LOGIN_WARN_SECONDS = 3 * 86400
+ExternalFetch = Callable[..., dict[str, Any]]
+_ANSWERED = ("official", "expired")
+
+
+def external_tick(
+    source: ExternalSource,
+    cache: dict[str, Any],
+    *,
+    now: datetime,
+    interval_seconds: float,
+    fetch: ExternalFetch,
+) -> dict[str, Any]:
+    """``quota_tick`` for one source, plus what outlives a failed attempt: the provider's name,
+    its plan and the last login date it gave. Runs in the worker, so an abandoned worker writes
+    all of it when it returns."""
+    item = quota_tick(
+        cache, now=now, interval_seconds=interval_seconds, fetch=partial(fetch, source)
+    )
+    for key in ("provider", "plan", "login_expires_at"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            cache[key] = value
+    return item
+
+
+def collect_external(
+    source: ExternalSource,
+    cache: dict[str, Any],
+    *,
+    now: datetime,
+    interval_seconds: float,
+    show_seconds: float,
+    fetch: ExternalFetch = external_fetch_item,
+) -> tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]:
+    """One source's line, its source observation and its login events, synchronously (the cron
+    path; the tick runs ``external_tick`` in a worker instead)."""
+    if source.problem:
+        return _external_refused(source, cache)
+    item = external_tick(source, cache, now=now, interval_seconds=interval_seconds, fetch=fetch)
+    return external_part(source, cache, item, now=now, show_seconds=show_seconds)
+
+
+def external_part(
+    source: ExternalSource,
+    cache: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    now: datetime,
+    show_seconds: float,
+) -> tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]:
+    label = _external_label(source, cache, item)
+    metric = _quota_from_item(label, item)
+    if metric.kind not in _ANSWERED:
+        # A source that cannot answer now still has a plan and a login date it gave before.
+        metric = replace(
+            metric,
+            plan=metric.plan or _cached_text(cache, "plan"),
+            login_expires_at=metric.login_expires_at or _cached_text(cache, "login_expires_at"),
+        )
+    name = f"{label} limits"
+    if metric.kind in _ANSWERED:
+        state = classify_freshness(metric.fetched_at, now=now, ttl_seconds=int(show_seconds))
+        observation = SourceObservation(name, "official", state, observed_at=metric.fetched_at)
+    else:
+        observation = SourceObservation(name, "official", "unavailable", detail=metric.detail)
+    return metric, observation, _login_incidents(label, metric, now)
+
+
+def merge_external(capacity: CapacitySummary, metrics: Sequence[QuotaMetric]) -> CapacitySummary:
+    """A source naming a built-in provider takes that line's place (once: a second source with
+    the same name gets a line of its own); any other sits before the unconfirmed ones."""
+    quotas = list(capacity.quotas)
+    replaced: set[int] = set()
+    extra: list[QuotaMetric] = []
+    for metric in metrics:
+        name = metric.provider.lower()
+        at = next(
+            (i for i, q in enumerate(quotas) if i not in replaced and q.provider.lower() == name),
+            None,
+        )
+        if at is None:
+            extra.append(metric)
+        else:
+            quotas[at] = metric
+            replaced.add(at)
+    named = [q for q in quotas if q.provider not in _UNCONFIRMED_PROVIDERS]
+    unconfirmed = [q for q in quotas if q.provider in _UNCONFIRMED_PROVIDERS]
+    return CapacitySummary((*named, *extra, *unconfirmed))
+
+
+def _external_label(source: ExternalSource, cache: dict[str, Any], item: dict[str, Any]) -> str:
+    """The provider the source names; the one it named before; its number until it has."""
+    for value in (item.get("provider"), cache.get("provider")):
+        if isinstance(value, str) and value.strip():
+            return sanitize_public_text(value.strip(), limit=24)
+    return f"Source {source.number}"
+
+
+def _cached_text(cache: dict[str, Any], key: str) -> str | None:
+    value = cache.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _external_refused(
+    source: ExternalSource, cache: dict[str, Any]
+) -> tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]:
+    label = _external_label(source, cache, {})
+    detail = source.problem or "refused"
+    observation = SourceObservation(f"{label} limits", "official", "unavailable", detail=detail)
+    return QuotaMetric(label, "unavailable", detail=detail), observation, ()
+
+
+def _login_incidents(label: str, metric: QuotaMetric, now: datetime) -> tuple[Incident, ...]:
+    """``<provider>:login_expired`` from the contract's state or a passed date;
+    ``<provider>:login_expiring`` within ``LOGIN_WARN_SECONDS`` of the date."""
+    key = label.lower().replace(" ", "_")
+    expired = Incident(f"{key}:login_expired", "warning", f"{label} login expired")
+    if metric.kind == "expired":
+        return (expired,)
+    moment = parse_timestamp(metric.login_expires_at)
+    if moment is None:
+        return ()
+    left = (moment - now).total_seconds()
+    if left <= 0:
+        return (expired,)
+    if left > LOGIN_WARN_SECONDS:
+        return ()
+    title = f"{label} login expires in {_ahead_words(left)}"
+    return (Incident(f"{key}:login_expiring", "warning", title),)
+
+
+def _ahead_words(seconds: float) -> str:
+    hours = math.ceil(seconds / 3600)
+    if hours < 24:
+        return f"{hours} h"
+    days = math.ceil(seconds / 86400)
+    return "1 day" if days == 1 else f"{days} days"
+
+
+def _show_seconds(interval_seconds: float, period_seconds: float | None) -> float:
+    """How old a source's last line may be and still stand in for a missed answer."""
+    return max(2 * interval_seconds, 2 * (period_seconds or 0.0))
+
+
+def _cached_line(
+    cache: dict[str, Any], *, now: datetime, show_seconds: float, missed: str
+) -> dict[str, Any]:
+    """The source's last answer while it is young enough, else "no data" with ``missed``."""
+    cached = cache.get("item")
+    if isinstance(cached, dict) and cached.get("status") in ("available", "expired"):
+        fetched = parse_timestamp(cached.get("fetched_at"))
+        age = age_seconds(fetched, now) if fetched is not None else None
+        if age is not None and not is_from_the_future(age) and age <= show_seconds:
+            return cached
+    return {"provider": None, "status": "unavailable", "reason": missed, "windows": []}
+
+
+def _cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
+    cache = store.get(key)
+    if not isinstance(cache, dict):
+        cache = {}
+        store[key] = cache
+    return cache
+
+
+def _without_replaced(
+    sources: Sequence[SourceObservation], metrics: Sequence[QuotaMetric]
+) -> list[SourceObservation]:
+    """A built-in Grok or Kimi source leaves the count when an external source answers for the
+    same provider: its line is gone from the screen, so is its verdict."""
+    names = {metric.provider.lower() for metric in metrics}
+    return [s for s in sources if not (s.name.endswith("_quota") and s.name[:-6] in names)]
+
+
 def _capacity_unavailable(detail: str) -> CapacitySummary:
     return CapacitySummary(
         tuple(
@@ -695,7 +885,17 @@ def collect_all(
     kimi_cache: dict[str, Any] | None = None,
     kimi_interval_seconds: float = KIMI_DEFAULT_INTERVAL_SECONDS,
     kimi_fetch: KimiFetch | None = None,
+    external_caches: dict[str, Any] | None = None,
+    external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
+    external_fetch: ExternalFetch | None = None,
 ) -> DashboardSnapshot:
+    externals = _externals_sync(
+        env,
+        external_caches,
+        now=now,
+        interval_seconds=external_interval_seconds,
+        fetch=external_fetch or external_fetch_item,
+    )
     gateway, gateway_source, gateway_incidents = collect_gateway(env, now=now)
     drift, drift_source, drift_incidents = collect_drift(env, runner, now=now)
     backup, backup_source, backup_incidents = collect_backup(env, now=now)
@@ -719,22 +919,54 @@ def collect_all(
             quota_off_for(KIMI_LABEL, capacity),
             _quota_off_source("kimi", limits_source),
         )
+    metrics = [part[0] for part in externals]
     return build_snapshot(
         now=now,
         gateway=gateway,
         drift=drift,
         backup=backup,
-        capacity=merge_quotas(capacity, grok, kimi),
+        capacity=merge_external(merge_quotas(capacity, grok, kimi), metrics),
         sources=(
             gateway_source,
             limits_source,
-            grok_source,
-            kimi_source,
+            *_without_replaced((grok_source, kimi_source), metrics),
+            *(part[1] for part in externals),
             drift_source,
             backup_source,
         ),
-        incidents=(*gateway_incidents, *drift_incidents, *backup_incidents),
+        incidents=(
+            *gateway_incidents,
+            *drift_incidents,
+            *backup_incidents,
+            *(incident for part in externals for incident in part[2]),
+        ),
     )
+
+
+def _externals_sync(
+    env: Environment,
+    caches: dict[str, Any] | None,
+    *,
+    now: datetime,
+    interval_seconds: float,
+    fetch: ExternalFetch,
+) -> list[tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]]:
+    """The cron path's external sources, one after another, each bounded by its own timeout."""
+    if not env.limits_enabled:
+        return []
+    store = caches if caches is not None else {}
+    show = _show_seconds(interval_seconds, None)
+    return [
+        collect_external(
+            source,
+            _cache_for(store, source.key),
+            now=now,
+            interval_seconds=interval_seconds,
+            show_seconds=show,
+            fetch=fetch,
+        )
+        for source in read_sources(env.limits_sources)
+    ]
 
 
 def _quota_off_source(key: str, limits_source: SourceObservation) -> SourceObservation:
@@ -790,6 +1022,11 @@ async def collect_all_async(
     version_timeout_seconds: float = VERSION_TICK_TIMEOUT_SECONDS,
     version_fetch: VersionFetch | None = None,
     version_local: LocalVersion | None = None,
+    external_caches: dict[str, Any] | None = None,
+    external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
+    external_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    external_fetch: ExternalFetch | None = None,
+    period_seconds: float | None = None,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -799,6 +1036,9 @@ async def collect_all_async(
     abandoned by its deadline still writes its attempt there when it returns, so the next tick
     serves it instead of asking again. ``version_cache`` is the same for the once-a-day upstream
     release check; without it (no durable record) the version line is not collected at all.
+    ``external_caches`` is the durable dict of the external limit sources, one cache per URL
+    (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
+    last line may be and still stand in for a missed answer.
     """
     flights = flights or Flights()
     # The upstream release check starts with the tick and runs beside every other source: a
@@ -812,6 +1052,19 @@ async def collect_all_async(
             flights=flights,
             fetch=version_fetch or version_fetch_item,
             local=version_local or running_version,
+        )
+    )
+    # External limit sources start with the tick too, each under its own deadline.
+    externals_task = asyncio.ensure_future(
+        _externals_guarded(
+            env,
+            external_caches,
+            now=now,
+            interval_seconds=external_interval_seconds,
+            timeout_seconds=external_timeout_seconds,
+            period_seconds=period_seconds,
+            flights=flights,
+            fetch=external_fetch or external_fetch_item,
         )
     )
     try:
@@ -867,18 +1120,20 @@ async def collect_all_async(
                 _quota_off_source("kimi", limits_source),
             )
         version, version_incidents = await version_task
+        externals = await externals_task
+        metrics = [part[0] for part in externals]
         return build_snapshot(
             now=now,
             gateway=gateway,
             drift=drift,
             backup=backup,
             version=version,
-            capacity=merge_quotas(capacity, grok, kimi),
+            capacity=merge_external(merge_quotas(capacity, grok, kimi), metrics),
             sources=(
                 gateway_source,
                 limits_source,
-                grok_source,
-                kimi_source,
+                *_without_replaced((grok_source, kimi_source), metrics),
+                *(part[1] for part in externals),
                 drift_source,
                 backup_source,
             ),
@@ -890,10 +1145,13 @@ async def collect_all_async(
                 *grok_incidents,
                 *kimi_incidents,
                 *version_incidents,
+                *(incident for part in externals for incident in part[2]),
             ),
         )
     finally:
-        version_task.cancel()  # a no-op once done; a cancelled tick leaves no task behind
+        # A no-op once done; a cancelled tick leaves no task behind.
+        version_task.cancel()
+        externals_task.cancel()
 
 
 def _gateway_guarded(env: Environment, *, now: datetime) -> GatewayPart:
@@ -1013,6 +1271,82 @@ def _quota_unavailable(key: str, label: str, detail: str) -> tuple[QuotaMetric, 
         QuotaMetric(label, "unavailable", detail=detail),
         SourceObservation(f"{key}_quota", "official", "unavailable", detail=detail),
     )
+
+
+async def _externals_guarded(
+    env: Environment,
+    caches: dict[str, Any] | None,
+    *,
+    now: datetime,
+    interval_seconds: float,
+    timeout_seconds: float,
+    period_seconds: float | None,
+    flights: Flights,
+    fetch: ExternalFetch,
+) -> list[QuotaPart]:
+    if not env.limits_enabled:
+        return []
+    store = caches if caches is not None else {}
+    show = _show_seconds(interval_seconds, period_seconds)
+    parts = await asyncio.gather(
+        *(
+            _external_guarded(
+                source,
+                _cache_for(store, source.key),
+                now=now,
+                interval_seconds=interval_seconds,
+                show_seconds=show,
+                timeout_seconds=timeout_seconds,
+                flights=flights,
+                fetch=fetch,
+            )
+            for source in read_sources(env.limits_sources)
+        )
+    )
+    return list(parts)
+
+
+async def _external_guarded(
+    source: ExternalSource,
+    cache: dict[str, Any],
+    *,
+    now: datetime,
+    interval_seconds: float,
+    show_seconds: float,
+    timeout_seconds: float,
+    flights: Flights,
+    fetch: ExternalFetch,
+) -> QuotaPart:
+    """``external_tick`` in the source's own worker under the tick's deadline. A deadline or a
+    worker still running shows the source's last line with its own stamp; the worker writes its
+    answer to ``cache`` when it returns, and the next tick shows it."""
+    if source.problem:
+        return _external_refused(source, cache)
+    try:
+        item = await flights.run(
+            f"external:{source.key}",
+            external_tick,
+            source,
+            cache,
+            now=now,
+            interval_seconds=interval_seconds,
+            fetch=fetch,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError:
+        missed = f"no answer within {timeout_seconds:g} s"
+        item = _cached_line(cache, now=now, show_seconds=show_seconds, missed=missed)
+    except StillRunning:
+        missed = "previous request has not returned"
+        item = _cached_line(cache, now=now, show_seconds=show_seconds, missed=missed)
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        label = _external_label(source, cache, {})
+        observation, incident = _collector_crashed(f"{label} limits", "official", exc)
+        metric = QuotaMetric(label, "unavailable", detail=observation.detail)
+        return metric, observation, (incident,)
+    return external_part(source, cache, item, now=now, show_seconds=show_seconds)
 
 
 VersionPart = tuple[VersionSummary | None, tuple[Incident, ...]]

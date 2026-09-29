@@ -931,3 +931,41 @@ def test_when_plain_fails_too_there_is_no_verdict_and_html_is_tried_next_tick(
     assert ctx.state.data["probe"]["last_status"] == "edit_failed"
     assert "screen_format" not in ctx.state.data["probe"]
     assert not adapter.sent  # a network failure is not a lost message
+
+
+def test_external_sources_reach_the_collector_with_their_own_cache_and_the_period(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    """``limits_sources`` from the config entry reaches the collector unchanged; the sources'
+    caches live in the record under their own key; a refused entry is named in the log at start."""
+    import logging
+    from datetime import datetime
+
+    entries = [{"url": "http://127.0.0.1:18080/v1/usage"}, {"url": "http://10.0.0.5/"}]
+    plugin = load_plugin()
+    settings = _settings(monkeypatch, _home(tmp_path), limits_enabled=True)
+    ctx = FakeContext({**settings, "limits_sources": entries})
+    with caplog.at_level(logging.INFO):
+        runtime = plugin.register(ctx)
+    assert runtime is not None
+    assert "limits source 2 refused: url must be on loopback" in caplog.text
+    seen: list[dict[str, Any]] = []
+
+    async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append({"env": env, **kwargs})
+        kwargs["external_caches"]["abcd1234"] = {"attempted_at": kwargs["now"].isoformat()}
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    now = datetime(2026, 9, 29, 7, 0, tzinfo=UTC)
+    asyncio.run(runtime._collect(now))
+    asyncio.run(runtime._collect(now))
+    runtime._note(status="edited", error=None)
+
+    assert seen[0]["env"].limits_sources == tuple(entries)
+    record_cache = runtime.record["external_cache"]
+    assert seen[0]["external_caches"] is seen[1]["external_caches"] is record_cache
+    assert seen[0]["period_seconds"] == runtime.settings.period_seconds
+    assert seen[0]["external_interval_seconds"] == runtime.settings.limits_refresh_seconds
+    stored = ctx.state.data["probe"]["external_cache"]
+    assert stored == {"abcd1234": {"attempted_at": now.isoformat()}}
