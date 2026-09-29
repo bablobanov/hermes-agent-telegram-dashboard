@@ -78,3 +78,20 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
     assert "no engine import" in external["caveat"]
     assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
     assert {"0.21.1", "0.21.3"} <= set(codex["verified"])
+
+
+def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() -> None:
+    """0.8.1: the Gemini line reads the tail of the engine's error log. The row says what is
+    read, what never is, and that only the engine's own calls are in that log; the limits row
+    no longer calls Gemini unconfirmed."""
+    sources = load_matrix()["sources"]
+    row = sources["gemini_log"]
+
+    assert "logs/" in row["probe"] and "unsupported" in row["probe"]
+    reads = " ".join(row["reads"])
+    assert "256 KB" in reads and "HTTP 429" in reads
+    assert {"auth.json", "state.db", "errors.log.1", "errors.log.2"} <= set(row["never_reads"])
+    assert "hermes_logging.py" in row["contract"] and "gemini_log_cache" in row["contract"]
+    assert "0.21.3" in row["verified"]
+    assert "engine's own calls" in row["caveat"]
+    assert "always unsupported" not in sources["limits"]["contract"]

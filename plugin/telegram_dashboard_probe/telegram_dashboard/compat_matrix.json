@@ -28,7 +28,7 @@
     },
     "limits": {
       "probe": "in-process import of agent.account_usage.fetch_account_usage at call time, inside the gateway interpreter; import failure = unsupported, a provider failure = that provider unavailable",
-      "contract": "called the way gateway /usage calls it: asyncio.to_thread off the event loop, deadline, failures never propagate (limits.py); providers claude=anthropic, codex=openai-codex; grok and kimi are read by their own rows below on their own cadence; gemini has no confirmed source and is always unsupported",
+      "contract": "called the way gateway /usage calls it: asyncio.to_thread off the event loop, deadline, failures never propagate (limits.py); providers claude=anthropic, codex=openai-codex; grok and kimi are read by their own rows below on their own cadence; gemini is no facade provider: its line comes from the gemini_log row",
       "named_exception": "the only engine import in the dashboard: one public function with the same signature on both verified versions; a second process was rejected because _resolve_codex_usage_credentials may refresh the OAuth token and two processes would race for it",
       "verified": {
         "0.20.5": "read-by-code plus live import probe (no network) on the desktop install: fetch_account_usage(provider, *, base_url=None, api_key=None); 902-line module",
@@ -126,6 +126,16 @@
         "0.21.1": "read-by-code, engine clone at 2237be3559: agent/account_usage.py:385",
         "0.21.3": "read-by-code, v2026.9.14: agent/account_usage.py:385; plan_type 'prolite' seen live in wham/usage on the pilot installation 2026-09-26"
       }
+    },
+    "gemini_log": {
+      "probe": "HERMES_HOME/logs/ is a directory: no directory = unsupported; the directory without errors.log = fresh with no 429 (the engine on Windows creates the file at the first WARNING); a file that cannot be read or is not UTF-8 = unavailable, the line keeps the last 429 the record remembers; limits_enabled off = not read",
+      "reads": ["the last 256 KB of logs/errors.log, from the first whole line to the last", "the stamp, level and logger of every entry header", "for an entry whose first line holds Gemini and HTTP 429: limit: N, model: X and retry in N s of its message, the traceback excluded", "entries within 10 s of the newest as one refusal"],
+      "never_reads": ["the text of a message beyond those three fields", "tracebacks", "session ids", "agent.log", "gateway.log", "auth.json", "state.db", "errors.log.1", "errors.log.2"],
+      "contract": "hermes_logging.py: errors.log holds WARNING and above, rotated at 2 MB with 2 backups (:196), UTF-8, format '%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s' (:47), the stamp naive in the host's local time. The text-to-speech 429: ERROR tools.tts_tool 'TTS generation failed (gemini): Gemini TTS API error (HTTP 429): <error.message>' with its traceback (tools/tts_tool.py:310-314, tools/tts_tool_providers.py:603), repeated within the same second by the executor's WARNING cut at 200 characters (agent/tool_executor.py:994) and the voice reply's WARNING (gateway/run_voice.py:342); the LLM path: WARNING agent.conversation_loop 'API call failed ... summary=Gemini HTTP 429 (RESOURCE_EXHAUSTED): ...' (agent/turn_recovery.py:916-919, agent/gemini_native_adapter.py:628). QuotaFailure and RetryInfo are dropped by the engine: only the message is logged. The last 429 is kept in the plugin record (gemini_log_cache); a retry over 120 s is the daily quota, an event until the reset; any other 429 marks the line for an hour; no network (gemini_log.py)",
+      "verified": {
+        "0.21.3": "read-by-code, engine clone at v2026.9.14: the handler, the format and the lines above; the parser pinned to the engine's own test messages and the expected Google wording (tests/test_gemini_log.py). NOT yet observed live: no 429 read from a live log"
+      },
+      "caveat": "only the engine's own calls are in that log: a script that calls Gemini on its own, such as a skill's, is not seen. The stamp is converted with the process's own zone, so the hour repeated when summer time ends adds an hour to the age of a 429 from that hour. The engine on Windows opens the file lazily: until the first WARNING there is no file, which reads as no 429. A daily quota spent just before Google's reset asks for a short retry and marks the line only"
     }
   }
 }
