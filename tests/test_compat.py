@@ -63,3 +63,18 @@ def test_probes_answer_capability_not_version(tmp_path: Path) -> None:
     )
     missing = Environment(hermes_home=tmp_path, drift_command=(str(tmp_path / "absent"), "x"))
     assert probe_drift(missing).status == "unsupported"
+
+
+def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> None:
+    """0.8.0: the external limit sources are engine-independent and say so; the Codex plan is a
+    field of the facade the limits row already calls, read in the engine source."""
+    sources = load_matrix()["sources"]
+    external = sources["external_limits"]
+    codex = sources["codex_plan"]
+
+    assert "limits_sources" in external["probe"] and "loopback" in external["probe"]
+    assert "_BOT_TOKEN" in external["probe"]
+    assert "contract 1" in external["contract"] and "25 s" in external["contract"]
+    assert "no engine import" in external["caveat"]
+    assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
+    assert {"0.21.1", "0.21.3"} <= set(codex["verified"])

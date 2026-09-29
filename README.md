@@ -78,9 +78,10 @@ text above.
 Up to five events that need attention come right after the top block, before the limits.
 Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
 surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
-serves its own clients (see "Limits" below); Gemini is shown as "no confirmed source", never as
-zero. Nothing is dropped from the old screen, only moved: a line without a number still names its
-reason, in the details.
+serves its own clients (see "Limits" below), and any provider from a local process of your own
+(see "External limit sources"); Gemini is shown as "no confirmed source", never as zero. Nothing
+is dropped from the old screen, only moved: a line without a number still names its reason, in
+the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
@@ -224,7 +225,8 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
-   | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok and Kimi are asked (not every tick) |
+   | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok, Kimi and the external sources are asked (not every tick) |
+   | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
@@ -252,7 +254,9 @@ The record also carries `limits_cache`, one entry per provider read on its own c
 survives a restart and the state file shows when the provider was last asked. A record from
 before Kimi (Grok's attempt at the top level) is moved under `grok` once. Beside it,
 `release_cache` holds the once-a-day check of the latest Hermes release the same way
-(`attempted_at` and its item).
+(`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
+source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
+with the provider, the plan and the login date it last named.
 
 ### The backup line
 
@@ -327,12 +331,17 @@ it, in the provider's own order, as `N% (time to reset)`: the spent share (every
 screen is spent, never remaining, from every source; the heading says `🧠 Limits used`) and the
 time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
 days from two days on (`4d`), `(?)` when the reset date cannot be read. The mark comes from 90%
-spent in any window. A window carries no length label: the share and its reset are what the
-reader acts on, the owner of the account knows the plan, and a length the source does not state
-would be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on
-some plans the first one is the week). A limit for one model keeps its scope
-(`Claude 37% (3h) · 12% (4d) · Opus 5% (4d)`). A state the provider reports in words is never
-turned into a number or a zero (`Grok · usage not started`).
+spent in any window, or from a window the provider itself calls `warning` or `critical`. A
+window carries no length label: the share and its reset are what the reader acts on, the plan
+(where the provider names it) is in the details, and a length the source does not state would
+be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on some
+plans the first one is the week). A limit for one model keeps its scope
+(`Claude 37% (3h) · 12% (4d) · Opus 5% (4d)`). A model's own limit from an external source gets
+a line of its own only while it is spent more than every account window, otherwise it sits in
+the details (see "External limit sources"). A state the provider reports in words is never
+turned into a number or a zero (`Grok · usage not started`). The plans the providers name are
+one details line, `Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok`; a plan nobody
+reports is not guessed.
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
@@ -348,8 +357,8 @@ from `https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the token 
 already holds for `xai-oauth`, obtained through the engine's own resolver
 (`hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials`, so the screen shows the quota
 of exactly the grant inference uses) and the client header the Grok CLI sends. The plan name
-comes from `…/v1/settings` (`subscription_tier_display`), optional, and rides on the item
-(`plan`, not shown on the screen yet). Probed on 2026-09-12: the
+comes from `…/v1/settings` (`subscription_tier_display`), optional, and shows in the details
+(`Plans: … Grok SuperGrok`). Probed on 2026-09-12: the
 inference host `api.x.ai` answers 404 for this path, so the proxy host is required. Policy:
 one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "no data"
 with its reason until the next interval; a cached number older than the interval is not shown.
@@ -378,8 +387,13 @@ policy and cache as Grok; the request never goes through the credential pool's r
 failed request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named,
 not guessed. Kimi is its own source on the coverage line (`Kimi quota`).
 
+**Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
+`Prolite`), in the details beside the others. The engine names Codex's first window `Session`
+whatever its length, so the line shows the share and the reset only.
+
 **Claude on an installation without an Anthropic credential**: the line says `no data` and the
-details say `no account token`, a reason, never a zero.
+details say `no account token`, a reason, never a zero. A local source that answers for Claude
+takes the line's place (see "External limit sources").
 
 The check for the plugin path is the same `--check`, pointed at that file:
 
@@ -392,6 +406,91 @@ plugin editing every 60 s, 300 means five missed ticks before the first alert (`
 one period plus slack, `lagging` up to two, `stale` past that). The record also carries
 `tick_failed` when a tick raised, so a loop that dies every tick does not keep an old `edited`
 on disk.
+
+### External limit sources
+
+A provider the plugin has no reader for, or one this installation reads some other way, can be
+answered by a local process of your own. `limits_sources` lists up to 4 sources; each is a URL on
+loopback that answers one GET with a small JSON document, contract 1 below. The plugin knows
+nothing about who answers.
+
+```yaml
+limits_sources:                   # in plugins.entries.telegram_dashboard_probe.settings
+  - url: http://127.0.0.1:8080/v1/usage
+    key_env: USAGE_SOURCE_KEY     # optional: sent as "Authorization: Bearer <its value>"
+    timeout_seconds: 90           # optional: default 20, from 1 to 120
+```
+
+The answer is `200` with a JSON object of at most 64 KB:
+
+```json
+{
+  "contract": 1,
+  "provider": "Claude",
+  "state": "ok",
+  "reason": null,
+  "plan": "Max 5x",
+  "login_expires_at": "2026-10-27T21:00:00Z",
+  "fetched_at": "2026-09-28T18:16:00Z",
+  "windows": [
+    {"label": "session", "used_percent": 42, "resets_at": "2026-09-28T21:00:00Z", "scope": null, "severity": "normal"},
+    {"label": "week", "used_percent": 86, "resets_at": "2026-10-01T23:00:00Z", "scope": null, "severity": "warning"},
+    {"label": "week", "used_percent": 100, "resets_at": "2026-10-01T23:00:00Z", "scope": "Fable", "severity": "critical"}
+  ]
+}
+```
+
+- `contract` is `1`; any other version is `no data` with `contract N not supported`
+- `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex,
+  Grok, Kimi) takes that line's place; any other gets a line of its own before Gemini
+- `state`: `ok` puts the windows on the screen; `login_expired` reads `Claude · login expired`
+  and raises the event `Claude login expired`; `unavailable` is `no data` with `reason` (up to 60
+  characters) in the details
+- `windows`, up to 6, in the order the screen shows them: `used_percent` from 0 to 100 or `null`;
+  `resets_at` or `null`; `scope`, the model a limit applies to, `null` for the account's own
+  limit; `severity`, one of `normal`, `warning`, `critical`, or `null`; `label` is optional and
+  not shown (windows carry no length label). The account's windows share one line. A model's
+  limit gets a line of its own only while it is spent more than every account window
+  (`⚠️ Claude Fable 100% (3d)`), otherwise it goes to the details. `warning` and `critical` put
+  the mark on the line as 90% does
+- `plan`, optional, up to 24 characters: the details line `Plans: …`
+- `login_expires_at`, optional: when the login behind the numbers ends. The details say
+  `Claude login until Oct 27`; from three days before it the event
+  `Claude login expires in 2 days`, counted from the last date the source gave, so a source that
+  fails in those days still warns
+- `fetched_at`, optional: when the source read its numbers; the details name it when it differs
+  from the screen's minute (`Data 07:21 · Claude 06:51`). A stamp ahead of the clock is replaced
+  by the time of reading
+- unknown keys are ignored, and every string is cleaned like any other text on the screen
+
+The guards, and why:
+
+- the URL is `http` on `127.0.0.1`, `localhost` or `[::1]`, without credentials in it. Any other
+  entry is refused when the settings are read: the plugin's log names it at start, its line says
+  `no data` with the reason, and nothing is requested. The request ignores proxies from the
+  environment and follows no redirect: a redirect would carry the key to wherever it points. An
+  answer other than 200, over 64 KB or not JSON is `no data` with the reason; the body of an
+  error answer is not read
+- `key_env` names a variable in the gateway's environment, never a bot token.
+  `TELEGRAM_BOT_TOKEN` (the engine's Telegram adapter reads it), `HERMES_DASHBOARD_BOT_TOKEN` (the
+  fallback tick's token) and any name ending in `_BOT_TOKEN`, in any case, are refused and never
+  read: the plugin does not read the bot token itself, and a setting must not become a way to
+  send it to a local port. The variable is read in `telegram_dashboard/external.py` and nowhere
+  else
+- the tick waits for a source no longer than 25 s, the deadline Grok and Kimi have. The request
+  itself runs on in its worker with the source's own `timeout_seconds`, never two at once for one
+  source. On a miss the screen keeps the source's last line with that line's own stamp in the
+  details while it is younger than two ticks or two `limits_refresh_seconds`, whichever is
+  longer; the late answer is the next tick's line. A slow source never holds the tick back
+- a source is asked once per `limits_refresh_seconds`, like Grok and Kimi, and is a source of
+  its own on the coverage line (`Claude limits`): `ok` and `login_expired` are answers;
+  `unavailable`, silence and a shape the contract does not allow are `unavailable`
+- `limits_enabled` off turns the sources off too. The fallback tick reads the same list from its
+  JSON config and asks each source on every run, one after another, within its own timeout; it
+  needs no engine for them
+
+`python -m telegram_dashboard --demo 17` shows a source with a model's limit, the plans and a
+login that ends in two days; `--demo 18` the same source after the login expired.
 
 ### The watchdog: `watchdog/dashboard_probe_check.py`
 

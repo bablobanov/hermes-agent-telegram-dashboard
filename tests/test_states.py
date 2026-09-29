@@ -1,5 +1,6 @@
 """Ten static states from section 11 of the research, two for the message itself, one for the
-Hermes version line and three showcase states for the catalog screenshots.
+Hermes version line, three showcase states for the catalog screenshots and two for an external
+limits source.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -29,8 +30,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_sixteen_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 17))
+def test_eighteen_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 19))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -282,3 +283,86 @@ def test_state_16_showcase_stale_is_the_healthy_screen_under_the_banner() -> Non
     assert text.count("⚠") == 1
     assert "> Confirmed 20:40" in lines
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
+
+
+def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login() -> None:
+    """The showcase installation with Claude answered by an external limits source (contract 1):
+    the account's two windows on its line, the model's limit spent more than both on a line of
+    its own, a model limit spent less in the details, the plans the providers name and the login
+    that ends in two days as an incident."""
+    state = STATES[16]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "External source: a model limit, plans and an ending login"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        "Gateway ✓ · Telegram ✓",
+        "Backup ✓ 10 h ago",
+        "Drift ✓ 0 of 481",
+        "",
+        "## Needs attention",
+        "- Claude login expires in 2 days",
+        "",
+        "## 🧠 Limits used",
+        "Claude 42% (2h10m) · 67% (3d)",
+        "⚠️ Claude Fable 100% (3d)",
+        *SHOWCASE_HEALTHY[7:],
+    ]
+    # An exception is never pushed out, so only the width is the budget here.
+    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Claude Sonnet 20% (3d)" in lines
+    assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
+    assert "> Claude login until Sep 28" in lines
+    assert "Data " not in text  # the source answered within the tick: one stamp for all
+
+
+def test_state_18_external_source_says_the_login_expired() -> None:
+    """The same installation when the source answers ``login_expired``: an answer, not "no
+    data"; the line says it, the incident names it, the plan and the ended date stay in the
+    details."""
+    state = STATES[17]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "External source: the login expired"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        "Gateway ✓ · Telegram ✓",
+        "Backup ✓ 10 h ago",
+        "Drift ✓ 0 of 481",
+        "",
+        "## Needs attention",
+        "- Claude login expired",
+        "",
+        "## 🧠 Limits used",
+        "Claude · login expired",
+        *SHOWCASE_HEALTHY[7:],
+    ]
+    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
+    assert "> Claude login ended Sep 26" in lines
+    assert "> Claude: " not in text  # not a "no data" reason
+
+
+def test_the_external_states_leave_the_showcase_untouched() -> None:
+    """Demos 17 and 18 build on the showcase installation; 14 to 16 keep their screens (the
+    catalog screenshots are taken from them) and carry no plan, no model limit, no login."""
+    for state in STATES[13:16]:
+        text = _render(state)
+        assert "Plans:" not in text
+        assert "login" not in text
+        assert "> Profiles 1/1 · sources 6/6" in text.splitlines()
+
+
+def test_the_external_states_carry_the_events_the_collector_builds() -> None:
+    """The demo incidents are literals; they must stay what the tick says for the same answer."""
+    from telegram_dashboard.collect import _login_incidents
+
+    for state in STATES[16:18]:
+        claude = next(q for q in state.snapshot.capacity.quotas if q.provider == "Claude")
+        assert _login_incidents("Claude", claude, state.now) == state.snapshot.incidents

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-09-28",
+  "updated": "2026-09-29",
   "note": "Per source: how it is probed at runtime, and on which Hermes versions it was verified and how. 'read-by-code' means the engine source was read, not executed; 'live' means observed on a running installation. Missing version = not verified, the dashboard still runs and reports reduced coverage.",
   "floors": {
     "delivery_plugin": {
@@ -111,6 +111,20 @@
       "verified": {
         "0.20.5": "read-by-code, desktop install: cron/jobs.py has no_agent (35 mentions), no scheduler_script.py split yet",
         "0.21.1": "read-by-code, engine clone: cron/scheduler_script.py, path guard inside HERMES_HOME/scripts/"
+      }
+    },
+    "external_limits": {
+      "probe": "limits_sources in the config, a list of up to 4 entries checked when the settings are read: url http on loopback (127.0.0.1, localhost, [::1]) without credentials; key_env a variable name that is not a bot token variable (TELEGRAM_BOT_TOKEN, HERMES_DASHBOARD_BOT_TOKEN, any *_BOT_TOKEN in any case); timeout_seconds 1..120, default 20. A refused entry is 'no data' with its reason and is never requested; limits_enabled off = no sources",
+      "contract": "contract 1 (README, External limit sources): GET <url> with Accept application/json and an optional Authorization Bearer from key_env; 200, a JSON object of at most 64 KB with contract, provider, state ok|login_expired|unavailable, reason, plan, login_expires_at, fetched_at, windows[] (up to 6: used_percent, resets_at, scope, severity, label); unknown keys ignored, every string sanitized. No proxy from the environment, no redirect, the body of an error answer unread. The tick waits 25 s; the request runs on in its own worker (one per source) with timeout_seconds; on a miss the last line with its own stamp while younger than two ticks or two limits_refresh_seconds. One attempt per limits_refresh_seconds, cache in the plugin record under external_cache (external.py, collect.py)",
+      "verified": {},
+      "caveat": "no engine import and no engine surface: the row depends on the local process that answers, not on the Hermes version, so no version is listed. Pinned by tests/test_external.py against a real local HTTP server and by an answer captured from a real contract-1 source on 2026-09-28; not yet live on a gateway"
+    },
+    "codex_plan": {
+      "probe": "attribute plan of the Codex snapshot the limits row already gets from agent.account_usage.fetch_account_usage; absent or empty = no plan, never guessed",
+      "contract": "the facade sets plan=_title_case_slug(payload.get('plan_type')) from wham/usage (prolite -> Prolite); shown in the details line 'Plans: ...'. The windows keep no length label: the facade names the primary window Session and the secondary Weekly by position and drops limit_window_seconds (agent/account_usage.py:374), and on the pilot account the only window is the week",
+      "verified": {
+        "0.21.1": "read-by-code, engine clone at 2237be3559: agent/account_usage.py:385",
+        "0.21.3": "read-by-code, v2026.9.14: agent/account_usage.py:385; plan_type 'prolite' seen live in wham/usage on the pilot installation 2026-09-26"
       }
     }
   }

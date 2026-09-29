@@ -338,7 +338,10 @@ def test_the_source_s_own_timeout_bounds_the_request(server: _Server) -> None:
 
 def test_the_plugin_knows_no_particular_source() -> None:
     """Decision of 29.09: the public plugin carries nothing about the author's own source."""
-    files = [*PLUGIN_DIR.rglob("*.py"), PLUGIN_DIR.parents[1] / "README.md"]
+    files = [
+        *(p for p in PLUGIN_DIR.rglob("*") if p.suffix in (".py", ".json", ".yaml", ".md")),
+        PLUGIN_DIR.parents[1] / "README.md",
+    ]
     for path in files:
         if "__pycache__" in path.parts:
             continue
@@ -354,3 +357,70 @@ def test_only_the_external_module_reads_a_source_key() -> None:
     assert "environ" in (PLUGIN_DIR / "telegram_dashboard" / "external.py").read_text(
         encoding="utf-8"
     )
+
+
+# ---------------------------------------------------------------- the published contract
+
+README = PLUGIN_DIR.parents[1] / "README.md"
+
+
+def _readme_section(heading: str) -> str:
+    body = README.read_text(encoding="utf-8")
+    start = body.index(f"\n{heading}\n") + 1
+    following = re.search(r"^#{1,3} ", body[start + len(heading) :], flags=re.M)
+    end = start + len(heading) + following.start() if following else len(body)
+    return body[start:end]
+
+
+def _fenced(section: str, language: str) -> list[str]:
+    return re.findall(rf"```{language}\n(.*?)```", section, flags=re.S)
+
+
+def test_the_readme_example_is_an_answer_the_plugin_reads() -> None:
+    """The contract is published in the README; its example answer must be one the parser takes
+    whole, or the README teaches a shape the plugin refuses."""
+    section = _readme_section("### External limit sources")
+    answers = [json.loads(block) for block in _fenced(section, "json")]
+
+    assert answers, "no JSON example in the section"
+    item = parse_contract(answers[0], now=NOW)
+    assert item["status"] == "available", item["reason"]
+    assert item["provider"] and item["plan"] and item["login_expires_at"]
+    assert any(window["scope"] for window in item["windows"])
+    assert all(window["used_percent"] is not None for window in item["windows"])
+    assert set(answers[0]) == set(REFERENCE_ANSWER)
+    for window in answers[0]["windows"]:
+        assert set(window) == set(REFERENCE_ANSWER["windows"][0])
+
+
+def test_the_readme_example_setting_is_one_the_plugin_accepts() -> None:
+    """The setting as ``config.yaml`` carries it. CI installs no YAML parser (the plugin needs
+    none), so there this one skips; the contract test above runs everywhere."""
+    yaml = pytest.importorskip("yaml")
+
+    section = _readme_section("### External limit sources")
+    setting = yaml.safe_load(_fenced(section, "yaml")[0])
+    sources = read_sources(setting["limits_sources"])
+
+    assert sources and all(source.problem is None for source in sources)
+
+
+def test_the_readme_names_the_guards() -> None:
+    """The refused key variables, the loopback rule and the tick's deadline are part of the
+    contract a source author reads."""
+    section = _readme_section("### External limit sources")
+
+    for name in sorted(external.BOT_TOKEN_VARIABLES):
+        assert f"`{name}`" in section
+    assert f"`{external.BOT_TOKEN_SUFFIX}`" in section
+    assert f"{external.TICK_TIMEOUT_SECONDS:.0f} s" in section
+    assert f"{external.MAX_BODY_BYTES // 1024} KB" in section
+    assert "`127.0.0.1`" in section and "`localhost`" in section and "`[::1]`" in section
+    assert f"up to {external.MAX_SOURCES} sources" in section
+    assert f"up to {external.MAX_WINDOWS}" in section
+
+
+def test_the_settings_table_lists_limits_sources() -> None:
+    rows = [line for line in README.read_text(encoding="utf-8").splitlines() if "| `" in line]
+
+    assert any(line.lstrip().startswith("| `limits_sources` |") for line in rows)

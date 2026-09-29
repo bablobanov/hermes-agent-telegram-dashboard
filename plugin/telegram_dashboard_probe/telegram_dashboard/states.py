@@ -1,6 +1,7 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
-for the pinned message itself, one for the Hermes version line and three showcase states for
-the catalog screenshots. No real Hermes is touched: every state is a snapshot literal.
+for the pinned message itself, one for the Hermes version line, three showcase states for the
+catalog screenshots and two for an external limits source. No real Hermes is touched: every
+state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -8,7 +9,7 @@ same text can be looked at in Telegram during the pilot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from .freshness import DeliveryRecord
@@ -183,13 +184,18 @@ def _showcase_limits() -> CapacitySummary:
 
 
 def _showcase_snapshot(
-    overall: Severity, *, incidents: tuple[Incident, ...] = (), drift: DriftSummary | None = None
+    overall: Severity,
+    *,
+    incidents: tuple[Incident, ...] = (),
+    drift: DriftSummary | None = None,
+    capacity: CapacitySummary | None = None,
+    extra_sources: tuple[SourceObservation, ...] = (),
 ) -> DashboardSnapshot:
     return DashboardSnapshot(
         overall=overall,
         observed_at=_S,
         coverage=Coverage(expected_profiles=1, observed_profiles=1),
-        capacity=_showcase_limits(),
+        capacity=capacity or _showcase_limits(),
         incidents=incidents,
         drift=drift or DriftSummary("clean", 0, 481, _S_DRIFT_08),
         gateway=GatewaySummary("running", "connected", _S_MINUS_2M),
@@ -199,6 +205,7 @@ def _showcase_snapshot(
             SourceObservation("backup", "official", "fresh", observed_at=_S_BACKUP),
             SourceObservation("grok_quota", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("kimi_quota", "official", "fresh", observed_at=_S_MINUS_2M),
+            *extra_sources,
         ),
         version=VersionSummary(
             running="0.21.3",
@@ -245,6 +252,79 @@ def _showcase_states() -> tuple[State, ...]:
                 last_error="transport",
             ),
             "normal",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
+# The external source states (17-18): the showcase installation with Claude answered by a local
+# process in contract 1 (README, "External limit sources"), as the tick builds it from the answer:
+# the account's windows, a model's own limits, the plan and the login date; Codex and Grok with
+# the plans their sources name. The login dates are counted from SHOWCASE_NOW.
+_EXTERNAL_SOURCE = SourceObservation("Claude limits", "official", "fresh", observed_at=_S)
+_LOGIN_ENDING = "2026-09-28T19:00:00+00:00"  # 46 hours after SHOWCASE_NOW
+_LOGIN_ENDED = "2026-09-26T19:00:00+00:00"  # two hours before it
+_S_WEEK_RESET = "2026-09-29T21:00:00+00:00"
+
+
+def _external_limits(claude: QuotaMetric) -> CapacitySummary:
+    plans = {"Codex": "Prolite", "Grok": "SuperGrok"}
+    quotas = []
+    for quota in _showcase_limits().quotas:
+        if quota.provider == "Claude":
+            quotas.append(claude)
+        else:
+            quotas.append(replace(quota, plan=plans.get(quota.provider)))
+    return CapacitySummary(tuple(quotas))
+
+
+def _external_claude() -> QuotaMetric:
+    return QuotaMetric(
+        "Claude",
+        "official",
+        windows=(
+            QuotaWindow("session", 42.0, "2026-09-26T23:10:00+00:00", severity="normal"),
+            QuotaWindow("week", 67.0, _S_WEEK_RESET, severity="normal"),
+            QuotaWindow("week", 100.0, _S_WEEK_RESET, scope="Fable", severity="critical"),
+            QuotaWindow("week", 20.0, _S_WEEK_RESET, scope="Sonnet", severity="normal"),
+        ),
+        fetched_at=_S,
+        plan="Max 5x",
+        login_expires_at=_LOGIN_ENDING,
+    )
+
+
+def _external_states() -> tuple[State, ...]:
+    expired = QuotaMetric(
+        "Claude", "expired", fetched_at=_S, plan="Max 5x", login_expires_at=_LOGIN_ENDED
+    )
+    return (
+        State(
+            17,
+            "External source: a model limit, plans and an ending login",
+            _showcase_snapshot(
+                "warning",
+                incidents=(
+                    Incident("claude:login_expiring", "warning", "Claude login expires in 2 days"),
+                ),
+                capacity=_external_limits(_external_claude()),
+                extra_sources=(_EXTERNAL_SOURCE,),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+        State(
+            18,
+            "External source: the login expired",
+            _showcase_snapshot(
+                "warning",
+                incidents=(Incident("claude:login_expired", "warning", "Claude login expired"),),
+                capacity=_external_limits(expired),
+                extra_sources=(_EXTERNAL_SOURCE,),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
             now=SHOWCASE_NOW,
         ),
     )
@@ -406,4 +486,5 @@ def all_states() -> tuple[State, ...]:
             "normal",
         ),
         *_showcase_states(),
+        *_external_states(),
     )
