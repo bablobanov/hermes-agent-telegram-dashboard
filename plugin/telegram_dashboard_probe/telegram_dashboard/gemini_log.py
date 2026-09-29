@@ -106,11 +106,13 @@ def log_path(env: Environment) -> Path:
 
 
 def read_tail(path: Path, *, size: int = TAIL_BYTES) -> str:
-    """The last ``size`` bytes of ``path`` from the first whole line, as text.
+    """The last ``size`` bytes of ``path`` from the first whole line to the last, as text.
 
-    A missing file is empty text: the engine on Windows opens the log on the first warning, so
-    no file and an empty file say the same thing. ``OSError`` and ``UnicodeDecodeError`` are
-    the caller's to name.
+    The bytes after the last newline are a line the engine is still writing (a large entry is
+    flushed in parts and may end inside a character): the next tick reads it whole. A missing
+    file is empty text: the engine on Windows opens the log on the first warning, so no file
+    and an empty file say the same thing. ``OSError`` and ``UnicodeDecodeError`` are the
+    caller's to name.
     """
     try:
         with path.open("rb") as handle:
@@ -123,7 +125,7 @@ def read_tail(path: Path, *, size: int = TAIL_BYTES) -> str:
     if start:
         cut = data.find(b"\n")
         data = data[cut + 1 :] if cut >= 0 else b""
-    return data.decode("utf-8")
+    return data[: data.rfind(b"\n") + 1].decode("utf-8")
 
 
 def split_entries(text: str, *, zone: tzinfo | None = None) -> list[Entry]:
@@ -222,7 +224,13 @@ def refusal_from_record(cache: Mapping[str, Any] | None) -> Refusal | None:
 
 
 def _is_number(value: object) -> TypeGuard[int | float]:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite number; an integer too large for a float is none (``isfinite`` would raise)."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def remember(cache: dict[str, Any], refusal: Refusal) -> None:
@@ -323,16 +331,16 @@ def collect_gemini(
     ``unavailable``, and the line still says what the record remembers.
     """
     store = cache if cache is not None else {}
-    remembered = _current(refusal_from_record(store), now)
     if not logs_dir(env).is_dir():
         source = SourceObservation(SOURCE_NAME, "local", "unsupported", detail="no logs directory")
-        return _part(remembered, source, now)
+        return remembered_part(store, source, now=now)
     try:
         text = read_tail(log_path(env), size=tail_bytes)
     except (OSError, UnicodeDecodeError) as exc:
         detail = f"log unreadable: {type(exc).__name__}"
         source = SourceObservation(SOURCE_NAME, "local", "unavailable", detail=detail)
-        return _part(remembered, source, now)
+        return remembered_part(store, source, now=now)
+    remembered = _current(refusal_from_record(store), now)
     found = _current(newest_refusal(split_entries(text, zone=zone)), now)
     latest = newer(remembered, found)
     if latest is not None and latest is found:
@@ -341,6 +349,14 @@ def collect_gemini(
     store["checked_at"] = now.isoformat()
     source = SourceObservation(SOURCE_NAME, "local", "fresh", observed_at=now.isoformat())
     return _part(latest or Refusal(), source, now)
+
+
+def remembered_part(
+    cache: Mapping[str, Any] | None, source: SourceObservation, *, now: datetime
+) -> GeminiPart:
+    """The line from what the record remembers, beside ``source``: the log was not read this
+    time (no directory, an unreadable file, the tick's deadline), so nothing is written."""
+    return _part(_current(refusal_from_record(cache), now), source, now)
 
 
 def _current(refusal: Refusal | None, now: datetime) -> Refusal | None:

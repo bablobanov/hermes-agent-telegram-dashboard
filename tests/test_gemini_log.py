@@ -252,6 +252,29 @@ def test_read_tail_of_a_small_file_is_the_whole_file(tmp_path: Path) -> None:
     assert read_tail(path, size=1 << 20) == _refusal_entry()
 
 
+def test_a_line_still_being_written_is_left_for_the_next_tick(tmp_path: Path) -> None:
+    """The engine may be mid-write when the tail is read, and a large entry flushed in parts can
+    end inside a character. The bytes after the last newline are no line yet: they are not read,
+    so a half-written character never turns the log unreadable."""
+    partial = "2026-09-29 14:05:00,000 ERROR tools.tts_tool: Квота".encode()[:-1]
+    path = _write_log(tmp_path, _refusal_entry().encode("utf-8") + partial)
+
+    assert read_tail(path) == _refusal_entry()
+    line, source, _events = collect_gemini(
+        _env(tmp_path), {}, now=datetime(2026, 9, 29, 12, 10, tzinfo=UTC), zone=ZONE
+    )
+    assert source.state == "fresh"
+    assert line.refusal is not None and line.refusal.at == AT
+
+
+def test_a_record_with_a_number_too_large_for_a_float_keeps_the_moment_only() -> None:
+    """The record is JSON in the plugin's state; an integer too large for a float is not a
+    number to show, and reading it must not raise (``math.isfinite`` would)."""
+    cache = {"last_429": {"at": AT, "limit": 10**400, "retry_seconds": 10**400}}
+
+    assert refusal_from_record(cache) == Refusal(at=AT)
+
+
 # ----------------------------------------------------------------------------- collect
 
 

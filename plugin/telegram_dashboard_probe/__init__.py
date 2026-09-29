@@ -92,6 +92,8 @@ RELEASE_CACHE_KEY = "release_cache"
 # External limit sources (``limits_sources``, contract 1) keep one attempt each, by URL
 # digest, under a key of their own.
 EXTERNAL_CACHE_KEY = "external_cache"
+# The last Gemini 429 the engine's log showed, so one that rotated out of the log stays "last".
+GEMINI_CACHE_KEY = "gemini_log_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
@@ -99,8 +101,8 @@ DASHBOARD_MODULES = ("collect", "compat", "freshness", "render")
 # What the tick calls; a copy of the package that lacks any of it is refused at import time.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
     # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
-    # with the external limit sources (0.8.0): a copy without them would reject the tick's
-    # arguments every time.
+    # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1): a copy
+    # without them would reject the tick's arguments every time.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -108,6 +110,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "VERSION_FLIGHT",
         "collect_external",
         "read_sources",
+        "GEMINI_LOG",
     ),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
@@ -661,6 +664,7 @@ class ProbeRuntime:
             external_caches=self.external_cache(),
             external_interval_seconds=self.settings.limits_refresh_seconds,
             period_seconds=self.settings.period_seconds,
+            gemini_cache=self.gemini_cache(),
         )
 
     def quota_caches(self) -> dict[str, dict[str, Any]]:
@@ -697,6 +701,15 @@ class ProbeRuntime:
         if not isinstance(cache, dict):
             cache = {}
             self.record[EXTERNAL_CACHE_KEY] = cache
+        return cache
+
+    def gemini_cache(self) -> dict[str, Any]:
+        """The Gemini log's record inside the plugin's record, the same object on every tick so
+        a reader that returns after the deadline still writes into the record."""
+        cache = self.record.get(GEMINI_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[GEMINI_CACHE_KEY] = cache
         return cache
 
     def _render_period(self) -> int:

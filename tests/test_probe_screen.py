@@ -373,6 +373,23 @@ def test_a_package_copy_from_before_the_version_line_is_refused_at_load(tmp_path
     assert dashboard.origin == "installed"
 
 
+def test_a_package_copy_from_before_the_gemini_log_is_refused_at_load(tmp_path: Path) -> None:
+    """The plugin hands ``gemini_cache`` to the collector (0.8.1); a copy from before it would
+    reject the argument on every tick. It is refused at load and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    assert 'GEMINI_LOG = "gemini_log"\n' in text
+    collect_py.write_text(text.replace('GEMINI_LOG = "gemini_log"\n', ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_gemini_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""
@@ -681,6 +698,45 @@ def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
     restarted._load_record()
     assert restarted.release_cache() == {"attempted_at": now.isoformat()}
     assert restarted.release_cache() is restarted.record["release_cache"]
+
+
+def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path: Path) -> None:
+    """The last Gemini 429 lives in the record under its own key: the same dict on every tick,
+    written to the state file and read back after a restart, so a 429 that rotated out of the
+    engine's log is still the last one. ``limits_cache`` keeps its two providers."""
+    from datetime import datetime
+
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), limits_enabled=True))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[dict[str, Any]] = []
+    last = {"at": "2026-09-29T12:03:12.345000+00:00", "limit": 10}
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        kwargs["gemini_cache"]["checked_at"] = kwargs["now"].isoformat()
+        kwargs["gemini_cache"]["last_429"] = last
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    now = datetime(2026, 9, 29, 14, 0, tzinfo=UTC)
+
+    asyncio.run(runtime._collect(now))
+    asyncio.run(runtime._collect(now))
+    runtime._note(status="edited", error=None)
+
+    record = runtime.record["gemini_log_cache"]
+    assert seen[0]["gemini_cache"] is seen[1]["gemini_cache"] is record
+    stored = {"checked_at": now.isoformat(), "last_429": last}
+    assert ctx.state.data["probe"]["gemini_log_cache"] == stored
+    assert set(runtime.record["limits_cache"]) == {"grok", "kimi"}
+
+    restarted = plugin.register(ctx)
+    assert restarted is not None
+    restarted._load_record()
+    assert restarted.gemini_cache() == stored
+    assert restarted.gemini_cache() is restarted.record["gemini_log_cache"]
 
 
 def test_a_record_from_before_kimi_keeps_its_grok_attempt_under_the_provider_key(

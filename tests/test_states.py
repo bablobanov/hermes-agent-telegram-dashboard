@@ -1,6 +1,6 @@
 """Ten static states from section 11 of the research, two for the message itself, one for the
-Hermes version line, three showcase states for the catalog screenshots and two for an external
-limits source.
+Hermes version line, three showcase states for the catalog screenshots, two for an external
+limits source and two for Gemini's 429 from the engine's log.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -30,8 +30,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_eighteen_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 19))
+def test_twenty_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 21))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -231,12 +231,13 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
     assert "> Confirmed 20:58" in lines
-    assert "> Profiles 1/1 · sources 6/6" in lines
+    assert "> Profiles 1/1 · sources 7/7" in lines
     assert "> Backup Sep 26 11:00 · integrity ok" in lines
     assert "> Drift checked 08:00" in lines
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
     assert "> 2 releases behind · checked Sep 26 21:00" in lines
-    assert "> Gemini: source not confirmed" in lines
+    assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
+    assert "> Gemini 429s, engine calls only: none in the log" in lines
 
 
 def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident() -> None:
@@ -313,7 +314,7 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
     ]
     # An exception is never pushed out, so only the width is the budget here.
     assert max(len(line) for line in main) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Profiles 1/1 · sources 8/8" in lines
     assert not any(line.startswith("> Claude Sonnet") for line in lines)
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login until Sep 28" in lines
@@ -344,7 +345,7 @@ def test_state_18_external_source_says_the_login_expired() -> None:
         *SHOWCASE_HEALTHY[7:],
     ]
     assert max(len(line) for line in main) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Profiles 1/1 · sources 8/8" in lines
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login ended Sep 26" in lines
     assert "> Claude: " not in text  # not a "no data" reason
@@ -357,7 +358,7 @@ def test_the_external_states_leave_the_showcase_untouched() -> None:
         text = _render(state)
         assert "Plans:" not in text
         assert "login" not in text
-        assert "> Profiles 1/1 · sources 6/6" in text.splitlines()
+        assert "> Profiles 1/1 · sources 7/7" in text.splitlines()
 
 
 def test_the_external_states_carry_the_events_the_collector_builds() -> None:
@@ -367,3 +368,80 @@ def test_the_external_states_carry_the_events_the_collector_builds() -> None:
     for state in STATES[16:18]:
         claude = next(q for q in state.snapshot.capacity.quotas if q.provider == "Claude")
         assert _login_incidents("Claude", claude, state.now) == state.snapshot.incidents
+
+
+# ----------------------------------------------------------------------------- Gemini 429s (19-20)
+
+_TTS = "gemini-2.5-flash-preview-tts"
+
+
+def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_green() -> None:
+    """Decision of 29.09: a 429 Google gave within a per-minute window is the mark on the Gemini
+    line for an hour, with its age in words; no event, the status stays green. The details say
+    the last one and why there is no number."""
+    state = STATES[18]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Gemini minute quota hit"
+    assert main == [*SHOWCASE_HEALTHY[:8], "⚠️ Gemini 429 · 20 min ago", *SHOWCASE_HEALTHY[9:]]
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
+    assert "Needs attention" not in text
+    assert (
+        f"> Gemini 429s, engine calls only: last Sep 26 20:40, limit 3, retry 42 s, model {_TTS}"
+        in lines
+    )
+    assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
+    assert "> Profiles 1/1 · sources 7/7" in lines
+
+
+def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
+    """A retry longer than a per-minute window is the daily quota: an event and the yellow
+    status until the reset Google named, the mark on the line as well. Two lines more than the
+    healthy form, so only the width is the budget: an exception is never pushed out."""
+    state = STATES[19]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Gemini day quota hit"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        *SHOWCASE_HEALTHY[1:4],
+        "",
+        "## Needs attention",
+        "- Gemini out of quota 2 h ago",
+        *SHOWCASE_HEALTHY[4:8],
+        "⚠️ Gemini 429 · 2 h ago",
+        *SHOWCASE_HEALTHY[9:],
+    ]
+    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert text.count("⚠") == 2
+    assert (
+        "> Gemini 429s, engine calls only: last Sep 26 18:57, limit 15, resets Sep 26 23:00, "
+        f"model {_TTS}" in lines
+    )
+
+
+def test_the_gemini_states_carry_what_the_log_reader_builds() -> None:
+    """The demo refusals and the event are literals; they must stay what ``gemini_log`` builds
+    from the same log entry, and the showcase line what it says for a log without a 429."""
+    from dataclasses import replace
+
+    from telegram_dashboard.gemini_log import NO_QUOTA_REASON, activate, incidents_for
+    from telegram_dashboard.schema import Refusal
+
+    def gemini(state):
+        return next(q for q in state.snapshot.capacity.quotas if q.provider == "Gemini")
+
+    for state in STATES[13:18]:
+        assert gemini(state).detail == NO_QUOTA_REASON
+        assert gemini(state).refusal == Refusal()
+    for state in STATES[18:20]:
+        refusal = gemini(state).refusal
+        assert gemini(state).detail == NO_QUOTA_REASON
+        assert refusal is not None
+        assert activate(replace(refusal, daily=False, active_until=None)) == refusal
+        assert incidents_for(refusal, state.now) == state.snapshot.incidents

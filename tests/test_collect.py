@@ -4,7 +4,7 @@ import json
 import sys
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +22,7 @@ from telegram_dashboard.collect import (
     parse_limits_payload,
 )
 from telegram_dashboard.compat import Environment
+from telegram_dashboard.schema import QuotaMetric, Refusal
 
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
 OLD = "2026-09-08T09:00:00+00:00"  # a quiet gateway last wrote its status a day ago
@@ -251,11 +252,8 @@ def test_limits_payload_keeps_official_local_and_unsupported_apart() -> None:
     capacity, source, probe = parse_limits_payload(_payload(), now=NOW)
 
     kinds = {quota.provider: quota.kind for quota in capacity.quotas}
-    assert kinds == {
-        "Claude": "official",
-        "Codex": "unavailable",
-        "Gemini": "unsupported",
-    }
+    # Gemini is no facade provider: its line comes from the engine's log (``gemini_log.py``).
+    assert kinds == {"Claude": "official", "Codex": "unavailable"}
     assert capacity.quotas[0].windows[0].used_percent == 37.5
     assert source.state == "fresh" and probe.status == "supported"
 
@@ -413,6 +411,7 @@ def test_collect_all_composes_without_any_source(tmp_path: Path) -> None:
         "limits": "unsupported",
         "grok_quota": "unsupported",
         "kimi_quota": "unsupported",
+        "gemini_log": "unsupported",
         "drift": "unsupported",
         "backup": "unsupported",
     }
@@ -627,16 +626,16 @@ def test_an_external_source_takes_the_built_in_line_s_place() -> None:
     metric, source, incidents = _ext(EXT_ANSWER)
     merged = merge_external(_facade_capacity(), [metric])
 
-    assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Gemini"]
+    assert [q.provider for q in merged.quotas] == ["Claude", "Codex"]
     assert merged.quotas[0].kind == "official" and merged.quotas[0].plan == "Max 5x"
     assert (source.name, source.state, incidents) == ("Claude limits", "fresh", ())
 
 
-def test_a_new_provider_goes_before_the_unconfirmed_ones() -> None:
-    from telegram_dashboard.collect import merge_external
+def test_a_new_provider_goes_before_gemini() -> None:
+    from telegram_dashboard.collect import merge_external, merge_quotas
 
     metric, _source, _incidents = _ext({**EXT_ANSWER, "provider": "Mistral"})
-    merged = merge_external(_facade_capacity(), [metric])
+    merged = merge_external(merge_quotas(_facade_capacity(), _GEMINI_LINE), [metric])
 
     assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Mistral", "Gemini"]
 
@@ -718,3 +717,157 @@ def test_each_url_keeps_its_own_cache_and_the_cron_path_reads_them_too(tmp_path:
     assert set(caches) == {source.key for source in read_sources(list(entries))}
     assert sorted(calls) == sorted(entry["url"] for entry in entries)
     assert [q.provider for q in snapshot.capacity.quotas].count("Claude") == 2
+
+
+# ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
+
+_GEMINI_REASON = "Google reports Gemini quota only with billing enabled"
+_GEMINI_LINE = QuotaMetric("Gemini", "unsupported", detail=_GEMINI_REASON, refusal=Refusal())
+_TTS_429 = (
+    "ERROR tools.tts_tool: TTS generation failed (gemini): Gemini TTS API error (HTTP 429): "
+    "Quota exceeded, limit: 10, model: gemini-2.5-flash-preview-tts. Please retry in {retry}s."
+)
+
+
+def _gemini_log(home: Path, *, minutes_ago: float, retry: str = "41.53") -> str:
+    """A 429 in the engine's log, stamped the way the engine stamps it: the host's local time
+    without an offset. Returns the moment as the collector reports it."""
+    moment = NOW - timedelta(minutes=minutes_ago)
+    stamp = moment.astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
+    (home / "logs").mkdir()
+    entry = f"{stamp} {_TTS_429.format(retry=retry)}\n"
+    (home / "logs" / "errors.log").write_text(entry, encoding="utf-8")
+    return moment.isoformat()
+
+
+def test_the_cron_path_reads_the_gemini_log_and_closes_the_limits_with_it(tmp_path: Path) -> None:
+    at = _gemini_log(tmp_path, minutes_ago=5)
+    cache: dict = {}
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+        gemini_cache=cache,
+    )
+
+    gemini = snapshot.capacity.quotas[-1]
+    assert (gemini.provider, gemini.kind, gemini.detail) == (
+        "Gemini",
+        "unsupported",
+        _GEMINI_REASON,
+    )
+    assert gemini.refusal is not None
+    assert (gemini.refusal.at, gemini.refusal.limit) == (at, 10)
+    assert [q.provider for q in snapshot.capacity.quotas].count("Gemini") == 1
+    names = [source.name for source in snapshot.sources]
+    assert names.index("gemini_log") == names.index("drift") - 1
+    assert snapshot.sources[names.index("gemini_log")].state == "fresh"
+    assert cache["last_429"]["at"] == at
+    # A per-minute 429 is no event.
+    assert not any(i.incident_id.startswith("gemini:") for i in snapshot.incidents)
+
+
+def test_limits_off_leave_the_gemini_log_unread(tmp_path: Path) -> None:
+    _gemini_log(tmp_path, minutes_ago=5)
+    cache: dict = {}
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path, limits_enabled=False),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        gemini_cache=cache,
+    )
+
+    gemini = snapshot.capacity.quotas[-1]
+    assert (gemini.provider, gemini.detail, gemini.refusal) == (
+        "Gemini",
+        "limits disabled in config",
+        None,
+    )
+    assert [q.provider for q in snapshot.capacity.quotas].count("Gemini") == 1
+    source = next(s for s in snapshot.sources if s.name == "gemini_log")
+    assert (source.state, source.detail) == ("unsupported", "disabled")
+    assert cache == {}
+
+
+def test_an_external_gemini_source_keeps_the_429_the_log_saw() -> None:
+    """Decision 9: a source answering for Gemini takes the line's place with its numbers; the
+    refusal the log saw moves to the new line, so the details and the event stay."""
+    from telegram_dashboard.collect import merge_external, merge_quotas
+
+    seen = Refusal(at="2026-09-09T20:55:00+00:00", limit=10)
+    logged = QuotaMetric("Gemini", "unsupported", detail=_GEMINI_REASON, refusal=seen)
+    metric, _source, _incidents = _ext({**EXT_ANSWER, "provider": "Gemini"})
+
+    merged = merge_external(merge_quotas(_facade_capacity(), logged), [metric])
+
+    assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Gemini"]
+    assert merged.quotas[-1].kind == "official"
+    assert merged.quotas[-1].refusal == seen
+
+
+def test_the_cron_path_turns_a_daily_429_into_an_event(tmp_path: Path) -> None:
+    """A retry of four hours is the daily quota: the event and the yellow status until the
+    reset, on the cron path as on the tick."""
+    _gemini_log(tmp_path, minutes_ago=5, retry="14580")
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+    )
+
+    events = [(i.incident_id, i.severity, i.title) for i in snapshot.incidents]
+    assert ("gemini:day_quota", "warning", "Gemini out of quota 5 min ago") in events
+    assert snapshot.overall == "warning"
+
+
+def test_a_per_minute_429_leaves_a_fresh_screen_green_and_a_daily_one_turns_it_yellow(
+    tmp_path: Path,
+) -> None:
+    """Decision of 29.09 at the level the status is derived: every other source fresh, a
+    per-minute 429 adds no event and the screen stays green; a daily one is the event."""
+    from telegram_dashboard.collect import build_snapshot
+    from telegram_dashboard.gemini_log import collect_gemini
+    from telegram_dashboard.schema import CapacitySummary, SourceObservation
+
+    gateway = SourceObservation("gateway_state", "official", "fresh", observed_at=NOW.isoformat())
+    overall = {}
+    for retry in ("41.53", "14580"):
+        home = tmp_path / retry
+        home.mkdir()
+        _gemini_log(home, minutes_ago=5, retry=retry)
+        line, source, incidents = collect_gemini(Environment(hermes_home=home), {}, now=NOW)
+        snapshot = build_snapshot(
+            now=NOW,
+            gateway=None,
+            drift=None,
+            capacity=CapacitySummary((line,)),
+            sources=(gateway, source),
+            incidents=incidents,
+        )
+        overall[retry] = snapshot.overall
+
+    assert overall == {"41.53": "normal", "14580": "warning"}
+
+
+def test_the_gemini_log_follows_the_external_sources_and_its_line_closes_the_block(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "logs").mkdir()
+    env = Environment(hermes_home=tmp_path, limits_sources=({"url": EXT_URL},))
+
+    snapshot = collect_all(
+        env,
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+        external_fetch=_ext_fetch({**EXT_ANSWER, "provider": "Mistral"}),
+    )
+
+    names = [source.name for source in snapshot.sources]
+    assert names.index("Mistral limits") < names.index("gemini_log") < names.index("drift")
+    assert [q.provider for q in snapshot.capacity.quotas][-2:] == ["Mistral", "Gemini"]

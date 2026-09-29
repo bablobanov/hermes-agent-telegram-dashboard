@@ -25,6 +25,7 @@ from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
+from .gemini_log import hit_words, is_active, retry_words
 from .policy import sanitize_public_text
 from .schema import (
     BackupSummary,
@@ -33,6 +34,7 @@ from .schema import (
     GatewaySummary,
     QuotaMetric,
     QuotaWindow,
+    Refusal,
     VersionSummary,
 )
 from .timeparse import (
@@ -112,6 +114,7 @@ _SOURCE_LABELS = {
     "limits": "limits",
     "grok_quota": "Grok quota",
     "kimi_quota": "Kimi quota",
+    "gemini_log": "Gemini log",
     "drift": "drift",
     "backup": "backup",
 }
@@ -189,6 +192,7 @@ def render_dashboard(
             lines.extend(_quota_lines(quota, reference, details))
         details.data = _data_stamps(snapshot, zone)
         details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
+        details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
     if snapshot.version is not None:
         lines.extend(["", _version_line(snapshot.version, details, zone)])
     if snapshot.work is not None:
@@ -412,18 +416,60 @@ def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Detail
     if quota.kind == "unsupported":
         reason = sanitize_public_text(quota.detail or "source not found", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return f"{provider} · no data"
+        return _no_data(provider, quota.refusal, reference)
     if quota.kind == "unavailable":
         reason = sanitize_public_text(quota.detail or "source unavailable", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return f"{provider} · no data"
+        return _no_data(provider, quota.refusal, reference)
     if quota.windows:
         return _windows_line(provider, quota.windows, reference)
     if quota.used is not None and quota.limit:
         percent = round((quota.used / quota.limit) * 100)
         return f"{_warn(percent)}{provider} {percent}%{_reset_suffix(quota.reset_at, reference)}"
     details.missing.append(f"{provider}: windows not received")
-    return f"{provider} · no data"
+    return _no_data(provider, quota.refusal, reference)
+
+
+def _no_data(provider: str, refusal: Refusal | None, reference: datetime | None) -> str:
+    """``Gemini · no data``; while the provider's last 429 is active (decision of 29.09), the
+    line says that instead: ``⚠️ Gemini 429 · 5 min ago``. Only the line: the status and the
+    events come from the collectors, a daily 429's event among them."""
+    if refusal is None or reference is None or not is_active(refusal, reference):
+        return f"{provider} · no data"
+    moment = parse_timestamp(refusal.at)
+    age = age_seconds(moment, reference) if moment is not None else None
+    if age is None:
+        return f"{provider} · no data"
+    return f"{WARN_MARK} {provider} 429 · {hit_words(max(0.0, age))}"
+
+
+def _refusal_words(quotas: tuple[QuotaMetric, ...], zone: tzinfo) -> list[str]:
+    """``Gemini 429s, engine calls only: last Sep 29 14:03, limit 10, retry 42 s, model …``: the
+    last 429 the engine logged for a provider whose log is read, or that there is none. A script
+    that calls the provider on its own is not in that log, hence "engine calls only"."""
+    return [
+        f"{sanitize_public_text(quota.provider, limit=40)} 429s, engine calls only: "
+        + _refusal_parts(quota.refusal, zone)
+        for quota in quotas
+        if quota.refusal is not None
+    ]
+
+
+def _refusal_parts(refusal: Refusal, zone: tzinfo) -> str:
+    """Each part only when the log named it; a daily 429 names its reset instead of the retry."""
+    if refusal.at is None:
+        return "none in the log"
+    parts = [f"last {format_day_time(refusal.at, zone) or 'time unreadable'}"]
+    if refusal.limit is not None:
+        parts.append(f"limit {refusal.limit}")
+    resets = format_day_time(refusal.active_until, zone) if refusal.daily else None
+    if resets is not None:
+        parts.append(f"resets {resets}")
+    elif refusal.retry_seconds is not None:
+        parts.append(f"retry {retry_words(refusal.retry_seconds)}")
+    if refusal.model:
+        parts.append(f"model {sanitize_public_text(refusal.model, limit=40)}")
+    return ", ".join(parts)
 
 
 def _windows_line(

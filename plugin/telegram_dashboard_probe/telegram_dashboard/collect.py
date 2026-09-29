@@ -32,6 +32,9 @@ from .external import TICK_TIMEOUT_SECONDS as EXTERNAL_TICK_TIMEOUT_SECONDS
 from .external import Source as ExternalSource
 from .external import fetch_item as external_fetch_item
 from .external import read_sources
+from .gemini_log import LABEL as GEMINI_LABEL
+from .gemini_log import SOURCE_NAME as GEMINI_SOURCE
+from .gemini_log import GeminiPart, collect_gemini, remembered_part
 from .grok import DEFAULT_INTERVAL_SECONDS as GROK_DEFAULT_INTERVAL_SECONDS
 from .grok import TICK_TIMEOUT_SECONDS as GROK_TICK_TIMEOUT_SECONDS
 from .grok import fetch_item as grok_fetch_item
@@ -88,8 +91,9 @@ GrokFetch = QuotaFetch
 KimiFetch = QuotaFetch
 VersionFetch = QuotaFetch
 LocalVersion = Callable[[], tuple[str | None, str | None]]
-# Nobody has looked for a quota surface of these yet; the screen says so, not "0%".
-_UNCONFIRMED_PROVIDERS = ("Gemini",)
+# The lines that close the block: Gemini, built from the engine's log (``gemini_log.py``); an
+# external source's new provider sits before it.
+_TRAILING_PROVIDERS = frozenset({GEMINI_LABEL.lower()})
 # What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
 # token resolves): the installation has no credential, not a provider that refused.
 _NO_CREDENTIAL = "no account token"
@@ -472,10 +476,6 @@ def parse_limits_payload(
         quotas.get(key) or QuotaMetric(label, "unavailable", detail="provider not in the answer")
         for key, label in _PROVIDER_LABELS.items()
     ]
-    ordered.extend(
-        QuotaMetric(label, "unsupported", detail="source not confirmed")
-        for label in _UNCONFIRMED_PROVIDERS
-    )
     observed_at = max(fetched) if fetched else None
     if observed_at is None:
         source = SourceObservation("limits", "official", "unavailable", detail="no windows at all")
@@ -620,11 +620,15 @@ def grok_off_for(capacity: CapacitySummary) -> QuotaMetric:
 
 
 def merge_quotas(capacity: CapacitySummary, *metrics: QuotaMetric) -> CapacitySummary:
-    """Own-cadence providers sit after the facade providers and before the unconfirmed ones."""
+    """Own-cadence providers sit after the facade providers and before the trailing ones."""
     quotas = list(capacity.quotas)
-    unconfirmed = [q for q in quotas if q.provider in _UNCONFIRMED_PROVIDERS]
-    named = [q for q in quotas if q.provider not in _UNCONFIRMED_PROVIDERS]
-    return CapacitySummary((*named, *metrics, *unconfirmed))
+    trailing = [q for q in quotas if _is_trailing(q)]
+    named = [q for q in quotas if not _is_trailing(q)]
+    return CapacitySummary((*named, *metrics, *trailing))
+
+
+def _is_trailing(quota: QuotaMetric) -> bool:
+    return quota.provider.lower() in _TRAILING_PROVIDERS
 
 
 def merge_grok(capacity: CapacitySummary, metric: QuotaMetric) -> CapacitySummary:
@@ -634,7 +638,7 @@ def merge_grok(capacity: CapacitySummary, metric: QuotaMetric) -> CapacitySummar
 # ----------------------------------------------------------------------------- external sources
 #
 # Contract 1 (``external.py``): any local process can answer for a provider. A source naming a
-# built-in provider takes that line's place; a new one sits before the unconfirmed. The tick waits
+# built-in provider takes that line's place; a new one sits before Gemini. The tick waits
 # for a source no longer than for Grok or Kimi; on a miss it shows the source's last line with
 # that line's own stamp while it is younger than two ticks or two intervals, whichever is longer
 # (decision 10 of the subscription plan), and the late answer is the next tick's line.
@@ -711,7 +715,8 @@ def external_part(
 
 def merge_external(capacity: CapacitySummary, metrics: Sequence[QuotaMetric]) -> CapacitySummary:
     """A source naming a built-in provider takes that line's place (once: a second source with
-    the same name gets a line of its own); any other sits before the unconfirmed ones."""
+    the same name gets a line of its own); any other sits before the trailing ones. The 429 the
+    engine's log saw for the provider moves to the new line (decision 9 of the Gemini plan)."""
     quotas = list(capacity.quotas)
     replaced: set[int] = set()
     extra: list[QuotaMetric] = []
@@ -724,11 +729,13 @@ def merge_external(capacity: CapacitySummary, metrics: Sequence[QuotaMetric]) ->
         if at is None:
             extra.append(metric)
         else:
-            quotas[at] = metric
+            old = quotas[at]
+            keep = old.refusal is not None and metric.refusal is None
+            quotas[at] = replace(metric, refusal=old.refusal) if keep else metric
             replaced.add(at)
-    named = [q for q in quotas if q.provider not in _UNCONFIRMED_PROVIDERS]
-    unconfirmed = [q for q in quotas if q.provider in _UNCONFIRMED_PROVIDERS]
-    return CapacitySummary((*named, *extra, *unconfirmed))
+    named = [q for q in quotas if not _is_trailing(q)]
+    trailing = [q for q in quotas if _is_trailing(q)]
+    return CapacitySummary((*named, *extra, *trailing))
 
 
 def _external_label(source: ExternalSource, cache: dict[str, Any], item: dict[str, Any]) -> str:
@@ -820,10 +827,6 @@ def _capacity_unavailable(detail: str) -> CapacitySummary:
         tuple(
             QuotaMetric(label, "unavailable", detail=detail) for label in _PROVIDER_LABELS.values()
         )
-        + tuple(
-            QuotaMetric(label, "unsupported", detail="source not confirmed")
-            for label in _UNCONFIRMED_PROVIDERS
-        )
     )
 
 
@@ -831,12 +834,7 @@ def _capacity_unsupported(detail: str) -> CapacitySummary:
     return CapacitySummary(
         tuple(
             QuotaMetric(label, "unsupported", detail=detail)
-            for label in (
-                *_PROVIDER_LABELS.values(),
-                GROK_LABEL,
-                KIMI_LABEL,
-                *_UNCONFIRMED_PROVIDERS,
-            )
+            for label in (*_PROVIDER_LABELS.values(), GROK_LABEL, KIMI_LABEL)
         )
     )
 
@@ -888,6 +886,7 @@ def collect_all(
     external_caches: dict[str, Any] | None = None,
     external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
     external_fetch: ExternalFetch | None = None,
+    gemini_cache: dict[str, Any] | None = None,
 ) -> DashboardSnapshot:
     externals = _externals_sync(
         env,
@@ -919,18 +918,23 @@ def collect_all(
             quota_off_for(KIMI_LABEL, capacity),
             _quota_off_source("kimi", limits_source),
         )
+    if env.limits_enabled:
+        gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
+    else:
+        gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
     metrics = [part[0] for part in externals]
     return build_snapshot(
         now=now,
         gateway=gateway,
         drift=drift,
         backup=backup,
-        capacity=merge_external(merge_quotas(capacity, grok, kimi), metrics),
+        capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
         sources=(
             gateway_source,
             limits_source,
             *_without_replaced((grok_source, kimi_source), metrics),
             *(part[1] for part in externals),
+            gemini_source,
             drift_source,
             backup_source,
         ),
@@ -938,6 +942,7 @@ def collect_all(
             *gateway_incidents,
             *drift_incidents,
             *backup_incidents,
+            *gemini_incidents,
             *(incident for part in externals for incident in part[2]),
         ),
     )
@@ -977,6 +982,14 @@ def _quota_off_source(key: str, limits_source: SourceObservation) -> SourceObser
 
 def _grok_off_source(limits_source: SourceObservation) -> SourceObservation:
     return _quota_off_source("grok", limits_source)
+
+
+def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation) -> GeminiPart:
+    """Limits off: the log is not read, the line and the source take the block's verdict."""
+    source = SourceObservation(
+        GEMINI_SOURCE, "local", limits_source.state, detail=limits_source.detail
+    )
+    return quota_off_for(GEMINI_LABEL, capacity), source, ()
 
 
 # ----------------------------------------------------------------------------- plugin tick
@@ -1027,6 +1040,8 @@ async def collect_all_async(
     external_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     external_fetch: ExternalFetch | None = None,
     period_seconds: float | None = None,
+    gemini_cache: dict[str, Any] | None = None,
+    gemini_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1038,7 +1053,9 @@ async def collect_all_async(
     release check; without it (no durable record) the version line is not collected at all.
     ``external_caches`` is the durable dict of the external limit sources, one cache per URL
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
-    last line may be and still stand in for a missed answer.
+    last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
+    the last Gemini 429 the engine's log showed (``gemini_log.py``): a 429 that rotated out of
+    the log stays the last one.
     """
     flights = flights or Flights()
     # The upstream release check starts with the tick and runs beside every other source: a
@@ -1066,6 +1083,17 @@ async def collect_all_async(
             flights=flights,
             fetch=external_fetch or external_fetch_item,
         )
+    )
+    # The engine's error log is read in a worker under the same deadline as an external source,
+    # beside every other source: a file on a hung disk holds back nothing but the Gemini line.
+    gemini_task = (
+        asyncio.ensure_future(
+            _gemini_guarded(
+                env, gemini_cache, now=now, timeout_seconds=gemini_timeout_seconds, flights=flights
+            )
+        )
+        if env.limits_enabled
+        else None
     )
     try:
         gateway, gateway_source, gateway_incidents = _gateway_guarded(env, now=now)
@@ -1121,6 +1149,10 @@ async def collect_all_async(
             )
         version, version_incidents = await version_task
         externals = await externals_task
+        if gemini_task is None:
+            gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
+        else:
+            gemini, gemini_source, gemini_incidents = await gemini_task
         metrics = [part[0] for part in externals]
         return build_snapshot(
             now=now,
@@ -1128,12 +1160,13 @@ async def collect_all_async(
             drift=drift,
             backup=backup,
             version=version,
-            capacity=merge_external(merge_quotas(capacity, grok, kimi), metrics),
+            capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
             sources=(
                 gateway_source,
                 limits_source,
                 *_without_replaced((grok_source, kimi_source), metrics),
                 *(part[1] for part in externals),
+                gemini_source,
                 drift_source,
                 backup_source,
             ),
@@ -1144,6 +1177,7 @@ async def collect_all_async(
                 *limits_incidents,
                 *grok_incidents,
                 *kimi_incidents,
+                *gemini_incidents,
                 *version_incidents,
                 *(incident for part in externals for incident in part[2]),
             ),
@@ -1152,6 +1186,8 @@ async def collect_all_async(
         # A no-op once done; a cancelled tick leaves no task behind.
         version_task.cancel()
         externals_task.cancel()
+        if gemini_task is not None:
+            gemini_task.cancel()
 
 
 def _gateway_guarded(env: Environment, *, now: datetime) -> GatewayPart:
@@ -1347,6 +1383,57 @@ async def _external_guarded(
         metric = QuotaMetric(label, "unavailable", detail=observation.detail)
         return metric, observation, (incident,)
     return external_part(source, cache, item, now=now, show_seconds=show_seconds)
+
+
+# The log's worker; the plugin requires the name (``REQUIRED_API``): it came with
+# ``gemini_cache`` in 0.8.1, and a copy without it would refuse that argument on every tick.
+GEMINI_LOG = "gemini_log"
+
+
+async def _gemini_guarded(
+    env: Environment,
+    cache: dict[str, Any] | None,
+    *,
+    now: datetime,
+    timeout_seconds: float,
+    flights: Flights,
+) -> GeminiPart:
+    """``collect_gemini`` in the log's own worker under the tick's deadline, never on the loop.
+    A deadline or a worker still reading shows what the record remembers; the worker writes the
+    record when it returns, and the next tick reads it."""
+    store = cache if cache is not None else {}
+    try:
+        return await flights.run(
+            GEMINI_LOG, collect_gemini, env, store, now=now, timeout_seconds=timeout_seconds
+        )
+    except TimeoutError:
+        return _gemini_missed(store, now, "log read timed out")
+    except StillRunning:
+        return _gemini_missed(store, now, "still reading the log")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(GEMINI_LOG, "local", exc)
+        metric, _source, incidents = _gemini_remembered(store, source, now)
+        return metric, source, (*incidents, incident)
+
+
+def _gemini_missed(cache: dict[str, Any], now: datetime, detail: str) -> GeminiPart:
+    source = SourceObservation(GEMINI_SOURCE, "local", "unavailable", detail=detail)
+    return _gemini_remembered(cache, source, now)
+
+
+def _gemini_remembered(
+    cache: dict[str, Any], source: SourceObservation, now: datetime
+) -> GeminiPart:
+    """What the record remembers, read on the loop after the worker missed or crashed. The
+    record may be what the worker crashed on: one that cannot be read is no refusal, never an
+    exception out of the tick."""
+    try:
+        return remembered_part(cache, source, now=now)
+    except Exception:
+        logger.exception("gemini_log record unreadable; the line shows no refusal")
+        return remembered_part(None, source, now=now)
 
 
 VersionPart = tuple[VersionSummary | None, tuple[Incident, ...]]

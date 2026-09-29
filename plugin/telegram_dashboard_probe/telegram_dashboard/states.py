@@ -1,7 +1,7 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
 for the pinned message itself, one for the Hermes version line, three showcase states for the
-catalog screenshots and two for an external limits source. No real Hermes is touched: every
-state is a snapshot literal.
+catalog screenshots, two for an external limits source and two for Gemini's 429 from the
+engine's log. No real Hermes is touched: every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -23,6 +23,7 @@ from .schema import (
     Incident,
     QuotaMetric,
     QuotaWindow,
+    Refusal,
     Severity,
     SourceObservation,
     SourceState,
@@ -129,7 +130,7 @@ def _version(running: str, published: str, behind: int) -> VersionSummary:
     )
 
 
-# The showcase states (14-16): one healthy installation with all six sources on 2026-09-26, the
+# The showcase states (14-16): one healthy installation with all seven sources on 2026-09-26, the
 # catalog screenshots: every line the screen can show, then the same screen with a drift incident,
 # then the same screen under the stale banner. The release dates are upstream's real ones (0.21.3
 # is v2026.9.14, 0.21.5 is v2026.9.24, 0.21.4 between them); every other number is made up. The
@@ -142,6 +143,8 @@ _S_DRIFT_08 = "2026-09-26T08:00:00+00:00"
 _S_BACKUP = "2026-09-26T11:00:00+00:00"
 _V0_21_3 = "2026-09-14T16:04:14Z"
 _V0_21_5 = "2026-09-24T10:09:38Z"
+# The Gemini line as the engine's log makes it (``gemini_log.py``): no number without billing.
+_GEMINI_REASON = "Google reports Gemini quota only with billing enabled"
 
 
 def _showcase_limits() -> CapacitySummary:
@@ -165,7 +168,7 @@ def _showcase_limits() -> CapacitySummary:
                 ),
                 detail="official",
             ),
-            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
+            QuotaMetric("Gemini", "unsupported", detail=_GEMINI_REASON, refusal=Refusal()),
             QuotaMetric(
                 "Grok",
                 "official",
@@ -205,6 +208,7 @@ def _showcase_snapshot(
             SourceObservation("backup", "official", "fresh", observed_at=_S_BACKUP),
             SourceObservation("grok_quota", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("kimi_quota", "official", "fresh", observed_at=_S_MINUS_2M),
+            SourceObservation("gemini_log", "local", "fresh", observed_at=_S),
             *extra_sources,
         ),
         version=VersionSummary(
@@ -322,6 +326,63 @@ def _external_states() -> tuple[State, ...]:
                 incidents=(Incident("claude:login_expired", "warning", "Claude login expired"),),
                 capacity=_external_limits(expired),
                 extra_sources=(_EXTERNAL_SOURCE,),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
+# The Gemini states (19-20): the showcase installation after Google refused the engine's call.
+# A per-minute 429 is the mark on the Gemini line for an hour, the status untouched; a daily one
+# (a retry longer than a per-minute window) is an event until the reset Google named (decision of
+# 29.09). The refusals are what ``gemini_log.activate`` builds from such a log entry, the event
+# what ``incidents_for`` says; the test holds both to it.
+_TTS = "gemini-2.5-flash-preview-tts"
+
+
+def _gemini_limits(refusal: Refusal) -> CapacitySummary:
+    return CapacitySummary(
+        tuple(
+            replace(quota, refusal=refusal) if quota.provider == "Gemini" else quota
+            for quota in _showcase_limits().quotas
+        )
+    )
+
+
+def _gemini_states() -> tuple[State, ...]:
+    minute = Refusal(
+        at=_S_MINUS_20M,
+        limit=3,
+        retry_seconds=41.53,
+        model=_TTS,
+        active_until="2026-09-26T21:40:00+00:00",
+    )
+    day = Refusal(
+        at="2026-09-26T18:57:00+00:00",
+        limit=15,
+        retry_seconds=14580.0,
+        model=_TTS,
+        daily=True,
+        active_until="2026-09-26T23:00:00+00:00",
+    )
+    return (
+        State(
+            19,
+            "Gemini minute quota hit",
+            _showcase_snapshot("normal", capacity=_gemini_limits(minute)),
+            _delivery_ok(_S_MINUS_2M),
+            "normal",
+            now=SHOWCASE_NOW,
+        ),
+        State(
+            20,
+            "Gemini day quota hit",
+            _showcase_snapshot(
+                "warning",
+                incidents=(Incident("gemini:day_quota", "warning", "Gemini out of quota 2 h ago"),),
+                capacity=_gemini_limits(day),
             ),
             _delivery_ok(_S_MINUS_2M),
             "warning",
@@ -487,4 +548,5 @@ def all_states() -> tuple[State, ...]:
         ),
         *_showcase_states(),
         *_external_states(),
+        *_gemini_states(),
     )

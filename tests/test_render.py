@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -19,6 +19,8 @@ from telegram_dashboard.schema import (
     Incident,
     QuotaMetric,
     QuotaWindow,
+    Refusal,
+    SourceObservation,
     VersionSummary,
     WorkSummary,
 )
@@ -695,3 +697,140 @@ def test_plans_and_the_login_date_are_in_the_details_only_when_known() -> None:
     assert "Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in details
     assert "Claude login until Oct 27" in details
     assert not any("Kimi" in line and "Plan" in line for line in details)
+
+
+# ----------------------------------------------------------------------------- Gemini 429s (0.8.1)
+#
+# Google gives a free-tier key no quota number; the engine's log has the 429s (``gemini_log.py``).
+# Decision of 29.09: a 429 is not a number and never colours the status by itself. While it is
+# active the Gemini line says it instead of "no data"; the details always say the last one.
+
+_GEMINI_REASON = "Google reports Gemini quota only with billing enabled"
+_TTS = "gemini-2.5-flash-preview-tts"
+
+
+def _gemini(refusal: Refusal | None) -> QuotaMetric:
+    return QuotaMetric("Gemini", "unsupported", detail=_GEMINI_REASON, refusal=refusal)
+
+
+def _ago(**delta: float) -> str:
+    return (NOW - timedelta(**delta)).isoformat()
+
+
+def _ahead(**delta: float) -> str:
+    return (NOW + timedelta(**delta)).isoformat()
+
+
+def test_a_gemini_log_without_a_429_says_so_in_the_details() -> None:
+    text = _limits_only(_gemini(Refusal()))
+
+    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    details = _details_lines(text)
+    assert "Gemini 429s, engine calls only: none in the log" in details
+    assert f"Gemini: {_GEMINI_REASON}" in details
+
+
+def test_a_recent_429_marks_the_gemini_line_and_leaves_the_status_alone() -> None:
+    refusal = Refusal(
+        at=_ago(minutes=5), limit=10, retry_seconds=41.53, model=_TTS, active_until=_ahead(hours=1)
+    )
+
+    text = _limits_only(_gemini(refusal))
+
+    assert text.splitlines()[0] == "🟢 Healthy · Sep 25 07:21 UTC"
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini 429 · 5 min ago"]
+    details = _details_lines(text)
+    assert (
+        f"Gemini 429s, engine calls only: last Sep 25 07:16, limit 10, retry 42 s, model {_TTS}"
+        in details
+    )
+    assert f"Gemini: {_GEMINI_REASON}" in details  # the reason for "no data" stays
+
+
+def test_a_429_within_the_minute_is_just_now() -> None:
+    refusal = Refusal(at=_ago(seconds=30), active_until=_ahead(minutes=59))
+
+    assert _screen_lines(_limits_only(_gemini(refusal)), "Gemini") == ["⚠️ Gemini 429 · just now"]
+
+
+def test_after_its_window_the_429_is_only_in_the_details() -> None:
+    refusal = Refusal(at=_ago(hours=2), retry_seconds=30.0, active_until=_ago(hours=1))
+
+    text = _limits_only(_gemini(refusal))
+
+    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert "Gemini 429s, engine calls only: last Sep 25 05:21, retry 30 s" in _details_lines(text)
+
+
+def test_a_daily_429_names_the_reset_instead_of_the_retry() -> None:
+    refusal = Refusal(
+        at=_ago(hours=2, minutes=3),
+        limit=15,
+        retry_seconds=14580.0,
+        model=_TTS,
+        daily=True,
+        active_until=_ahead(hours=2),
+    )
+
+    text = _limits_only(_gemini(refusal))
+
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini 429 · 2 h ago"]
+    assert (
+        f"Gemini 429s, engine calls only: last Sep 25 05:18, limit 15, resets Sep 25 09:21, "
+        f"model {_TTS}" in _details_lines(text)
+    )
+
+
+def test_the_429_is_dated_in_the_screen_s_zone() -> None:
+    snapshot = DashboardSnapshot(
+        overall="normal",
+        observed_at=NOW.isoformat(),
+        capacity=CapacitySummary((_gemini(Refusal(at=_ago(minutes=5), active_until=_ago())),)),
+    )
+
+    text = render_dashboard(snapshot, now=NOW, zone=timezone(timedelta(hours=5)))
+
+    assert "Gemini 429s, engine calls only: last Sep 25 12:16" in _details_lines(text)
+
+
+def test_a_line_whose_log_nobody_reads_has_no_429_words() -> None:
+    text = _limits_only(QuotaMetric("Gemini", "unsupported", detail="limits disabled in config"))
+
+    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert not any("429" in line for line in text.splitlines())
+
+
+def test_a_model_name_from_the_record_is_sanitized_like_every_other_word() -> None:
+    refusal = Refusal(at=_ago(hours=2), model="m" * 60, active_until=_ago(hours=1))
+
+    details = _details_lines(_limits_only(_gemini(refusal)))
+
+    assert f"Gemini 429s, engine calls only: last Sep 25 05:21, model {'m' * 39}…" in details
+
+
+def test_a_line_with_numbers_keeps_them_and_the_429_stays_in_the_details() -> None:
+    """An external source answering for Gemini replaces the line (decision 9); the refusal the
+    log saw rides along, the numbers speak on the screen."""
+    refusal = Refusal(at=_ago(minutes=5), active_until=_ahead(minutes=55))
+    metric = QuotaMetric(
+        "Gemini", "official", windows=(QuotaWindow("day", 40.0, _IN_4H),), refusal=refusal
+    )
+
+    text = _limits_only(metric)
+
+    assert _screen_lines(text, "Gemini") == ["Gemini 40% (4h)"]
+    assert "Gemini 429s, engine calls only: last Sep 25 07:16" in _details_lines(text)
+
+
+def test_a_gemini_log_that_is_not_there_is_named_as_such() -> None:
+    snapshot = DashboardSnapshot(
+        overall="unknown",
+        observed_at=NOW.isoformat(),
+        sources=(
+            SourceObservation("gemini_log", "local", "unsupported", detail="no logs directory"),
+        ),
+    )
+
+    main = _main_part(render_dashboard(snapshot, now=NOW))
+
+    assert "Not observed: Gemini log (not on this installation)" in main

@@ -109,6 +109,7 @@ def test_a_drift_deadline_is_one_unavailable_source_and_the_rest_still_answers(
         ("collect_gateway", "gateway_state"),
         ("collect_drift", "drift"),
         ("collect_limits_async", "limits"),
+        ("collect_gemini", "gemini_log"),
     ],
 )
 def test_a_collector_that_raises_degrades_its_source_and_names_itself(
@@ -142,6 +143,7 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
         "limits",
         "grok_quota",
         "kimi_quota",
+        "gemini_log",
         "drift",
         "backup",
     }
@@ -171,6 +173,7 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
         "limits",
         "grok_quota",
         "kimi_quota",
+        "gemini_log",
         "drift",
         "backup",
     ]
@@ -394,3 +397,185 @@ def test_a_cached_line_older_than_two_ticks_is_no_data(tmp_path: Path, pid_alive
     claude = _claude(snapshot)
     assert (claude.kind, claude.detail) == ("unavailable", "no answer within 0.1 s")
     assert _ext_state(snapshot).state == "unavailable"
+
+
+# ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
+
+
+def test_a_slow_gemini_log_never_holds_the_tick_and_the_line_keeps_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """Decision of 29.09: the tail is read in a worker under the tick's deadline, never on the
+    loop. Scaled down: the read takes 0.4 s, the tick waits 0.05 s. The tick ends on time; the
+    log is ``unavailable`` with the reason and the line says what the record remembers; the next
+    tick, the worker still reading, says so; once it returns, the log is fresh again."""
+    from datetime import timedelta
+
+    from telegram_dashboard.workers import Flights
+
+    real = collect.collect_gemini
+    calls: list[datetime] = []
+
+    def slow(env, cache, *, now):
+        calls.append(now)
+        if len(calls) == 1:
+            time.sleep(0.4)
+        return real(env, cache, now=now)
+
+    monkeypatch.setattr(collect, "collect_gemini", slow)
+    (tmp_path / "logs").mkdir()
+    seen = (NOW - timedelta(minutes=5)).isoformat()
+    cache = {"last_429": {"at": seen, "limit": 10, "retry_seconds": None, "model": None}}
+    flights = Flights()
+
+    def tick():
+        return collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=flights,
+            gemini_cache=cache,
+            gemini_timeout_seconds=0.05,
+        )
+
+    def gemini_of(snapshot):
+        line = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+        return line, next(s for s in snapshot.sources if s.name == "gemini_log")
+
+    async def scenario():
+        started = time.monotonic()
+        first = await tick()
+        took = time.monotonic() - started
+        second = await tick()
+        await asyncio.sleep(0.5)  # the abandoned worker returns
+        third = await tick()
+        return first, took, second, third
+
+    first, took, second, third = asyncio.run(scenario())
+
+    assert took < 0.3, took
+    line, source = gemini_of(first)
+    assert (source.state, source.detail) == ("unavailable", "log read timed out")
+    assert line.refusal is not None and line.refusal.at == seen
+    line, source = gemini_of(second)
+    assert (source.state, source.detail) == ("unavailable", "still reading the log")
+    assert line.refusal is not None and line.refusal.at == seen
+    assert len(calls) == 2, "the second tick started no reader while the first one ran"
+    line, source = gemini_of(third)
+    assert source.state == "fresh"
+    assert line.refusal is not None and line.refusal.at == seen  # the record outlives the tail
+    assert "checked_at" in cache
+
+
+def test_a_gemini_collector_that_crashes_keeps_the_line_from_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    from datetime import timedelta
+
+    def boom(*args, **kwargs):
+        raise KeyError("last_429")
+
+    monkeypatch.setattr(collect, "collect_gemini", boom)
+    seen = (NOW - timedelta(minutes=5)).isoformat()
+    cache = {"last_429": {"at": seen}}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            gemini_cache=cache,
+        )
+    )
+
+    line = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+    assert line.refusal is not None and line.refusal.at == seen
+    source = next(s for s in snapshot.sources if s.name == "gemini_log")
+    assert (source.state, source.detail) == ("unavailable", "collector crashed: KeyError")
+    assert "collector:gemini_log" in [i.incident_id for i in snapshot.incidents]
+
+
+def test_a_record_that_cannot_be_read_never_escapes_the_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """``collect_all_async`` never raises. A record too large for a float once did through the
+    crash handler, which re-read it; and a record that fails in a way nobody foresaw is no
+    refusal, not a dead tick with yesterday's text on the screen."""
+    from datetime import timedelta
+
+    from telegram_dashboard import gemini_log
+
+    def boom(*args, **kwargs):
+        raise KeyError("last_429")
+
+    monkeypatch.setattr(collect, "collect_gemini", boom)
+    seen = (NOW - timedelta(minutes=5)).isoformat()
+
+    def tick(cache):
+        return asyncio.run(
+            collect_all_async(
+                _env(tmp_path, limits_enabled=True),
+                BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+                now=NOW,
+                resolve_limits=lambda: None,
+                gemini_cache=cache,
+            )
+        )
+
+    def gemini_of(snapshot):
+        return next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+
+    huge = tick({"last_429": {"at": seen, "limit": 10**400}})
+    assert gemini_of(huge).refusal is not None
+    assert (gemini_of(huge).refusal.at, gemini_of(huge).refusal.limit) == (seen, None)
+
+    def unreadable(cache):
+        if cache is not None:
+            raise ValueError("record")
+        return None
+
+    monkeypatch.setattr(gemini_log, "refusal_from_record", unreadable)
+    broken = tick({"last_429": {"at": seen}})
+    assert gemini_of(broken).refusal is None
+    source = next(s for s in broken.sources if s.name == "gemini_log")
+    assert (source.state, source.detail) == ("unavailable", "collector crashed: KeyError")
+
+
+def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """The record carries the daily 429 through a tick whose read ran out of time: the event
+    and the yellow status stay until the reset, the source says why it is unavailable."""
+    from datetime import timedelta
+
+    from telegram_dashboard.workers import Flights
+
+    def slow(env, cache, *, now):
+        time.sleep(0.3)
+        return collect.remembered_part(
+            cache, collect.SourceObservation("x", "local", "fresh"), now=now
+        )
+
+    monkeypatch.setattr(collect, "collect_gemini", slow)
+    seen = (NOW - timedelta(hours=1)).isoformat()
+    cache = {"last_429": {"at": seen, "retry_seconds": 14580.0}}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=Flights(),
+            gemini_cache=cache,
+            gemini_timeout_seconds=0.05,
+        )
+    )
+
+    source = next(s for s in snapshot.sources if s.name == "gemini_log")
+    assert (source.state, source.detail) == ("unavailable", "log read timed out")
+    events = [(i.incident_id, i.title) for i in snapshot.incidents]
+    assert ("gemini:day_quota", "Gemini out of quota 1 h ago") in events
+    assert snapshot.overall == "warning"

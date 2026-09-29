@@ -420,7 +420,15 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     assert fetch.calls == 1 and kimi_cache["attempted_at"] == NOW.isoformat()
     assert grok_cache.get("item", {}).get("provider") != "kimi"
     names = [source.name for source in snapshot.sources]
-    assert names == ["gateway_state", "limits", "grok_quota", "kimi_quota", "drift", "backup"]
+    assert names == [
+        "gateway_state",
+        "limits",
+        "grok_quota",
+        "kimi_quota",
+        "gemini_log",
+        "drift",
+        "backup",
+    ]
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
@@ -428,7 +436,7 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     assert "Data 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]
-    assert f"sources {len(seen)}/6" in text
+    assert f"sources {len(seen)}/7" in text
 
 
 def test_with_limits_off_kimi_is_off_too_and_says_why(tmp_path: Path) -> None:
