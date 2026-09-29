@@ -831,10 +831,11 @@ def _capacity_unavailable(detail: str) -> CapacitySummary:
 
 
 def _capacity_unsupported(detail: str) -> CapacitySummary:
+    """The facade's own providers only: Grok and Kimi take this verdict on lines of their own
+    (``quota_off_for``), so naming them here put each on the screen twice."""
     return CapacitySummary(
         tuple(
-            QuotaMetric(label, "unsupported", detail=detail)
-            for label in (*_PROVIDER_LABELS.values(), GROK_LABEL, KIMI_LABEL)
+            QuotaMetric(label, "unsupported", detail=detail) for label in _PROVIDER_LABELS.values()
         )
     )
 

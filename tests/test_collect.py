@@ -871,3 +871,20 @@ def test_the_gemini_log_follows_the_external_sources_and_its_line_closes_the_blo
     names = [source.name for source in snapshot.sources]
     assert names.index("Mistral limits") < names.index("gemini_log") < names.index("drift")
     assert [q.provider for q in snapshot.capacity.quotas][-2:] == ["Mistral", "Gemini"]
+
+
+@pytest.mark.parametrize("limits_enabled", [False, True], ids=["limits-off", "no-facade"])
+def test_every_provider_has_one_line_when_the_facade_cannot_answer(
+    tmp_path: Path, limits_enabled: bool
+) -> None:
+    """Limits off, or no facade on this installation: the block's verdict reaches every line,
+    once. Grok and Kimi used to be in the facade's verdict and again as lines of their own."""
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path, limits_enabled=limits_enabled),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+    )
+
+    providers = [q.provider for q in snapshot.capacity.quotas]
+    assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]

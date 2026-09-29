@@ -579,3 +579,20 @@ def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
     events = [(i.incident_id, i.title) for i in snapshot.incidents]
     assert ("gemini:day_quota", "Gemini out of quota 1 h ago") in events
     assert snapshot.overall == "warning"
+
+
+@pytest.mark.parametrize("limits_enabled", [False, True], ids=["limits-off", "no-facade"])
+def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
+    tmp_path: Path, pid_alive: None, limits_enabled: bool
+) -> None:
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path, limits_enabled=limits_enabled),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+        )
+    )
+
+    providers = [q.provider for q in snapshot.capacity.quotas]
+    assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
