@@ -10,6 +10,7 @@ gets on the screen (a per-minute one marks the line, a daily one is an event unt
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import asdict
@@ -507,3 +508,135 @@ def test_newer_prefers_the_later_moment_and_tolerates_nothing_seen() -> None:
     assert newer(late, None) is late
     assert newer(Refusal(), late) is late
     assert newer(None, None) is None
+
+
+# ----------------------------------------------------------------------------- the live burst
+#
+# Step 0 of the 0.8.1 rollout read a production log (``errors.log`` and both rotations, 19.08 to
+# 29.09). Its only Gemini 429s are one burst on 26.09, and it is the LLM path, not text-to-speech:
+# the streaming call's ERROR with its traceback and the turn loop's WARNINGs, one per attempt and
+# thread. Below is that burst as the server printed it, the metric name masked there; here the
+# session tag, the thread ids and the traceback's path are replaced and the middle of each
+# traceback is left out. Google's wording and the engine's free-tier hint are verbatim.
+
+LIVE_TAG = " [20260926_101543_0a1b2c3d]"
+LIVE_BASE = "provider=gemini base_url=https://generativelanguage.googleapis.com/v1beta"
+LIVE_MODEL = "model=gemini-3.6-flash"
+FIRST_RETRY, SECOND_RETRY = "39.822998253", "38.843517137"  # Google's, one per attempt
+LIVE_AT = "2026-09-26T10:57:21.192000+00:00"  # the newest entry, 12:57:21,192 in CEST
+
+
+def _live_error(retry: str) -> str:
+    return (
+        "Gemini HTTP 429 (RESOURCE_EXHAUSTED): You exceeded your current quota, please check your "
+        "plan and billing details. For more information on this error, head to: "
+        "https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head "
+        "to: https://ai.dev/rate-limit. \n"
+        "* Quota exceeded for metric: generativelanguage.googleapis.com/[long], limit: 250000, "
+        "model: gemini-3.6-flash\n"
+        f"Please retry in {retry}s.\n"
+        "\n"
+        "Your Google API key is on the free tier (a few hundred requests/day for Gemini Flash "
+        "models). Hermes typically makes 3-10 API calls per user turn, so the free tier is "
+        "exhausted in a handful of messages and cannot sustain an agent session. Enable billing "
+        "on your Google Cloud project and regenerate the key in a billing-enabled project: "
+        "https://aistudio.google.com/apikey"
+    )
+
+
+def _live_streaming(stamp: str, retry: str) -> str:
+    """``agent/chat_completion_helpers.py`` logs a failed streamed call with its traceback."""
+    trace = (
+        "Traceback (most recent call last):\n"
+        '  File "agent/chat_completion_helpers.py", line 3180, in _call\n'
+        '    self.result["response"] = _with_stream_emitters(\n'
+        "                              ^^^^^^^^^^^^^^^^^^^^^^\n"
+        f"agent.gemini_native_adapter.GeminiAPIError: {_live_error(retry)}"
+    )
+    message = f"Streaming failed before delivery: {_live_error(retry)}"
+    return _entry(stamp, "ERROR", "agent.chat_completion_helpers", message, trace=trace)
+
+
+def _live_turn(stamp: str, message: str) -> str:
+    """``agent/turn_recovery.py`` logs the turn loop's WARNING under ``agent.conversation_loop``,
+    tagged with the session."""
+    return _entry(stamp, "WARNING", "agent.conversation_loop", message, tag=LIVE_TAG)
+
+
+LIVE_LOG = _log(
+    _live_streaming("2026-09-26 12:57:20,198", FIRST_RETRY),
+    _live_turn(
+        "2026-09-26 12:57:20,209",
+        "API call failed (attempt 1/3) error_type=GeminiAPIError thread=bg-review:1001 "
+        f"{LIVE_BASE} {LIVE_MODEL} summary={_live_error(FIRST_RETRY)}",
+    ),
+    _live_turn(
+        "2026-09-26 12:57:20,210",
+        "Retrying API call in 2.647945078348644s (attempt 1/3) thread=bg-review:1001 "
+        f"{LIVE_BASE} {LIVE_MODEL} policy=default error={_live_error(FIRST_RETRY)}",
+    ),
+    _live_streaming("2026-09-26 12:57:21,182", SECOND_RETRY),
+    _live_turn(
+        "2026-09-26 12:57:21,192",
+        "API call failed (attempt 1/3) error_type=GeminiAPIError thread=hermes-gateway_0:1002 "
+        f"{LIVE_BASE} {LIVE_MODEL} summary={_live_error(SECOND_RETRY)}",
+    ),
+    _entry(
+        "2026-09-26 12:59:20,368",
+        "WARNING",
+        "cron.lifecycle_guard",
+        "lifecycle guard scan budget exhausted (text at depth 1); failing closed — see "
+        "_MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
+    ),
+)
+
+
+def test_the_live_burst_is_one_per_minute_refusal_named_by_its_newest_entry() -> None:
+    """Step 0 counted seven lines with ``Gemini.*HTTP 429``: two of them end a traceback and are
+    no entries. The newest of the five entries is the moment; its own message has every field."""
+    entries = split_entries(LIVE_LOG, zone=ZONE)  # the server's zone, CEST in September
+    counted = [line for line in LIVE_LOG.splitlines() if re.search(r"Gemini.*HTTP 429", line)]
+    hits = [entry for entry in entries if "HTTP 429" in entry.head]
+    assert (len(counted), len(hits), len(entries)) == (7, 5, 6)
+
+    refusal = newest_refusal(entries)
+
+    assert refusal == Refusal(
+        at=LIVE_AT, limit=250000, retry_seconds=38.843517137, model="gemini-3.6-flash"
+    )
+    active = activate(refusal)
+    assert not active.daily  # a retry of 39 s is the per-minute window
+    assert active.active_until == "2026-09-26T11:57:21.192000+00:00"
+    assert incidents_for(active, datetime(2026, 9, 26, 11, 0, tzinfo=UTC)) == ()
+
+
+def test_the_engine_s_own_backoff_is_not_the_retry_google_named() -> None:
+    """``Retrying API call in 2.6s`` is the engine's pause before its next attempt; the retry is
+    Google's ``Please retry in 39.8s`` further down the same entry."""
+    entries = split_entries(LIVE_LOG, zone=ZONE)
+    retrying = [entry for entry in entries if "Retrying API call in" in entry.head]
+
+    refusal = newest_refusal(retrying)
+
+    assert refusal is not None and refusal.retry_seconds == 39.822998253
+
+
+def test_the_live_burst_read_three_days_on_is_in_the_details_only(tmp_path: Path) -> None:
+    """Read at the moment step 0 ran: the log is fresh, the record keeps the burst, the line has
+    no mark and there is no event."""
+    _write_log(tmp_path, LIVE_LOG)
+    cache: dict[str, object] = {}
+    now = datetime(2026, 9, 29, 13, 1, 18, tzinfo=UTC)
+
+    metric, source, incidents = collect_gemini(_env(tmp_path), cache, now=now, zone=ZONE)
+
+    assert source.state == "fresh"
+    assert metric.refusal is not None and metric.refusal.at == LIVE_AT
+    assert not is_active(metric.refusal, now)
+    assert incidents == ()
+    assert cache["last_429"] == {
+        "at": LIVE_AT,
+        "limit": 250000,
+        "retry_seconds": 38.843517137,
+        "model": "gemini-3.6-flash",
+    }
