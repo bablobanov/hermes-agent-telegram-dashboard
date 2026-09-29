@@ -3,9 +3,10 @@
 Google reports Gemini quota only to a project with billing enabled; a key on the free tier gets
 no number from any surface. The one trace such an installation has is the 429 the engine logs
 when Google refuses a call. This reader takes the newest such entry from the tail of
-``HERMES_HOME/logs/errors.log`` (WARNING and above, rotated by the engine at 2 MB) and keeps
-four things from it: the time, and the ``limit``, the ``model`` and the seconds to retry when
-the message names them. The text of the message itself never reaches the screen.
+``HERMES_HOME/logs/errors.log`` (WARNING and above, rotated by the engine at 2 MB), or from the
+whole file until the first successful read, and keeps four things from it: the time, and the
+``limit``, the ``model`` and the seconds to retry when the message names them. The text of the
+message itself never reaches the screen.
 
 Only the engine's own calls are in that log. A script that calls Gemini on its own, such as a
 skill's, is not seen; the details say so on every screen.
@@ -39,6 +40,12 @@ NO_QUOTA_REASON = "Google reports Gemini quota only with billing enabled"
 # The engine rotates the file at 2 MB; a refusal with its traceback is a few KB, so this holds
 # hours of ordinary warnings or dozens of refusals, and the record keeps what fell out.
 TAIL_BYTES = 256 * 1024
+# Until the first successful read (the record then holds ``last_429``, None when nothing was
+# seen) the whole file is read (decision of 29.09): a 429 from before the plugin arrived is
+# "last" at once, and "none in the log" means the file. The engine rotates at 2 MB; a file past
+# this ceiling is not that rotation, and even its first read is the tail, as is a first read
+# that cannot be decoded.
+FIRST_READ_BYTES = 4 * 1024 * 1024
 # The engine logs one refusal up to three times within a second (the tool's own ERROR with the
 # whole message, the executor's preview cut at 200 characters, the voice reply's WARNING):
 # entries this close to the newest one are one refusal, and the fields come from whichever
@@ -105,8 +112,9 @@ def log_path(env: Environment) -> Path:
     return logs_dir(env) / LOG_FILE
 
 
-def read_tail(path: Path, *, size: int = TAIL_BYTES) -> str:
-    """The last ``size`` bytes of ``path`` from the first whole line to the last, as text.
+def read_tail(path: Path, *, size: int = TAIL_BYTES, whole_up_to: int = 0) -> str:
+    """The last ``size`` bytes of ``path`` from the first whole line to the last, as text; a
+    file of at most ``whole_up_to`` bytes is read whole.
 
     The bytes after the last newline are a line the engine is still writing (a large entry is
     flushed in parts and may end inside a character): the next tick reads it whole. A missing
@@ -117,7 +125,8 @@ def read_tail(path: Path, *, size: int = TAIL_BYTES) -> str:
     try:
         with path.open("rb") as handle:
             handle.seek(0, 2)
-            start = max(0, handle.tell() - size)
+            length = handle.tell()
+            start = 0 if length <= whole_up_to else max(0, length - size)
             handle.seek(start)
             data = handle.read()
     except FileNotFoundError:
@@ -126,6 +135,18 @@ def read_tail(path: Path, *, size: int = TAIL_BYTES) -> str:
         cut = data.find(b"\n")
         data = data[cut + 1 :] if cut >= 0 else b""
     return data[: data.rfind(b"\n") + 1].decode("utf-8")
+
+
+def _read_log(path: Path, tail_bytes: int, whole_up_to: int) -> str:
+    """The whole file on a first read, the tail otherwise. A first read that cannot be decoded
+    is the tail, as every later read would be: a stray byte before the tail (a crash in the
+    middle of a character) must not blind the reader until the log rotates."""
+    if whole_up_to:
+        try:
+            return read_tail(path, size=tail_bytes, whole_up_to=whole_up_to)
+        except UnicodeDecodeError:
+            pass  # the tail below is the answer; if it cannot be decoded either, that is named
+    return read_tail(path, size=tail_bytes)
 
 
 def split_entries(text: str, *, zone: tzinfo | None = None) -> list[Entry]:
@@ -322,6 +343,7 @@ def collect_gemini(
     now: datetime,
     zone: tzinfo | None = None,
     tail_bytes: int = TAIL_BYTES,
+    first_read_bytes: int = FIRST_READ_BYTES,
 ) -> GeminiPart:
     """The Gemini line, the log as a source and the events, synchronously: the cron path calls
     this directly, the tick from a worker thread under its deadline.
@@ -329,13 +351,18 @@ def collect_gemini(
     No ``logs/`` directory is ``unsupported`` (the home is not an engine's). A directory without
     the file, or an empty file, is ``fresh`` with nothing seen. A file that cannot be read is
     ``unavailable``, and the line still says what the record remembers.
+
+    Until the first successful read, while the record holds no ``last_429``, a file of at most
+    ``first_read_bytes`` is read whole and a larger one by its tail; after that the tail. The
+    cron path keeps no record, so each of its runs is a first read.
     """
     store = cache if cache is not None else {}
+    whole_up_to = first_read_bytes if RECORD_KEY not in store else 0
     if not logs_dir(env).is_dir():
         source = SourceObservation(SOURCE_NAME, "local", "unsupported", detail="no logs directory")
         return remembered_part(store, source, now=now)
     try:
-        text = read_tail(log_path(env), size=tail_bytes)
+        text = _read_log(log_path(env), tail_bytes, whole_up_to)
     except (OSError, UnicodeDecodeError) as exc:
         detail = f"log unreadable: {type(exc).__name__}"
         source = SourceObservation(SOURCE_NAME, "local", "unavailable", detail=detail)

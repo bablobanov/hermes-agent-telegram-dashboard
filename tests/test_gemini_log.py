@@ -268,6 +268,91 @@ def test_a_line_still_being_written_is_left_for_the_next_tick(tmp_path: Path) ->
     assert line.refusal is not None and line.refusal.at == AT
 
 
+def _old_refusal_then_warnings(tmp_path: Path) -> Path:
+    """A 429 at the start of the file and 40 later warnings after it, well past a 1 KB tail."""
+    later = [
+        _entry(f"2026-09-29 14:{minute:02d}:00,000", "WARNING", "x", "y" * 80)
+        for minute in range(4, 44)
+    ]
+    return _write_log(tmp_path, _log(_refusal_entry(), *later))
+
+
+@pytest.mark.parametrize(
+    ("ceiling_minus_size", "seen"), [(0, True), (-1, False)], ids=["at", "over"]
+)
+def test_the_first_read_takes_the_whole_log_up_to_the_ceiling(
+    tmp_path: Path, ceiling_minus_size: int, seen: bool
+) -> None:
+    """Decision of 29.09: until the first successful read the whole file is read, so a 429 from
+    before the plugin arrived is "last" at once. A file past the ceiling is read by its tail."""
+    size = _old_refusal_then_warnings(tmp_path).stat().st_size
+    cache: dict[str, object] = {}
+
+    line, source, _events = collect_gemini(
+        _env(tmp_path),
+        cache,
+        now=NOW,
+        zone=ZONE,
+        tail_bytes=1024,
+        first_read_bytes=size + ceiling_minus_size,
+    )
+
+    assert source.state == "fresh"
+    assert line.refusal is not None and (line.refusal.at == AT) is seen
+    assert (cache["last_429"] is not None) is seen
+
+
+def test_after_the_first_read_only_the_tail_is_read(tmp_path: Path) -> None:
+    """The record has an entry once the log was read, even one that saw nothing: from then on
+    the tail."""
+    _old_refusal_then_warnings(tmp_path)
+    cache: dict[str, object] = {"last_429": None, "checked_at": NOW.isoformat()}
+
+    line, _source, _events = collect_gemini(
+        _env(tmp_path), cache, now=NOW, zone=ZONE, tail_bytes=1024, first_read_bytes=1 << 20
+    )
+
+    assert line.refusal == Refusal()
+
+
+def test_the_cron_path_keeps_no_record_and_reads_the_whole_log_each_run(tmp_path: Path) -> None:
+    """With the default ceiling, the one the tick and the cron path use."""
+    _old_refusal_then_warnings(tmp_path)
+
+    for _run in range(2):
+        line, _source, _events = collect_gemini(
+            _env(tmp_path), None, now=NOW, zone=ZONE, tail_bytes=1024
+        )
+        assert line.refusal is not None and line.refusal.at == AT
+
+
+def test_a_first_read_that_cannot_be_decoded_is_the_tail(tmp_path: Path) -> None:
+    """A stray byte before the tail (a crash in the middle of a character) must not blind the
+    first read until the log rotates: the tail decodes, the 429 in it is seen and the record
+    is written, so the reads after it are the tail anyway."""
+    stray = _entry("2026-09-29 13:00:00,000", "WARNING", "x", "stray").encode("utf-8")
+    later = [
+        _entry(f"2026-09-29 13:{minute:02d}:00,000", "WARNING", "x", "y" * 80)
+        for minute in range(1, 41)
+    ]
+    body = _log(*later, _refusal_entry()).encode("utf-8")
+    _write_log(tmp_path, stray.replace(b"stray", b"\xd0 stray") + body)
+    cache: dict[str, object] = {}
+
+    line, source, _events = collect_gemini(
+        _env(tmp_path), cache, now=NOW, zone=ZONE, tail_bytes=2048
+    )
+
+    assert source.state == "fresh"
+    assert line.refusal is not None and line.refusal.at == AT
+    assert cache["last_429"] is not None
+
+
+def test_the_first_read_ceiling_is_4_mb_and_the_tail_256_kb() -> None:
+    assert gemini_log.FIRST_READ_BYTES == 4 * 1024 * 1024
+    assert gemini_log.TAIL_BYTES == 256 * 1024
+
+
 def test_a_record_with_a_number_too_large_for_a_float_keeps_the_moment_only() -> None:
     """The record is JSON in the plugin's state; an integer too large for a float is not a
     number to show, and reading it must not raise (``math.isfinite`` would)."""

@@ -90,8 +90,10 @@ def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() 
     assert "logs/" in row["probe"] and "unsupported" in row["probe"]
     reads = " ".join(row["reads"])
     assert "256 KB" in reads and "HTTP 429" in reads
+    assert "the whole of logs/errors.log on the first read" in reads and "4 MB" in reads
     assert {"auth.json", "state.db", "errors.log.1", "errors.log.2"} <= set(row["never_reads"])
     assert "hermes_logging.py" in row["contract"] and "gemini_log_cache" in row["contract"]
+    assert "chat_completion_helpers" in row["contract"]
     assert "0.21.3" in row["verified"]
     assert "engine's own calls" in row["caveat"]
     assert "always unsupported" not in sources["limits"]["contract"]

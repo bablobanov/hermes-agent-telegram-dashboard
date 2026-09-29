@@ -222,7 +222,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `chat_id` | `HERMES_DASHBOARD_PROBE_CHAT` | required; no chat, no handler |
    | `thread_id` | `HERMES_DASHBOARD_PROBE_THREAD` | forum topic; omit for General |
    | `period_seconds` | `HERMES_DASHBOARD_PROBE_PERIOD` | default 60; finite, clamped to [0.01, 86400]; while the Telegram adapter is not connected yet (right after a start) the next try comes in 30 s, not a period later |
-   | `hermes_home` | `HERMES_HOME` | default `~/.hermes`; where `gateway_state.json` lives, and the engine's `logs/errors.log`, whose tail the Gemini line reads |
+   | `hermes_home` | `HERMES_HOME` | default `~/.hermes`; where `gateway_state.json` lives, and the engine's `logs/errors.log`, which the Gemini line reads |
    | `drift_report` | `HERMES_DASHBOARD_PROBE_DRIFT_REPORT` | JSON with `checked_at`, `exit_code`, `stdout` |
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
@@ -514,10 +514,14 @@ log when Google refuses a call, and that is what the Gemini line shows
 (`telegram_dashboard/gemini_log.py`).
 
 - **what is read**: the last 256 KB of `$HERMES_HOME/logs/errors.log` (WARNING and above,
-  rotated by the engine at 2 MB), from the first whole line to the last. An entry counts when its
-  first line holds `Gemini` and `HTTP 429`: the text-to-speech tool's error and the native Gemini
-  adapter's summary both do, a 400 or a 403 does not. From it the plugin keeps four things: the
-  time, and the `limit`, the `model` and the seconds to retry when Google's message names them.
+  rotated by the engine at 2 MB), from the first whole line to the last. Until the first
+  successful read (the record then holds `last_429`, null when nothing was seen) the whole file
+  is read, so a 429 from before the plugin arrived is the last one at once; a file over 4 MB is
+  not the engine's rotation and is read by its tail even then, as is a first read that cannot be
+  decoded. An entry counts when its first line holds `Gemini` and `HTTP 429`: the text-to-speech
+  tool's error, the native Gemini adapter's summary and a failed streamed call all do, a 400 or a
+  403 does not. From it the plugin keeps four things: the time, and the `limit`, the `model` and
+  the seconds to retry when Google's message names them.
   The engine logs one refusal up to three times within a second, the later copies cut short;
   entries within ten seconds of the newest are one refusal and lend each other the fields
 - **what is never read**: the message's text beyond those fields (it never reaches the screen),
@@ -534,7 +538,8 @@ log when Google refuses a call, and that is what the Gemini line shows
   (a daily one says `resets …` instead of the retry). A daily quota spent just before Google's
   reset asks for a short retry and looks per-minute
 - **memory**: the record keeps the last 429 (`gemini_log_cache`), so one that rotated out of the
-  tail is still the last one. The fallback cron tick reads the log without that memory
+  tail is still the last one. The fallback cron tick keeps no record, so each of its runs reads
+  the whole file, up to 4 MB
 - **time**: the engine stamps its log in the host's local time without an offset; the plugin
   runs in the same process on the same host and converts with the process's zone. The hour
   repeated when summer time ends adds an hour to the age of a 429 from that hour, once a year
