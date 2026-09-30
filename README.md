@@ -52,7 +52,7 @@ Claude · no data                    a line without a number never shows a zero
 ⚠️ Codex 98% (1h21m)                the spent share, the time to the reset; the mark from 90%
 Grok · usage not started            a state in words is never turned into a number
 Kimi 3% (29d)                       every window, in the provider's own order
-Gemini · no data                    no number without billing; ⚠️ 429 for an hour after one
+Gemini · no data                    no number without billing; ⚠️ hit limit for an hour after one
 
 🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release
 
@@ -80,9 +80,9 @@ Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly poo
 surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
 serves its own clients (see "Limits" below), and any provider from a local process of your own
 (see "External limit sources"). Gemini has no number without billing, never a zero: the last
-429 the engine logged is on its line while it is recent and always in the details (see "Gemini
-429s from the engine log"). Nothing is dropped from the old screen, only moved: a line without a
-number still names its reason, in the details.
+time Google refused the engine a call is on its line while it is recent and always in the
+details (see "Gemini refusals from the engine log"). Nothing is dropped from the old screen,
+only moved: a line without a number still names its reason, in the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
@@ -260,8 +260,8 @@ before Kimi (Grok's attempt at the top level) is moved under `grok` once. Beside
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
 with the provider, the plan and the login date it last named. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
-message) and when the log was last read (`checked_at`), so a 429 that rotated out of the log is
-still the last one.
+message; the limit and the retry are kept, not shown) and when the log was last read
+(`checked_at`), so a 429 that rotated out of the log is still the last one.
 
 ### The backup line
 
@@ -331,12 +331,13 @@ undocumented surfaces (`api/oauth/usage`, the ChatGPT backend), and so does the 
 A documented surface would be preferable; an undocumented provider number is still the
 provider's number, and a local count is not.
 
-**A 429 is an event, not a number.** Google gives a free-tier Gemini key no quota figure on any
-surface, so the Gemini line has no number and never a zero. What the installation does have is
-the 429 the engine logs when Google turns a call down, and it is said as what it is: a
-per-minute refusal is the mark on the line, which moves no status, like the mark from 90%; a
-daily one is also an event until the reset; the last one is always in the details (see "Gemini
-429s from the engine log").
+**A refusal is an event, not a number.** Google gives a free-tier Gemini key no quota figure on
+any surface, so the Gemini line has no number and never a zero. What the installation does have
+is the HTTP 429 the engine logs when Google turns a call down, and it is said as what it is, in
+plain words: a per-minute refusal is `⚠️ Gemini hit limit 5 min ago` on the line, which moves
+no status, like the mark from 90%; a daily one is `⚠️ Gemini paused till 23:00` and an event
+until the reset; the last one is always in the details (see "Gemini refusals from the engine
+log").
 
 An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
@@ -505,12 +506,12 @@ The guards, and why:
 `python -m telegram_dashboard --demo 17` shows a source with a model's limit, the plans and a
 login that ends in two days; `--demo 18` the same source after the login expired.
 
-### Gemini 429s from the engine log
+### Gemini refusals from the engine log
 
 Google reports Gemini quota only to a project with billing enabled (Cloud Monitoring answers 403
 without it), the Rate Limit page of AI Studio needs a browser login, and the engine reads no
 limit by key. The one trace a free-tier key leaves is the HTTP 429 the engine writes to its own
-log when Google refuses a call, and that is what the Gemini line shows
+log when Google refuses a call, and that refusal is what the Gemini line shows, in plain words
 (`telegram_dashboard/gemini_log.py`).
 
 - **what is read**: the last 256 KB of `$HERMES_HOME/logs/errors.log` (WARNING and above,
@@ -521,22 +522,24 @@ log when Google refuses a call, and that is what the Gemini line shows
   decoded. An entry counts when its first line holds `Gemini` and `HTTP 429`: the text-to-speech
   tool's error, the native Gemini adapter's summary and a failed streamed call all do, a 400 or a
   403 does not. From it the plugin keeps four things: the time, and the `limit`, the `model` and
-  the seconds to retry when Google's message names them.
+  the seconds to retry when Google's message names them. The screen shows the time, the model
+  and the kind of limit the retry tells, never the limit's number or the retry itself.
   The engine logs one refusal up to three times within a second, the later copies cut short;
   entries within ten seconds of the newest are one refusal and lend each other the fields
 - **what is never read**: the message's text beyond those fields (it never reaches the screen),
   tracebacks, session ids, `agent.log`, `gateway.log`, `auth.json`, `state.db` and the rotated
   `errors.log.1` and `.2`. No network
-- **engine calls only**: a script that calls Gemini on its own, such as a skill's, is not in the
-  engine's log. The details say so on every screen: `Gemini 429s, engine calls only: …`
+- **seen by Hermes only**: a script that calls Gemini on its own, such as a skill's, is not in
+  the engine's log. The details say so on every screen: `Gemini refusals seen by Hermes: …`
 - **per minute or per day**: Gemini's free quotas are per minute and per day, and a per-minute
-  window ends within a minute, so a retry longer than two minutes is the daily quota. A daily 429
-  is the event `Gemini out of quota 2 h ago` and the mark on the line until the reset Google
-  named; any other 429, one without a retry among them, is the mark only, for an hour:
-  `⚠️ Gemini 429 · 5 min ago`. After that the line says `Gemini · no data` again, and the
-  details keep `last Sep 29 14:03, limit 10, retry 42 s, model gemini-2.5-flash-preview-tts`
-  (a daily one says `resets …` instead of the retry). A daily quota spent just before Google's
-  reset asks for a short retry and looks per-minute
+  window ends within a minute, so a retry longer than two minutes is the daily quota. A daily
+  refusal is the event `Gemini daily limit used up` and `⚠️ Gemini paused till 23:00` on the
+  line until the reset Google named, in the screen's zone; any other refusal, one without a
+  retry among them, is the mark only, for an hour: `⚠️ Gemini hit limit 5 min ago`. After that
+  the line says `Gemini · no data` again, and the details keep `last Sep 29 14:03, per-minute
+  limit, model gemini-2.5-flash-preview-tts` (a daily one says `daily limit till …`, one
+  without a retry names no kind). A daily quota spent just before Google's reset asks for a
+  short retry and looks per-minute
 - **memory**: the record keeps the last 429 (`gemini_log_cache`), so one that rotated out of the
   tail is still the last one. The fallback cron tick keeps no record, so each of its runs reads
   the whole file, up to 4 MB
