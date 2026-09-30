@@ -23,10 +23,10 @@ from telegram_dashboard import gemini_log
 from telegram_dashboard.compat import Environment
 from telegram_dashboard.gemini_log import (
     DAY_RETRY_SECONDS,
+    EVENT_TITLE,
     LINE_MARK_SECONDS,
     activate,
     collect_gemini,
-    event_title,
     hit_words,
     incidents_for,
     is_active,
@@ -34,7 +34,6 @@ from telegram_dashboard.gemini_log import (
     newest_refusal,
     read_tail,
     refusal_from_record,
-    retry_words,
     split_entries,
 )
 from telegram_dashboard.schema import Refusal
@@ -520,7 +519,7 @@ def test_a_day_refusal_is_an_event_until_the_reset_a_minute_one_never() -> None:
     two_hours_on = datetime(2026, 9, 29, 14, 3, 13, tzinfo=UTC)
 
     assert incidents_for(day, two_hours_on) == (
-        gemini_log.Incident("gemini:day_quota", "warning", "Gemini out of quota 2 h ago"),
+        gemini_log.Incident("gemini:day_quota", "warning", "Gemini daily limit used up"),
     )
     assert incidents_for(day, datetime(2026, 9, 29, 16, 7, tzinfo=UTC)) == ()
     assert incidents_for(minute, two_hours_on) == ()
@@ -545,27 +544,11 @@ def test_hit_words(age: float, words: str) -> None:
     assert hit_words(age) == words
 
 
-def test_the_event_title_fits_a_phone_line_at_every_age() -> None:
-    for age in (0, 59, 60, 59 * 60, 3600, 23 * 3600, 47 * 3600, 5 * 86400):
-        title = event_title(age)
-        assert len("- " + title) <= 32, title
-    assert event_title(59 * 60) == "Gemini out of quota 59 min ago"
-
-
-@pytest.mark.parametrize(
-    ("seconds", "words"),
-    [
-        (41.53, "42 s"),
-        (59, "59 s"),
-        (60, "1 min"),
-        (90, "2 min"),
-        (900, "15 min"),
-        (14580, "4 h"),
-        (86400, "24 h"),
-    ],
-)
-def test_retry_words(seconds: float, words: str) -> None:
-    assert retry_words(seconds) == words
+def test_the_event_says_what_happened_and_fits_a_phone_line() -> None:
+    """Decision of 30.09: no time in the event; the Gemini line says when it is back, the
+    details when it was refused."""
+    assert EVENT_TITLE == "Gemini daily limit used up"
+    assert len("- " + EVENT_TITLE) <= 32
 
 
 # ----------------------------------------------------------------------------- the record

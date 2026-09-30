@@ -25,7 +25,7 @@ from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
-from .gemini_log import hit_words, is_active, retry_words
+from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
 from .schema import (
     BackupSummary,
@@ -189,7 +189,7 @@ def render_dashboard(
     if snapshot.capacity.quotas:
         lines.extend(["", f"## {LIMITS_HEADING}"])
         for quota in snapshot.capacity.quotas:
-            lines.extend(_quota_lines(quota, reference, details))
+            lines.extend(_quota_lines(quota, reference, details, zone))
         details.data = _data_stamps(snapshot, zone)
         details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
         details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
@@ -345,7 +345,9 @@ def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
     return f"Drift: {label}"
 
 
-def _quota_lines(quota: QuotaMetric, reference: datetime | None, details: _Details) -> list[str]:
+def _quota_lines(
+    quota: QuotaMetric, reference: datetime | None, details: _Details, zone: tzinfo
+) -> list[str]:
     """The provider's line with the account's windows, then a line of its own for every model's
     limit (decision of 29.09, replacing decision 4 of the subscription plan: the model's limit is
     wanted in sight, and next to the account's windows it does not fit a phone line). A model's
@@ -356,7 +358,7 @@ def _quota_lines(quota: QuotaMetric, reference: datetime | None, details: _Detai
     if quota.kind == "expired":
         return [f"{provider} · login expired"]
     if quota.kind != "official" or not quota.windows:
-        return [_quota_line(quota, reference, details)]
+        return [_quota_line(quota, reference, details, zone)]
     own = tuple(window for window in quota.windows if window.scope is None)
     if not own:
         return [_windows_line(provider, quota.windows, reference)]
@@ -406,7 +408,9 @@ def _account_words(
     return words
 
 
-def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Details) -> str:
+def _quota_line(
+    quota: QuotaMetric, reference: datetime | None, details: _Details, zone: tzinfo
+) -> str:
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
         details.missing.append(f"{provider}: remaining unknown, counted locally")
@@ -416,39 +420,46 @@ def _quota_line(quota: QuotaMetric, reference: datetime | None, details: _Detail
     if quota.kind == "unsupported":
         reason = sanitize_public_text(quota.detail or "source not found", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return _no_data(provider, quota.refusal, reference)
+        return _no_data(provider, quota.refusal, reference, zone)
     if quota.kind == "unavailable":
         reason = sanitize_public_text(quota.detail or "source unavailable", limit=60)
         details.missing.append(f"{provider}: {reason}")
-        return _no_data(provider, quota.refusal, reference)
+        return _no_data(provider, quota.refusal, reference, zone)
     if quota.windows:
         return _windows_line(provider, quota.windows, reference)
     if quota.used is not None and quota.limit:
         percent = round((quota.used / quota.limit) * 100)
         return f"{_warn(percent)}{provider} {percent}%{_reset_suffix(quota.reset_at, reference)}"
     details.missing.append(f"{provider}: windows not received")
-    return _no_data(provider, quota.refusal, reference)
+    return _no_data(provider, quota.refusal, reference, zone)
 
 
-def _no_data(provider: str, refusal: Refusal | None, reference: datetime | None) -> str:
-    """``Gemini · no data``; while the provider's last 429 is active (decision of 29.09), the
-    line says that instead: ``⚠️ Gemini 429 · 5 min ago``. Only the line: the status and the
-    events come from the collectors, a daily 429's event among them."""
+def _no_data(
+    provider: str, refusal: Refusal | None, reference: datetime | None, zone: tzinfo
+) -> str:
+    """``Gemini · no data``; while the provider's last refusal is active (decision of 29.09), the
+    line says that instead, in plain words (decision of 30.09): ``⚠️ Gemini paused till 23:00``
+    until a daily quota's reset, in the screen's zone, and ``⚠️ Gemini hit limit 5 min ago`` for
+    any other. Only the line: the status and the events come from the collectors, a daily
+    refusal's event among them."""
     if refusal is None or reference is None or not is_active(refusal, reference):
         return f"{provider} · no data"
+    back = format_in_zone(refusal.active_until, zone, "%H:%M") if refusal.daily else None
+    if back is not None:
+        return f"{WARN_MARK} {provider} paused till {back}"
     moment = parse_timestamp(refusal.at)
     age = age_seconds(moment, reference) if moment is not None else None
     if age is None:
         return f"{provider} · no data"
-    return f"{WARN_MARK} {provider} 429 · {hit_words(max(0.0, age))}"
+    return f"{WARN_MARK} {provider} hit limit {hit_words(max(0.0, age))}"
 
 
 def _refusal_words(quotas: tuple[QuotaMetric, ...], zone: tzinfo) -> list[str]:
-    """``Gemini 429s, engine calls only: last Sep 29 14:03, limit 10, retry 42 s, model …``: the
-    last 429 the engine logged for a provider whose log is read, or that there is none. A script
-    that calls the provider on its own is not in that log, hence "engine calls only"."""
+    """``Gemini refusals seen by Hermes: last Sep 29 14:03, per-minute limit, model …``: the
+    last refusal the engine logged for a provider whose log is read, or that there is none. A
+    script that calls the provider on its own is not in that log, hence "seen by Hermes"."""
     return [
-        f"{sanitize_public_text(quota.provider, limit=40)} 429s, engine calls only: "
+        f"{sanitize_public_text(quota.provider, limit=40)} refusals seen by Hermes: "
         + _refusal_parts(quota.refusal, zone)
         for quota in quotas
         if quota.refusal is not None
@@ -456,20 +467,29 @@ def _refusal_words(quotas: tuple[QuotaMetric, ...], zone: tzinfo) -> list[str]:
 
 
 def _refusal_parts(refusal: Refusal, zone: tzinfo) -> str:
-    """Each part only when the log named it; a daily 429 names its reset instead of the retry."""
+    """Each part only when the log named it. The limit's number and the retry are not shown
+    (decision of 30.09): without its unit the number says nothing, and a retry of seconds is
+    long past when the screen is read."""
     if refusal.at is None:
-        return "none in the log"
+        return "none"
     parts = [f"last {format_day_time(refusal.at, zone) or 'time unreadable'}"]
-    if refusal.limit is not None:
-        parts.append(f"limit {refusal.limit}")
-    resets = format_day_time(refusal.active_until, zone) if refusal.daily else None
-    if resets is not None:
-        parts.append(f"resets {resets}")
-    elif refusal.retry_seconds is not None:
-        parts.append(f"retry {retry_words(refusal.retry_seconds)}")
+    kind = _limit_kind(refusal, zone)
+    if kind is not None:
+        parts.append(kind)
     if refusal.model:
         parts.append(f"model {sanitize_public_text(refusal.model, limit=40)}")
     return ", ".join(parts)
+
+
+def _limit_kind(refusal: Refusal, zone: tzinfo) -> str | None:
+    """``daily limit till Sep 26 23:00`` or ``per-minute limit``, as ``gemini_log.activate`` told
+    them apart by the retry; ``daily limit`` alone when the reset cannot be shown (none was
+    computed, or the screen's zone cannot represent it); nothing when the provider named no
+    retry."""
+    if refusal.daily:
+        back = format_day_time(refusal.active_until, zone)
+        return f"daily limit till {back}" if back is not None else "daily limit"
+    return "per-minute limit" if refusal.retry_seconds is not None else None
 
 
 def _windows_line(

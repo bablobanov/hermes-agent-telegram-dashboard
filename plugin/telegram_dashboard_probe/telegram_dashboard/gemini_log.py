@@ -15,6 +15,9 @@ The record remembers the last refusal seen (``gemini_log_cache`` in the plugin's
 429 that rotated out of the log is still "last". A per-minute refusal marks the line for an
 hour; a daily one, told apart by a retry longer than a per-minute window, is an event until the
 reset the provider named. Neither moves the overall status by itself.
+
+The screen says it in plain words (decision of 30.09): a refusal, the kind of limit and when it
+is back. The limit's number and the retry stay in the record; neither is on the screen.
 """
 
 from __future__ import annotations
@@ -42,9 +45,9 @@ NO_QUOTA_REASON = "Google reports Gemini quota only with billing enabled"
 TAIL_BYTES = 256 * 1024
 # Until the first successful read (the record then holds ``last_429``, None when nothing was
 # seen) the whole file is read (decision of 29.09): a 429 from before the plugin arrived is
-# "last" at once, and "none in the log" means the file. The engine rotates at 2 MB; a file past
-# this ceiling is not that rotation, and even its first read is the tail, as is a first read
-# that cannot be decoded.
+# "last" at once, and "none" in the details means the whole file. The engine rotates at 2 MB; a
+# file past this ceiling is not that rotation, and even its first read is the tail, as is a
+# first read that cannot be decoded.
 FIRST_READ_BYTES = 4 * 1024 * 1024
 # The engine logs one refusal up to three times within a second (the tool's own ERROR with the
 # whole message, the executor's preview cut at 200 characters, the voice reply's WARNING):
@@ -57,6 +60,9 @@ LINE_MARK_SECONDS = 3600.0
 # retry longer than this is the daily quota, out until the reset the provider named.
 DAY_RETRY_SECONDS = 120.0
 INCIDENT_ID = "gemini:day_quota"
+# What happened, without a time (decision of 30.09): the Gemini line usually says when the quota
+# is back, the details when it was refused. 28 columns with the list dash.
+EVENT_TITLE = f"{LABEL} daily limit used up"
 RECORD_KEY = "last_429"
 
 GeminiPart = tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]
@@ -307,30 +313,11 @@ def hit_words(age: float) -> str:
     return "just now" if age < 60 else describe_age(age)
 
 
-def retry_words(seconds: float) -> str:
-    """``42 s``, ``15 min``, ``4 h``: the retry the provider asked for; seconds rounded up, the
-    coarser units to the nearest."""
-    if seconds < 60:
-        return f"{math.ceil(seconds)} s"
-    if seconds < 3600:
-        return f"{max(1, round(seconds / 60))} min"
-    return f"{max(1, round(seconds / 3600))} h"
-
-
-def event_title(age: float) -> str:
-    """``Gemini out of quota 2 h ago``: 32 columns with the list dash at the longest age."""
-    return f"{LABEL} out of quota {hit_words(max(0.0, age))}"
-
-
 def incidents_for(refusal: Refusal | None, now: datetime) -> tuple[Incident, ...]:
     """A daily refusal is an event while it is active; a per-minute one is never an event."""
     if refusal is None or not refusal.daily or not is_active(refusal, now):
         return ()
-    moment = parse_timestamp(refusal.at)
-    age = age_seconds(moment, now) if moment is not None else None
-    if age is None:
-        return ()
-    return (Incident(INCIDENT_ID, "warning", event_title(age)),)
+    return (Incident(INCIDENT_ID, "warning", EVENT_TITLE),)
 
 
 # ----------------------------------------------------------------------------- the collector

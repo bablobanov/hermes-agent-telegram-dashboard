@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from telegram_dashboard.freshness import DeliveryRecord
+from telegram_dashboard.gemini_log import incidents_for
 from telegram_dashboard.render import (
     render_dashboard,
     to_telegram_html,
@@ -699,14 +700,17 @@ def test_plans_and_the_login_date_are_in_the_details_only_when_known() -> None:
     assert not any("Kimi" in line and "Plan" in line for line in details)
 
 
-# ----------------------------------------------------------------------------- Gemini 429s (0.8.1)
+# ----------------------------------------------------------------------------- Gemini refusals
 #
 # Google gives a free-tier key no quota number; the engine's log has the 429s (``gemini_log.py``).
 # Decision of 29.09: a 429 is not a number and never colours the status by itself. While it is
 # active the Gemini line says it instead of "no data"; the details always say the last one.
+# Decision of 30.09 (0.8.2): in plain words, a refusal, the kind of limit and when it is back;
+# neither the limit's number nor the retry is on the screen.
 
 _GEMINI_REASON = "Google reports Gemini quota only with billing enabled"
 _TTS = "gemini-2.5-flash-preview-tts"
+_REFUSALS = "Gemini refusals seen by Hermes: "
 
 
 def _gemini(refusal: Refusal | None) -> QuotaMetric:
@@ -726,7 +730,7 @@ def test_a_gemini_log_without_a_429_says_so_in_the_details() -> None:
 
     assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
     details = _details_lines(text)
-    assert "Gemini 429s, engine calls only: none in the log" in details
+    assert f"{_REFUSALS}none" in details
     assert f"Gemini: {_GEMINI_REASON}" in details
 
 
@@ -738,19 +742,20 @@ def test_a_recent_429_marks_the_gemini_line_and_leaves_the_status_alone() -> Non
     text = _limits_only(_gemini(refusal))
 
     assert text.splitlines()[0] == "🟢 Healthy · Sep 25 07:21 UTC"
-    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini 429 · 5 min ago"]
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini hit limit 5 min ago"]
     details = _details_lines(text)
-    assert (
-        f"Gemini 429s, engine calls only: last Sep 25 07:16, limit 10, retry 42 s, model {_TTS}"
-        in details
-    )
+    assert f"{_REFUSALS}last Sep 25 07:16, per-minute limit, model {_TTS}" in details
+    # Decision of 30.09: neither the limit's number nor the retry reaches the screen.
+    assert not any("limit 10" in line or "retry" in line for line in text.splitlines())
     assert f"Gemini: {_GEMINI_REASON}" in details  # the reason for "no data" stays
 
 
 def test_a_429_within_the_minute_is_just_now() -> None:
     refusal = Refusal(at=_ago(seconds=30), active_until=_ahead(minutes=59))
 
-    assert _screen_lines(_limits_only(_gemini(refusal)), "Gemini") == ["⚠️ Gemini 429 · just now"]
+    assert _screen_lines(_limits_only(_gemini(refusal)), "Gemini") == [
+        "⚠️ Gemini hit limit just now"
+    ]
 
 
 def test_after_its_window_the_429_is_only_in_the_details() -> None:
@@ -759,10 +764,10 @@ def test_after_its_window_the_429_is_only_in_the_details() -> None:
     text = _limits_only(_gemini(refusal))
 
     assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
-    assert "Gemini 429s, engine calls only: last Sep 25 05:21, retry 30 s" in _details_lines(text)
+    assert f"{_REFUSALS}last Sep 25 05:21, per-minute limit" in _details_lines(text)
 
 
-def test_a_daily_429_names_the_reset_instead_of_the_retry() -> None:
+def test_a_daily_429_is_paused_till_the_reset() -> None:
     refusal = Refusal(
         at=_ago(hours=2, minutes=3),
         limit=15,
@@ -774,10 +779,10 @@ def test_a_daily_429_names_the_reset_instead_of_the_retry() -> None:
 
     text = _limits_only(_gemini(refusal))
 
-    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini 429 · 2 h ago"]
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini paused till 09:21"]
     assert (
-        f"Gemini 429s, engine calls only: last Sep 25 05:18, limit 15, resets Sep 25 09:21, "
-        f"model {_TTS}" in _details_lines(text)
+        f"{_REFUSALS}last Sep 25 05:18, daily limit till Sep 25 09:21, model {_TTS}"
+        in _details_lines(text)
     )
 
 
@@ -790,14 +795,14 @@ def test_the_429_is_dated_in_the_screen_s_zone() -> None:
 
     text = render_dashboard(snapshot, now=NOW, zone=timezone(timedelta(hours=5)))
 
-    assert "Gemini 429s, engine calls only: last Sep 25 12:16" in _details_lines(text)
+    assert f"{_REFUSALS}last Sep 25 12:16" in _details_lines(text)
 
 
-def test_a_line_whose_log_nobody_reads_has_no_429_words() -> None:
+def test_a_line_whose_log_nobody_reads_has_no_refusal_words() -> None:
     text = _limits_only(QuotaMetric("Gemini", "unsupported", detail="limits disabled in config"))
 
     assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
-    assert not any("429" in line for line in text.splitlines())
+    assert not any("429" in line or "refusal" in line for line in text.splitlines())
 
 
 def test_a_model_name_from_the_record_is_sanitized_like_every_other_word() -> None:
@@ -805,7 +810,7 @@ def test_a_model_name_from_the_record_is_sanitized_like_every_other_word() -> No
 
     details = _details_lines(_limits_only(_gemini(refusal)))
 
-    assert f"Gemini 429s, engine calls only: last Sep 25 05:21, model {'m' * 39}…" in details
+    assert f"{_REFUSALS}last Sep 25 05:21, model {'m' * 39}…" in details
 
 
 def test_a_line_with_numbers_keeps_them_and_the_429_stays_in_the_details() -> None:
@@ -819,7 +824,80 @@ def test_a_line_with_numbers_keeps_them_and_the_429_stays_in_the_details() -> No
     text = _limits_only(metric)
 
     assert _screen_lines(text, "Gemini") == ["Gemini 40% (4h)"]
-    assert "Gemini 429s, engine calls only: last Sep 25 07:16" in _details_lines(text)
+    assert f"{_REFUSALS}last Sep 25 07:16" in _details_lines(text)
+
+
+def test_a_daily_429_is_paused_till_the_reset_in_the_screen_s_zone() -> None:
+    refusal = Refusal(
+        at=_ago(hours=2), retry_seconds=14580.0, daily=True, active_until=_ahead(hours=2)
+    )
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        capacity=CapacitySummary((_gemini(refusal),)),
+    )
+
+    text = render_dashboard(snapshot, now=NOW, zone=timezone(timedelta(hours=5)))
+
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini paused till 14:21"]
+    assert f"{_REFUSALS}last Sep 25 10:21, daily limit till Sep 25 14:21" in _details_lines(text)
+
+
+@pytest.mark.parametrize(
+    ("refusal", "details"),
+    [
+        (
+            Refusal(
+                at=_ago(hours=5), retry_seconds=14580.0, daily=True, active_until=_ago(hours=1)
+            ),
+            "last Sep 25 02:21, daily limit till Sep 25 06:21",
+        ),
+        (
+            Refusal(at=_ago(hours=2), retry_seconds=1e300, daily=True),
+            "last Sep 25 05:21, daily limit",
+        ),
+    ],
+    ids=["after-the-reset", "no-reset-computed"],
+)
+def test_a_daily_429_past_or_without_its_reset_is_only_in_the_details(
+    refusal: Refusal, details: str
+) -> None:
+    text = _limits_only(_gemini(refusal))
+
+    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert f"{_REFUSALS}{details}" in _details_lines(text)
+    assert incidents_for(refusal, NOW) == ()
+
+
+def test_a_reset_the_screen_cannot_show_falls_back_to_the_age() -> None:
+    """A reset that cannot be represented in the screen's zone: the line says when the limit was
+    hit instead, and the details name the kind without the time."""
+    refusal = Refusal(at=_ago(hours=2), daily=True, active_until="9999-12-31T23:00:00+00:00")
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        capacity=CapacitySummary((_gemini(refusal),)),
+    )
+
+    text = render_dashboard(snapshot, now=NOW, zone=timezone(timedelta(hours=5)))
+
+    assert _screen_lines(text, "Gemini") == ["⚠️ Gemini hit limit 2 h ago"]
+    assert f"{_REFUSALS}last Sep 25 10:21, daily limit" in _details_lines(text)
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        Refusal(at=_ago(minutes=59, seconds=59), active_until=_ahead(seconds=1)),
+        Refusal(at=_ago(hours=2), daily=True, active_until=_ahead(hours=1)),
+    ],
+    ids=["hit-59-min", "paused"],
+)
+def test_the_marked_gemini_line_fits_a_phone_line(refusal: Refusal) -> None:
+    (line,) = _screen_lines(_limits_only(_gemini(refusal)), "Gemini")
+
+    assert line.startswith("⚠️ Gemini ")
+    assert len(line) <= 32, line
 
 
 def test_a_gemini_log_that_is_not_there_is_named_as_such() -> None:

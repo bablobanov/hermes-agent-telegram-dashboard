@@ -577,8 +577,10 @@ def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
     source = next(s for s in snapshot.sources if s.name == "gemini_log")
     assert (source.state, source.detail) == ("unavailable", "log read timed out")
     events = [(i.incident_id, i.title) for i in snapshot.incidents]
-    assert ("gemini:day_quota", "Gemini out of quota 1 h ago") in events
+    assert ("gemini:day_quota", "Gemini daily limit used up") in events
     assert snapshot.overall == "warning"
+    gemini = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+    assert gemini.refusal is not None and gemini.refusal.at == seen
 
 
 @pytest.mark.parametrize("limits_enabled", [False, True], ids=["limits-off", "no-facade"])

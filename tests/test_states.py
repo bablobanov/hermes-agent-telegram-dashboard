@@ -237,7 +237,7 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
     assert "> 2 releases behind · checked Sep 26 21:00" in lines
     assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
-    assert "> Gemini 429s, engine calls only: none in the log" in lines
+    assert "> Gemini refusals seen by Hermes: none" in lines
 
 
 def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident() -> None:
@@ -385,12 +385,12 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
     lines = text.splitlines()
 
     assert state.title == "Gemini minute quota hit"
-    assert main == [*SHOWCASE_HEALTHY[:8], "⚠️ Gemini 429 · 20 min ago", *SHOWCASE_HEALTHY[9:]]
+    assert main == [*SHOWCASE_HEALTHY[:8], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[9:]]
     assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
     assert "Needs attention" not in text
     assert (
-        f"> Gemini 429s, engine calls only: last Sep 26 20:40, limit 3, retry 42 s, model {_TTS}"
+        f"> Gemini refusals seen by Hermes: last Sep 26 20:40, per-minute limit, model {_TTS}"
         in lines
     )
     assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
@@ -412,15 +412,15 @@ def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
         *SHOWCASE_HEALTHY[1:4],
         "",
         "## Needs attention",
-        "- Gemini out of quota 2 h ago",
+        "- Gemini daily limit used up",
         *SHOWCASE_HEALTHY[4:8],
-        "⚠️ Gemini 429 · 2 h ago",
+        "⚠️ Gemini paused till 23:00",
         *SHOWCASE_HEALTHY[9:],
     ]
     assert max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2
     assert (
-        "> Gemini 429s, engine calls only: last Sep 26 18:57, limit 15, resets Sep 26 23:00, "
+        "> Gemini refusals seen by Hermes: last Sep 26 18:57, daily limit till Sep 26 23:00, "
         f"model {_TTS}" in lines
     )
 

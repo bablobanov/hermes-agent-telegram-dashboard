@@ -811,7 +811,7 @@ def test_an_external_gemini_source_keeps_the_429_the_log_saw() -> None:
 def test_the_cron_path_turns_a_daily_429_into_an_event(tmp_path: Path) -> None:
     """A retry of four hours is the daily quota: the event and the yellow status until the
     reset, on the cron path as on the tick."""
-    _gemini_log(tmp_path, minutes_ago=5, retry="14580")
+    at = _gemini_log(tmp_path, minutes_ago=5, retry="14580")
 
     snapshot = collect_all(
         Environment(hermes_home=tmp_path),
@@ -821,8 +821,10 @@ def test_the_cron_path_turns_a_daily_429_into_an_event(tmp_path: Path) -> None:
     )
 
     events = [(i.incident_id, i.severity, i.title) for i in snapshot.incidents]
-    assert ("gemini:day_quota", "warning", "Gemini out of quota 5 min ago") in events
+    assert ("gemini:day_quota", "warning", "Gemini daily limit used up") in events
     assert snapshot.overall == "warning"
+    gemini = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+    assert gemini.refusal is not None and gemini.refusal.at == at
 
 
 def test_a_per_minute_429_leaves_a_fresh_screen_green_and_a_daily_one_turns_it_yellow(

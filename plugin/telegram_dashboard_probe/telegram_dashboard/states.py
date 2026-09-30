@@ -381,7 +381,7 @@ def _gemini_states() -> tuple[State, ...]:
             "Gemini day quota hit",
             _showcase_snapshot(
                 "warning",
-                incidents=(Incident("gemini:day_quota", "warning", "Gemini out of quota 2 h ago"),),
+                incidents=(Incident("gemini:day_quota", "warning", "Gemini daily limit used up"),),
                 capacity=_gemini_limits(day),
             ),
             _delivery_ok(_S_MINUS_2M),
