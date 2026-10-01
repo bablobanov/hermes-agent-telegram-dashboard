@@ -121,10 +121,11 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
     assert "1000" in runs["contract"]
     assert "0.21.3" in runs["verified"]
 
-    assert (
-        "_updates_received_total" in traffic["probe"] and "_send_path_degraded" in traffic["probe"]
-    )
+    assert "_updates_received_total" in traffic["probe"]
+    assert "public property send_path_degraded" in traffic["probe"]
+    assert "_send_path_degraded" not in traffic["probe"]  # the private flag is not read
     assert "attribute" in traffic["contract"] and "never" in traffic["contract"]
+    assert "0.21.1" in traffic["verified"] and "base.py:2007" in traffic["verified"]["0.21.3"]
     assert "capability" in traffic["caveat"] and "promise" in traffic["caveat"]
     assert "0.21.3" in traffic["verified"] and "main" in traffic["verified"]
     assert "Failed to send Telegram message" in traffic["contract"]

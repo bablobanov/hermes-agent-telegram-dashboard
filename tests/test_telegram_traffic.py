@@ -1,5 +1,6 @@
 """``telegram_traffic``: whether messages move through an adapter that says it is connected,
-from the four counters the adapter keeps for itself, read off the live object as attributes."""
+from the counters the adapter keeps for itself and its public send gate, read off the live
+object as attributes."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,7 +27,7 @@ def _adapter(**over):
         "_polling_generation": 3,
         "_polling_last_progress_monotonic": 990.0,
         "_polling_generation_started_monotonic": 100.0,
-        "_send_path_degraded": False,
+        "send_path_degraded": False,
     }
     fields.update(over)
     return SimpleNamespace(**fields)
@@ -140,12 +141,12 @@ def test_gaps_older_than_seven_days_are_dropped(tmp_path: Path) -> None:
 
 def test_sends_blocked_is_definite_after_the_reconnect_grace_only(tmp_path: Path) -> None:
     young = _probe(
-        _send_path_degraded=True,
+        send_path_degraded=True,
         _polling_generation_started_monotonic=950.0,
         _polling_last_progress_monotonic=None,
     )
     old = _probe(
-        _send_path_degraded=True,
+        send_path_degraded=True,
         _polling_generation_started_monotonic=100.0,
         _polling_last_progress_monotonic=None,
     )

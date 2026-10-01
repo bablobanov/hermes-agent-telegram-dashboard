@@ -332,10 +332,12 @@ taken from it. `python -m telegram_dashboard --demo 3`, `21` and `22` show the f
 
 `Gateway ✓ · Telegram ✓` says the adapter is running: `is_connected` on the engine's adapter is
 literally "the adapter was started", nothing about updates arriving or replies leaving. The
-adapter keeps counters of its own for that, and the plugin reads five of them off the live
+adapter keeps counters of its own for that, and the plugin reads four of them off the live
 adapter object it already holds, as attributes, once per tick, calling nothing on it:
-`_updates_received_total`, `_polling_generation`, `_polling_last_progress_monotonic`,
-`_polling_generation_started_monotonic` and `_send_path_degraded` (`telegram_traffic.py`).
+`_updates_received_total`, `_polling_generation`, `_polling_last_progress_monotonic` and
+`_polling_generation_started_monotonic`, plus one public property beside them,
+`send_path_degraded` (declared on `BasePlatformAdapter`, overridden by the Telegram adapter;
+`telegram_traffic.py`).
 
 Three verdicts replace the tick on the line while the adapter says connected:
 
@@ -364,12 +366,14 @@ at that level: the last successful send the plugin can vouch for is its own conf
 path, which holds no adapter) the line keeps its old word and the details say `Telegram traffic:
 no data` with the reason. `python -m telegram_dashboard --demo 23` shows the form.
 
-**Five private attributes, read as a capability, not a promise.** Like `_edit_text` for the
-HTML form, these are not part of the engine's public contract: a future adapter that renames or
-retypes them degrades the line to no data with the reason and never raises inside the adapter
-(`tests/test_invariants.py` pins that nothing is called on it). The plugin's catalog entry
-discloses this on a line of its own, and a public snapshot of the channel's health on the
-adapter is the upstream change that would turn the capability into a contract.
+**Four private attributes, read as a capability, not a promise; one public property.** The send
+gate, `send_path_degraded`, is the adapter's public API since 0.21.1 and is read as such. The
+four polling attributes are not part of the engine's public contract: like `_edit_text` for the
+HTML form, a future adapter that renames or retypes them degrades the line to no data with the
+reason and never raises inside the adapter (`tests/test_invariants.py` pins that nothing is
+called on it). The plugin's catalog entry discloses the two on lines of their own, and a public
+snapshot of the polling state on the adapter is the upstream change that would turn the
+capability into a contract.
 
 ### The backup line
 

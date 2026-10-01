@@ -1035,7 +1035,8 @@ def test_external_sources_reach_the_collector_with_their_own_cache_and_the_perio
 
 
 class CountingAdapter(FakeAdapter):
-    """The engine's four counters on the fake: what the plugin reads off the live adapter."""
+    """The engine's four counters and its public send gate on the fake: what the plugin reads
+    off the live adapter."""
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -1043,7 +1044,7 @@ class CountingAdapter(FakeAdapter):
         self._polling_generation = 1
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_generation_started_monotonic = time.monotonic() - 600
-        self._send_path_degraded = False
+        self.send_path_degraded = False
 
 
 def _alive(monkeypatch: pytest.MonkeyPatch, runtime: Any, home: Path) -> None:
@@ -1092,7 +1093,7 @@ def test_a_degraded_send_path_on_an_old_generation_is_the_word_on_the_line(
     runtime = plugin.register(ctx)
     _alive(monkeypatch, runtime, tmp_path)
     adapter = CountingAdapter()
-    adapter._send_path_degraded = True
+    adapter.send_path_degraded = True
     adapter._polling_last_progress_monotonic = None
 
     async def scenario() -> None:

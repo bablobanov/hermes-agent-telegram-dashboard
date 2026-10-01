@@ -2,14 +2,17 @@
 
 ``is_connected`` on the engine's adapter is ``self._running``: the adapter was started. It says
 nothing about updates arriving or replies leaving (hermes-agent#102260, #111727, #104799). The
-adapter keeps four counters of its own for that, and this module reads them off the live object
-the plugin already holds, as attributes, never calling it: ``_updates_received_total`` (updates
-Telegram handed to getUpdates in this polling generation), ``_polling_generation`` (reset on every
-reconnect), ``_polling_last_progress_monotonic`` (the last successful getUpdates round-trip) and
-``_send_path_degraded`` (``send()`` answers ``send_path_degraded`` while it is set; the dashboard's
-own edit does not check it, so the screen can move while every reply fails). A private attribute
-is a capability read off the object, never a promise: absent or of another type, the line says
-no data and why (``compat_matrix.json``, row ``telegram_traffic``).
+adapter keeps counters of its own for that, and this module reads them off the live object the
+plugin already holds, as attributes, never calling it: four private polling attributes,
+``_updates_received_total`` (updates Telegram handed to getUpdates in this polling generation),
+``_polling_generation`` (reset on every reconnect), ``_polling_last_progress_monotonic`` (the last
+successful getUpdates round-trip) and ``_polling_generation_started_monotonic``, and one public
+property, ``send_path_degraded`` (declared on ``BasePlatformAdapter``, overridden by the Telegram
+adapter over its private flag; ``send()`` answers ``send_path_degraded`` while it is set, and the
+dashboard's own edit does not check it, so the screen can move while every reply fails). The
+property is the adapter's contract; a private attribute is a capability read off the object,
+never a promise: absent or of another type, the line says no data and why
+(``compat_matrix.json``, row ``telegram_traffic``).
 
 Two verdicts are definite: the send path degraded past the reconnect grace (``no_sends``), and no
 polling progress for ``STALL_SECONDS`` (``stalled``). One is a suspicion: no update for longer than
@@ -48,7 +51,7 @@ ATTR_RECEIVED = "_updates_received_total"
 ATTR_GENERATION = "_polling_generation"
 ATTR_PROGRESS = "_polling_last_progress_monotonic"
 ATTR_GENERATION_STARTED = "_polling_generation_started_monotonic"
-ATTR_DEGRADED = "_send_path_degraded"
+ATTR_DEGRADED = "send_path_degraded"
 STALL_SECONDS = 300.0
 RECONNECT_GRACE_SECONDS = 120.0
 QUIET_FLOOR_SECONDS = 6 * 3600.0
