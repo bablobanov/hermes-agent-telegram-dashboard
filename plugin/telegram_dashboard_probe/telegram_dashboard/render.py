@@ -229,8 +229,12 @@ def render_dashboard(
                 f"- Failed: {work.failed} · Unknown: {work.unknown}",
             ]
         )
-    lines.extend(details.lines())
-    return bound_text("\n".join(lines))
+    text = "\n".join([*lines, *details.lines()])
+    # The version closes the details (0.9.2): a cut takes the lines before it, never the version.
+    closing = f"\n>\n{_DETAILS_PREFIX}{details.version}"
+    if len(text) <= _SAFE_LIMIT or not text.endswith(closing):
+        return bound_text(text)
+    return bound_text(text.removesuffix(closing), _SAFE_LIMIT - len(closing)) + closing
 
 
 def _freshness(

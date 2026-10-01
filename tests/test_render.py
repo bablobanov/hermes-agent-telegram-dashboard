@@ -1215,6 +1215,32 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
     assert bare[-2:] == ["> ## Details", f"> Dashboard {__version__}"]
 
 
+def test_a_message_cut_at_the_limit_keeps_the_dashboard_s_version_last() -> None:
+    """Review of 0.9.2: an over-long message is cut from its end, and the version now closes the
+    details; the cut takes the lines before it, the version stays whole after a blank line."""
+    from telegram_dashboard import __version__
+    from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
+
+    failing = tuple(
+        CronFailure(
+            f"j{i}", f"nightly-report-{i:03d}", "run", at=NOW.isoformat(), streak=1, reason="x"
+        )
+        for i in range(80)
+    )
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        cron=CronSummary("failing", active=80, failing=failing),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+    lines = text.splitlines()
+
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert lines[-3].endswith("…")  # the cut, before the version
+    assert lines[-2:] == [">", f"> Dashboard {__version__}"]
+
+
 # ----------------------------------------------------------------------------- review of 01.10
 
 
