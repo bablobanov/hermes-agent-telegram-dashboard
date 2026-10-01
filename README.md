@@ -349,7 +349,7 @@ adapter object it already holds, as attributes, once per tick, calling nothing o
 `send_path_degraded` (declared on `BasePlatformAdapter`, overridden by the Telegram adapter;
 `telegram_traffic.py`).
 
-Three verdicts replace the tick on the line while the adapter says connected:
+Three verdicts replace the ✓ on the line while the adapter says connected:
 
 ```
 Gateway ✓ · Telegram ⚠️ no sends   the adapter's own send gate is closed past the 120 s reconnect
