@@ -486,11 +486,11 @@ def _cron_states() -> tuple[State, ...]:
 
 
 # The narrow phone state (24, 0.9.1): the showcase installation with the two lines that wrapped
-# on a phone on 01.10, kept shorter on purpose: Claude's marked line with two windows writes its
-# times coarse (one unit, rounded up), and an event with a name beyond ASCII is cut at eight. The
-# mark on the Claude line is the provider's own ``warning`` on the week, as it was on that phone;
-# the week resets exactly four days away. The event is a literal; ``test_states`` holds it to
-# what ``cron_jobs.incidents_for`` builds for the record.
+# on a phone on 01.10. An event with a name beyond ASCII is cut at eight; Claude's marked line
+# with two windows keeps its exact times since 0.9.2 (Ilya, 01.10: accuracy over width) and wraps
+# on the narrow phone. The mark on the Claude line is the provider's own ``warning`` on the week,
+# as it was on that phone; the week resets exactly four days away. The event is a literal;
+# ``test_states`` holds it to what ``cron_jobs.incidents_for`` builds for the record.
 _S_IN_3H34M = "2026-09-27T00:34:00+00:00"
 _S_IN_4D = "2026-09-30T21:00:00+00:00"
 

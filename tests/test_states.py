@@ -18,9 +18,10 @@ STATES = all_states()
 # A phone shows about 30 characters per line and about 15 lines of a message; emoji are wider
 # than letters, so the columns are tighter than the count suggests. The lines are counted as the
 # phone shows them: the blank line before the collapsed Details is one of them (decision of
-# 01.10, when the cron line made the healthy screen 15 lines). The 32 is a guide (decision of
-# 01.10, from Ilya's phone): a marked limits line keeps to 31 and an event with a name beyond
-# ASCII is cut at eight, see test_render and test_cron_jobs.
+# 01.10, when the cron line made the healthy screen 15 lines). The 32 is a guide (decisions of
+# 01.10, from Ilya's phone) for every line of the main part but the limits block: a limits line
+# keeps its exact times and wraps when it must (0.9.2), and an event with a name beyond ASCII is
+# cut at eight, see test_render and test_cron_jobs.
 PHONE_LINES = 15
 PHONE_COLUMNS = 32
 
@@ -34,6 +35,16 @@ def _render(state) -> str:
 def _main_part(text: str) -> list[str]:
     lines = text.splitlines()
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
+
+
+def _held_to_width(main: list[str]) -> list[str]:
+    """The lines the 32 is a guide for: the main part without the limits block, from its
+    heading to the blank line after it."""
+    if "## 🧠 Limits used" not in main:
+        return main
+    start = main.index("## 🧠 Limits used")
+    end = next((i for i in range(start, len(main)) if not main[i]), len(main))
+    return main[:start] + main[end:]
 
 
 def test_twenty_four_states_are_defined_and_numbered() -> None:
@@ -71,7 +82,7 @@ def test_state_1_all_normal_is_green_and_names_coverage() -> None:
     assert "Drift ✓ 0 of 474" in lines
     # Two windows in the provider's order, each with the time to its own reset: one countdown
     # after two numbers would say nothing.
-    assert "Claude 37% (3h) · 12% (4d)" in lines
+    assert "Claude 37% (3h) · 12% (4d3h)" in lines
     assert "Gemini · no data" in lines
     assert "> Gemini: source not confirmed" in lines
     assert "> Profiles 1/1 · sources 3/3" in lines
@@ -87,7 +98,7 @@ def test_state_1_is_this_exact_screen() -> None:
         "Drift ✓ 0 of 474",
         "",
         "## 🧠 Limits used",
-        "Claude 37% (3h) · 12% (4d)",
+        "Claude 37% (3h) · 12% (4d3h)",
         "Codex 61% (2h30m)",
         "Gemini · no data",
         "Grok · no data",
@@ -115,7 +126,7 @@ def test_state_1_fits_one_phone_screen() -> None:
     main = _main_part(_render(STATES[0]))
 
     assert len(main) <= PHONE_LINES, main
-    assert max(len(line) for line in main) <= PHONE_COLUMNS, main
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS, main
 
 
 def test_state_2_polling_dead_puts_the_incident_first() -> None:
@@ -213,7 +224,8 @@ def test_state_13_is_three_releases_behind_as_information_only() -> None:
     assert "> Hermes 0.20.5 of Aug 21, latest 0.21.1 of Sep 7" in lines
     assert "> 3 releases behind · checked Sep 9 21:00" in lines
     assert "⚠" not in text
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
 
 
 SHOWCASE_HEALTHY = [
@@ -247,7 +259,8 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
 
     assert state.title == "Showcase: every line of a healthy screen"
     assert main == SHOWCASE_HEALTHY
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
     assert "> Confirmed 20:58" in lines
@@ -284,7 +297,7 @@ def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident()
         "- Config drift: 3 of 481 keys",
         *SHOWCASE_HEALTHY[5:],
     ]
-    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the drift line and the spent limit
     assert "🟢 Healthy" not in text
     assert "> Confirmed 20:58" in lines
@@ -338,7 +351,7 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
         *SHOWCASE_HEALTHY[8:],
     ]
     # An exception is never pushed out, so only the width is the budget here.
-    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert "> Profiles 1/1 · sources 11/11" in lines
     assert not any(line.startswith("> Claude Sonnet") for line in lines)
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
@@ -370,7 +383,7 @@ def test_state_18_external_source_says_the_login_expired() -> None:
         "Claude · login expired",
         *SHOWCASE_HEALTHY[8:],
     ]
-    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert "> Profiles 1/1 · sources 11/11" in lines
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login ended Sep 26" in lines
@@ -412,7 +425,8 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
 
     assert state.title == "Gemini minute quota hit"
     assert main == [*SHOWCASE_HEALTHY[:9], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[10:]]
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
     assert "Needs attention" not in text
     assert (
@@ -443,7 +457,7 @@ def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
         "⚠️ Gemini paused till 23:00",
         *SHOWCASE_HEALTHY[10:],
     ]
-    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 2
     assert (
         "> Gemini refusals seen by Hermes: last Sep 26 18:57, daily limit till Sep 26 23:00, "
@@ -495,7 +509,7 @@ def test_state_21_a_run_failed_three_times_in_a_row() -> None:
         "- Cron run failed: daily-digest",
         *SHOWCASE_HEALTHY[5:],
     ]
-    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert (
         "> Cron daily-digest: run failed Sep 26 20:05, 3 in a row (rate limit)" in text.splitlines()
     )
@@ -530,16 +544,16 @@ def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
     assert len(main) <= PHONE_LINES + 3
 
 
-def test_state_24_the_narrow_phone_keeps_the_two_lines_that_wrapped_shorter() -> None:
-    """0.9.1, decision of 01.10 from Ilya's phone: the 32 is a guide; a marked limits line keeps
-    to 31 with its times coarse (one unit, rounded up), and an event with a name beyond ASCII is
-    cut at eight. The event is a literal, held to what ``cron_jobs.incidents_for`` builds for
-    the same record; the showcase's own marked line (31, Codex) keeps its minutes."""
+def test_state_24_the_narrow_phone_keeps_the_exact_times_and_the_short_event() -> None:
+    """0.9.1, decisions of 01.10 from Ilya's phone: the 32 is a guide and an event with a name
+    beyond ASCII is cut at eight. 0.9.2: the marked Claude line keeps its exact times at 32 and
+    wraps on the narrow phone, which is accepted. The event is a literal, held to what
+    ``cron_jobs.incidents_for`` builds for the same record."""
     state = STATES[23]
     text = _render(state)
     main = _main_part(text)
     healthy = [
-        "⚠️ Claude 29% (4h) · 87% (4d)" if line.startswith("Claude ") else line
+        "⚠️ Claude 29% (3h34m) · 87% (4d)" if line.startswith("Claude ") else line
         for line in SHOWCASE_HEALTHY
     ]
 
@@ -551,12 +565,12 @@ def test_state_24_the_narrow_phone_keeps_the_two_lines_that_wrapped_shorter() ->
         "",
         "## Needs attention",
         "- Cron undelivered: Утренняя…",
-        *healthy[5:],  # the Claude line: 3h34m up to 4h, the week exactly four days away
+        *healthy[5:],  # the Claude line exact, the week exactly four days away
     ]
     assert "⚠️ Codex 93% (1h20m) · 58% (5d)" in main
     # The events block adds three lines to the healthy form; an exception is never pushed out.
     assert len(main) <= PHONE_LINES + 3
-    assert max(len(line) + (1 if line.startswith("⚠️") else 0) for line in main) <= PHONE_COLUMNS
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert (
         "> Cron Утренняя сводка проекта: not delivered Sep 26 20:05, 1 run (chat unavailable)"
         in text.splitlines()

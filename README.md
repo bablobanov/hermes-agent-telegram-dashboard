@@ -41,8 +41,8 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 One phone screen, about thirty characters per line, then a details block that Telegram shows
 collapsed. The width is a guide, not a law: a phone sets a proportional font, so a line of the
 same count fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a Latin
-one), and the two lines seen to wrap on a phone are kept shorter on purpose, a marked limits
-line and an event with a name beyond ASCII:
+one). An event with a name beyond ASCII is kept shorter on purpose; the time of a limit is never
+rounded for the width, and a long limits line wraps:
 
 ```
 🟢 Healthy · Sep 25 12:21 +05       status and the dated data stamp (the pinned header shows it)
@@ -473,16 +473,13 @@ log").
 An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
 screen is spent, never remaining, from every source; the heading says `🧠 Limits used`) and the
-time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
-days from two days on (`4d`), `(?)` when the reset date cannot be read. A line with the warning
-mark keeps one character under the phone line (the mark renders wider than the two characters
-it counts for) and, when the full times do not fit, writes them coarse, one unit rounded up:
-whole days from a day on, whole hours under it, the minutes under an hour as they are
-(`⚠️ Claude 29% (4h) · 87% (4d)`); the time is when the quota is back, and a line never
-promises it earlier. An unmarked line keeps its minutes. The coarse line is never cut: with a
-window at 100% and a reset that needs three characters (`45m`, `23h`) it can still reach 32
-and may wrap on a narrow phone. The mark comes from 90%
-spent in any window, or from a window the provider itself calls `warning` or `critical`. A
+time to that window's reset, never earlier than the real one: the time is when the quota is
+back. Under a day it goes to the minute, rounded up (`45m`, `1h21m`, `23h59m`); from a day on to
+the hour, the hour rounded up (`1d`, `1d5h`, `4d3h` for four days, two hours and 37 minutes); a
+zero second unit is not written (`3h`, `4d`); `(?)` when the reset date cannot be read. The time
+of a limit is never rounded for the width: a line with two windows and the warning mark can pass
+the phone line and wraps on a narrow phone (`⚠️ Claude 29% (3h34m) · 87% (4d)`), a number and a
+time stay whole. The mark comes from 90% spent in any window, or from a window the provider itself calls `warning` or `critical`. A
 window carries no length label: the share and its reset are what the reader acts on, the plan
 (where the provider names it) is in the details, and a length the source does not state would
 be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on some

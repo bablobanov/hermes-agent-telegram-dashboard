@@ -595,23 +595,15 @@ def _limit_kind(refusal: Refusal, zone: tzinfo) -> str | None:
 def _windows_line(
     provider: str, windows: tuple[QuotaWindow, ...], reference: datetime | None
 ) -> str:
-    """``Claude 37% (3h) · 12% (4d)``: every window in the provider's own order, each with the
-    time to its reset. A line without a number says the provider's states in words. The marked
-    line keeps to the phone line (decision of 01.10, from Ilya's phone): the mark renders wider
-    than the two characters it counts for, so a marked line keeps one character under
-    ``_LINE_COLUMNS``, and one still too long writes its times coarse (``_duration_words``); it
-    is never cut, a number stays whole. An unmarked line is as it was: the account's two windows
-    never pass the line without the mark, and a longer one wraps with or without its minutes."""
+    """``Claude 37% (3h) · 12% (4d3h)``: every window in the provider's own order, each with the
+    time to its reset. A line without a number says the provider's states in words. The line is
+    never shortened to keep to the phone line (Ilya, 01.10, 0.9.2: accuracy over width): a long
+    one wraps, its times stay exact and a number stays whole."""
     numbered = [window.used_percent for window in windows if window.used_percent is not None]
     words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
         return f"{provider} · {words}"
-    mark = _mark(windows)
-    line = f"{mark}{provider} {words}"
-    if not mark or len(line) < _LINE_COLUMNS:
-        return line
-    coarse = " · ".join(_window_words(window, reference, coarse=True) for window in windows)
-    return f"{mark}{provider} {coarse}"
+    return f"{_mark(windows)}{provider} {words}"
 
 
 def _mark(windows: tuple[QuotaWindow, ...]) -> str:
@@ -624,13 +616,13 @@ def _mark(windows: tuple[QuotaWindow, ...]) -> str:
     return ""
 
 
-def _window_words(window: QuotaWindow, reference: datetime | None, *, coarse: bool = False) -> str:
+def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
     """``37% (3h)``, ``Opus 5% (4d)``, ``Fable 100% (4h)``; the provider's state in words when
     it gave no number; ``?`` otherwise. A state in words never becomes a number."""
     scope = window.scope or _SCOPE_LABELS.get(window.label)
     head = f"{scope} " if scope else ""
     if window.used_percent is not None:
-        suffix = _reset_suffix(window.reset_at, reference, coarse=coarse)
+        suffix = _reset_suffix(window.reset_at, reference)
         return f"{head}{window.used_percent:.0f}%{suffix}"
     return f"{head}{window.note or '?'}"
 
@@ -640,13 +632,13 @@ def _warn(percent: float) -> str:
     return f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
 
 
-def _reset_suffix(value: object, reference: datetime | None, *, coarse: bool = False) -> str:
+def _reset_suffix(value: object, reference: datetime | None) -> str:
     """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
     reset date at all."""
     if not value:
         return ""
     minutes = _minutes_until(value, reference)
-    words = _duration_words(minutes, coarse=coarse) if minutes is not None else "?"
+    words = _duration_words(minutes) if minutes is not None else "?"
     return f" ({words})"
 
 
@@ -662,24 +654,16 @@ def _minutes_until(value: object, reference: datetime | None) -> int | None:
     return max(0, math.ceil(ahead / 60))
 
 
-def _duration_words(minutes: int, *, coarse: bool = False) -> str:
-    """The status-line form: whole days from two days on (``4d``), ``1d5h`` or ``24h`` on the
-    first day, then ``1h21m``, ``3h`` and ``45m``. Coarse, for a line that would not keep to the
-    phone line otherwise: one unit, rounded up (decision of 01.10: the time is when the quota is
-    back, and a line must never promise it earlier), whole days from a day on (``1d5h`` →
-    ``2d``), whole hours under it (``3h34m`` → ``4h``), the minutes under an hour as they are."""
-    if coarse:
-        if minutes >= _MINUTES_PER_DAY:
-            return f"{math.ceil(minutes / _MINUTES_PER_DAY)}d"
-        if minutes >= 60:
-            return f"{math.ceil(minutes / 60)}h"
-        return f"{minutes}m"
-    days, rest = divmod(minutes, _MINUTES_PER_DAY)
-    hours, mins = divmod(rest, 60)
-    if days >= 2:
-        return f"{days}d"
-    if days == 1:
-        return f"1d{hours}h" if hours else "24h"
+def _duration_words(minutes: int) -> str:
+    """The time to a reset, never earlier than the real one (Ilya, 01.10, 0.9.2): the time is
+    when the quota is back. Under a day to the minute (``3h34m``, ``45m``, the minutes already
+    rounded up by ``_minutes_until``); from a day on to the hour, the hour rounded up
+    (``4d2h37m`` → ``4d3h``, ``1d23h59m`` → ``2d``). A zero second unit is not written (``3h``,
+    ``4d``)."""
+    if minutes >= _MINUTES_PER_DAY:
+        days, hours = divmod(math.ceil(minutes / 60), 24)
+        return f"{days}d{hours}h" if hours else f"{days}d"
+    hours, mins = divmod(minutes, 60)
     if hours:
         return f"{hours}h{mins}m" if mins else f"{hours}h"
     return f"{mins}m"
