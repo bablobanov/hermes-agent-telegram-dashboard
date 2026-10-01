@@ -287,7 +287,7 @@ sighting of a blocked send path and the last send error the engine logged.
 ### The cron line
 
 ```
-Cron ✓ 27 jobs                      active jobs (enabled, no pause marker: scheduled, running, or parked in error); paused in the details
+Cron ✓ 27 jobs                      active jobs (enabled and without a pause marker: scheduled or running; or enabled and parked in error); paused in the details
 Cron ⚠️ 2 of 27 failing             a run failed, a result was not delivered, a job is blocked or overdue
 Cron ⚠️ ticker silent 12 min        no heartbeat for longer than the engine's own threshold (200 s)
 Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in an error
@@ -475,12 +475,13 @@ it, in the provider's own order, as `N% (time to reset)`: the spent share (every
 screen is spent, never remaining, from every source; the heading says `🧠 Limits used`) and the
 time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
 days from two days on (`4d`), `(?)` when the reset date cannot be read. A line with the warning
-mark keeps one character under the phone line (the mark is an emoji two columns wide) and, when
-the full times do not fit, writes them coarse, one unit rounded up, whole hours under a day and
-whole days from a day on (`⚠️ Claude 29% (4h) · 87% (4d)`): the time is when the quota is back,
-and a line never promises it earlier. It is never cut, and the one shape that still reaches 32,
-both windows at 100% with one reset under an hour and the other within the day, may wrap on a
-narrow phone. The mark comes from 90%
+mark keeps one character under the phone line (the mark renders wider than the two characters
+it counts for) and, when the full times do not fit, writes them coarse, one unit rounded up:
+whole days from a day on, whole hours under it, the minutes under an hour as they are
+(`⚠️ Claude 29% (4h) · 87% (4d)`); the time is when the quota is back, and a line never
+promises it earlier. An unmarked line keeps its minutes. The coarse line is never cut: with a
+window at 100% and a reset that needs three characters (`45m`, `23h`) it can still reach 32
+and may wrap on a narrow phone. The mark comes from 90%
 spent in any window, or from a window the provider itself calls `warning` or `critical`. A
 window carries no length label: the share and its reset are what the reader acts on, the plan
 (where the provider names it) is in the details, and a length the source does not state would
