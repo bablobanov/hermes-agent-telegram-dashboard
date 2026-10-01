@@ -528,3 +528,13 @@ def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
     )
     # The events block adds three lines to the healthy form; an exception is never pushed out.
     assert _screen_lines(main) <= PHONE_LINES + 3
+
+
+def test_the_cron_states_carry_what_the_collector_builds() -> None:
+    """The demo events of states 3, 21 and 22 are literals; they must stay what ``cron_jobs``
+    says for the same block."""
+    from telegram_dashboard.cron_jobs import incidents_for
+
+    for state in (STATES[2], STATES[20], STATES[21]):
+        assert state.snapshot.cron is not None
+        assert incidents_for(state.snapshot.cron, now=state.now) == state.snapshot.incidents

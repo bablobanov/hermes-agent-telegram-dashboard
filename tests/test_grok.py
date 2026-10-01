@@ -564,6 +564,8 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
         "gemini_log",
         "drift",
         "backup",
+        "cron",
+        "cron_runs",
     ]
     grok_quota = next(q for q in second.capacity.quotas if q.provider == "Grok")
     assert grok_quota.kind == "official" and grok_quota.fetched_at == NOW.isoformat()

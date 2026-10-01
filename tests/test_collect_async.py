@@ -146,6 +146,8 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
         "gemini_log",
         "drift",
         "backup",
+        "cron",
+        "cron_runs",
     }
     assert by_name[source_name].state == "unavailable"
     assert "KeyError" in (by_name[source_name].detail or "")
@@ -176,6 +178,8 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
         "gemini_log",
         "drift",
         "backup",
+        "cron",
+        "cron_runs",
     ]
     assert all(source.state == "unsupported" for source in snapshot.sources)
 
@@ -598,3 +602,140 @@ def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
 
     providers = [q.provider for q in snapshot.capacity.quotas]
     assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
+
+
+# ----------------------------------------------------------------------------- cron (0.9.0)
+#
+# The cron block on the tick: jobs.json and the ticker stamps on the loop (two small files), the
+# run history in a worker under the tick's deadline. The history is never a reason for "no data"
+# on the cron line: a database that cannot be read is one unavailable source.
+
+
+def _cron_home(tmp_path: Path, jobs: list[dict], heartbeat_ago: float = 30.0) -> None:
+    from datetime import timedelta
+
+    cron = tmp_path / "cron"
+    cron.mkdir(exist_ok=True)
+    (cron / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    stamp = (NOW - timedelta(seconds=heartbeat_ago)).timestamp()
+    (cron / "ticker_heartbeat").write_text(str(stamp), encoding="utf-8")
+
+
+def _job(**over) -> dict:
+    base = {"id": "b1", "name": "daily-digest", "enabled": True, "state": "scheduled"}
+    base.update(over)
+    return base
+
+
+def test_the_cron_line_is_collected_on_the_tick_with_its_sources(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    _cron_home(tmp_path, [_job(last_status="ok")])
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            cron_cache={},
+        )
+    )
+
+    assert snapshot.cron is not None
+    assert (snapshot.cron.state, snapshot.cron.active) == ("ok", 1)
+    states = {s.name: s.state for s in snapshot.sources}
+    assert states["cron"] == "fresh" and states["cron_runs"] == "unsupported"
+
+
+def test_a_failure_erased_between_ticks_is_held_from_the_runs_db(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Review focus 4 (#118354): a delivery that failed and a run that succeeded after it, both
+    between two ticks; jobs.json shows the ok run only, the history shows the failure, the details
+    keep it with the run that replaced it."""
+    from datetime import timedelta
+
+    from cron_fixtures import make_db
+
+    recovered = (NOW - timedelta(minutes=5)).isoformat()
+    _cron_home(tmp_path, [_job(last_status="ok", last_run_at=recovered)])
+    make_db(tmp_path, [("b1", "completed", "failed", (NOW - timedelta(minutes=20)).isoformat())])
+    cache: dict = {"runs_checked_at": (NOW - timedelta(minutes=30)).isoformat()}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            cron_cache=cache,
+        )
+    )
+
+    cron = snapshot.cron
+    assert cron is not None and cron.state == "ok" and cron.failing == ()
+    assert [(h.kind, h.recovered_at) for h in cron.held] == [("delivery", recovered)]
+    assert snapshot.incidents == ()
+    assert cache["runs_checked_at"] == NOW.isoformat()
+
+
+def test_the_runs_db_missing_its_deadline_keeps_the_cron_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """Review focus 5: the history read hangs; the line and the events stand on jobs.json, the
+    streak is unknown, the history is one unavailable source with the reason, and the status is
+    the delivery failure's, not "unknown" for the missed history."""
+    from telegram_dashboard.workers import Flights
+
+    def slow(env, *, since, streak_for, now):
+        time.sleep(0.3)
+        return None, collect.SourceObservation("cron_runs", "official", "fresh")
+
+    monkeypatch.setattr(collect, "read_runs", slow)
+    _cron_home(
+        tmp_path,
+        [_job(last_status="delivery_failed", last_delivery_error="Not connected")],
+    )
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=Flights(),
+            cron_cache={},
+            cron_timeout_seconds=0.05,
+        )
+    )
+
+    assert snapshot.cron is not None and snapshot.cron.state == "failing"
+    assert snapshot.cron.failing[0].streak is None
+    source = next(s for s in snapshot.sources if s.name == "cron_runs")
+    assert (source.state, source.detail) == ("unavailable", "history read timed out")
+    assert snapshot.overall == "warning"
+
+
+def test_a_cron_collector_that_crashes_is_one_unavailable_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    def crash(env, *, now):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(collect, "scan_cron", crash)
+    _cron_home(tmp_path, [])
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            cron_cache={},
+        )
+    )
+
+    source = next(s for s in snapshot.sources if s.name == "cron")
+    assert (source.state, source.detail) == ("unavailable", "collector crashed: RuntimeError")
+    assert snapshot.cron is not None and snapshot.cron.state == "unknown"

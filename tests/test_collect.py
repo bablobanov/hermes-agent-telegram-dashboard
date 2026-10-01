@@ -414,6 +414,8 @@ def test_collect_all_composes_without_any_source(tmp_path: Path) -> None:
         "gemini_log": "unsupported",
         "drift": "unsupported",
         "backup": "unsupported",
+        "cron": "unsupported",
+        "cron_runs": "unsupported",
     }
 
 
@@ -890,3 +892,51 @@ def test_every_provider_has_one_line_when_the_facade_cannot_answer(
 
     providers = [q.provider for q in snapshot.capacity.quotas]
     assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
+
+
+# ---------------------------------------------------------------- cron (0.9.0)
+
+
+def test_the_cron_line_on_the_cron_path_takes_its_streak_from_the_history(tmp_path: Path) -> None:
+    """The synchronous composition reads jobs.json and the history in one go: the delivery
+    failure is on the line with the streak the history counts, both sources fresh, the record
+    stamped."""
+    from datetime import timedelta
+
+    from cron_fixtures import make_db
+
+    cron = tmp_path / "cron"
+    cron.mkdir()
+    job = {
+        "id": "b1",
+        "name": "daily-digest",
+        "enabled": True,
+        "state": "scheduled",
+        "last_status": "delivery_failed",
+        "last_delivery_error": "Not connected",
+        "last_run_at": (NOW - timedelta(minutes=5)).isoformat(),
+    }
+    (cron / "jobs.json").write_text(json.dumps({"jobs": [job]}), encoding="utf-8")
+    make_db(
+        tmp_path,
+        [
+            ("b1", "completed", "failed", (NOW - timedelta(minutes=5)).isoformat()),
+            ("b1", "completed", "failed", (NOW - timedelta(minutes=35)).isoformat()),
+        ],
+    )
+    cache: dict = {}
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: None,
+        cron_cache=cache,
+    )
+
+    assert snapshot.cron is not None and snapshot.cron.state == "failing"
+    assert snapshot.cron.failing[0].streak == 2
+    assert [i.title for i in snapshot.incidents] == ["Cron undelivered: daily-digest"]
+    states = {s.name: s.state for s in snapshot.sources}
+    assert states["cron"] == "fresh" and states["cron_runs"] == "fresh"
+    assert cache["runs_checked_at"] == NOW.isoformat()

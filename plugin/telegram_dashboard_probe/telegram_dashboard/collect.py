@@ -21,13 +21,18 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
 from .backup import BackupPart, collect_backup
 from .compat import Environment, ProbeResult
+from .cron_jobs import SOURCE_NAME as CRON
+from .cron_jobs import CronPart, Scan, assemble_cron, scan_cron
+from .cron_runs import LOOKBACK_SECONDS as RUNS_LOOKBACK_SECONDS
+from .cron_runs import SOURCE_NAME as CRON_RUNS
+from .cron_runs import Runs, RunsPart, read_runs
 from .external import TICK_TIMEOUT_SECONDS as EXTERNAL_TICK_TIMEOUT_SECONDS
 from .external import Source as ExternalSource
 from .external import fetch_item as external_fetch_item
@@ -56,6 +61,7 @@ from .schema import (
     BackupSummary,
     CapacitySummary,
     Coverage,
+    CronSummary,
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
@@ -65,6 +71,7 @@ from .schema import (
     QuotaWindow,
     SourceObservation,
     SourceState,
+    TrafficSummary,
     VersionSummary,
 )
 from .timeparse import age_seconds, is_from_the_future, parse_timestamp
@@ -854,6 +861,8 @@ def build_snapshot(
     coverage: Coverage | None = None,
     backup: BackupSummary | None = None,
     version: VersionSummary | None = None,
+    cron: CronSummary | None = None,
+    traffic: TrafficSummary | None = None,
 ) -> DashboardSnapshot:
     ordered = tuple(sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))[:5])
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
@@ -869,6 +878,8 @@ def build_snapshot(
         backup=backup,
         sources=sources,
         version=version,
+        cron=cron,
+        traffic=traffic,
     )
 
 
@@ -888,6 +899,7 @@ def collect_all(
     external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
     external_fetch: ExternalFetch | None = None,
     gemini_cache: dict[str, Any] | None = None,
+    cron_cache: dict[str, Any] | None = None,
 ) -> DashboardSnapshot:
     externals = _externals_sync(
         env,
@@ -899,6 +911,14 @@ def collect_all(
     gateway, gateway_source, gateway_incidents = collect_gateway(env, now=now)
     drift, drift_source, drift_incidents = collect_drift(env, runner, now=now)
     backup, backup_source, backup_incidents = collect_backup(env, now=now)
+    cron_store = cron_cache if cron_cache is not None else {}
+    scan = scan_cron(env, now=now)
+    runs, runs_source = read_runs(
+        env, since=_runs_since(cron_store, now), streak_for=_streak_ids(scan), now=now
+    )
+    if runs is not None:
+        cron_store["runs_checked_at"] = now.isoformat()
+    cron, cron_source, cron_incidents = assemble_cron(scan, cron_store, now=now, runs=runs)
     capacity, limits_source, probe = collect_limits(env, now=now, resolve=resolve_limits)
     if probe.status == "supported":
         grok, grok_source = collect_grok(
@@ -929,6 +949,7 @@ def collect_all(
         gateway=gateway,
         drift=drift,
         backup=backup,
+        cron=cron,
         capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
         sources=(
             gateway_source,
@@ -938,15 +959,34 @@ def collect_all(
             gemini_source,
             drift_source,
             backup_source,
+            cron_source,
+            runs_source,
         ),
         incidents=(
             *gateway_incidents,
             *drift_incidents,
             *backup_incidents,
             *gemini_incidents,
+            *cron_incidents,
             *(incident for part in externals for incident in part[2]),
         ),
     )
+
+
+def _runs_since(cache: dict[str, Any], now: datetime) -> datetime:
+    """Where the history read starts: the record's last check, never further back than the
+    lookback, never in the future."""
+    checked = parse_timestamp(cache.get("runs_checked_at"))
+    floor = now - timedelta(seconds=RUNS_LOOKBACK_SECONDS)
+    if checked is not None and checked <= now:
+        return max(checked, floor)
+    return floor
+
+
+def _streak_ids(scan: Scan) -> list[str]:
+    """The jobs whose delivery streak the history is asked for: the ones the scan found
+    undelivered (the engine's own streak leaves delivery out)."""
+    return [failure.job_id for failure in scan.failures if failure.kind == "delivery"]
 
 
 def _externals_sync(
@@ -1043,6 +1083,8 @@ async def collect_all_async(
     period_seconds: float | None = None,
     gemini_cache: dict[str, Any] | None = None,
     gemini_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    cron_cache: dict[str, Any] | None = None,
+    cron_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1056,9 +1098,21 @@ async def collect_all_async(
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
     last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
     the last Gemini 429 the engine's log showed (``gemini_log.py``): a 429 that rotated out of
-    the log stays the last one.
+    the log stays the last one. ``cron_cache`` is the record of the cron line: the failures the
+    engine erased between two ticks and where the history read left off; the history itself
+    (``executions.db``) is read in a worker under ``cron_timeout_seconds``, the two small files
+    (``jobs.json``, the ticker stamps) on the loop.
     """
     flights = flights or Flights()
+    cron_store = cron_cache if cron_cache is not None else {}
+    # The cron scan names the jobs whose history is asked for, so it goes first; the history
+    # itself runs in a worker beside every other source, under its own deadline.
+    scan = _scan_guarded(env, now=now)
+    runs_task = asyncio.ensure_future(
+        _runs_guarded(
+            env, cron_store, scan, now=now, timeout_seconds=cron_timeout_seconds, flights=flights
+        )
+    )
     # The upstream release check starts with the tick and runs beside every other source: a
     # GitHub that hangs holds back nothing but its own line.
     version_task = asyncio.ensure_future(
@@ -1150,6 +1204,8 @@ async def collect_all_async(
             )
         version, version_incidents = await version_task
         externals = await externals_task
+        runs, runs_source = await runs_task
+        cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
         if gemini_task is None:
             gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
         else:
@@ -1161,6 +1217,7 @@ async def collect_all_async(
             drift=drift,
             backup=backup,
             version=version,
+            cron=cron,
             capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
             sources=(
                 gateway_source,
@@ -1170,6 +1227,8 @@ async def collect_all_async(
                 gemini_source,
                 drift_source,
                 backup_source,
+                cron_source,
+                runs_source,
             ),
             incidents=(
                 *gateway_incidents,
@@ -1179,6 +1238,7 @@ async def collect_all_async(
                 *grok_incidents,
                 *kimi_incidents,
                 *gemini_incidents,
+                *cron_incidents,
                 *version_incidents,
                 *(incident for part in externals for incident in part[2]),
             ),
@@ -1187,6 +1247,7 @@ async def collect_all_async(
         # A no-op once done; a cancelled tick leaves no task behind.
         version_task.cancel()
         externals_task.cancel()
+        runs_task.cancel()
         if gemini_task is not None:
             gemini_task.cancel()
 
@@ -1211,6 +1272,72 @@ def _backup_guarded(env: Environment, *, now: datetime) -> BackupPart:
     except BaseException as exc:
         source, incident = _collector_crashed("backup", "derived", exc)
         return BackupSummary("unknown", detail=source.detail), source, (incident,)
+
+
+def _scan_guarded(env: Environment, *, now: datetime) -> Scan:
+    """Two small files on the loop; a surprise while reading them is a scan with no verdict,
+    which ``assemble_cron`` turns into one unavailable source and a named event."""
+    try:
+        return scan_cron(env, now=now)
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        logger.exception("collector %s crashed; source marked unavailable", CRON)
+        return Scan(state="unknown", detail=f"collector crashed: {failure_name(exc)}")
+
+
+async def _runs_guarded(
+    env: Environment,
+    cache: dict[str, Any],
+    scan: Scan,
+    *,
+    now: datetime,
+    timeout_seconds: float,
+    flights: Flights,
+) -> RunsPart:
+    """``read_runs`` in the history's own worker under the tick's deadline, never on the loop. A
+    deadline or a worker still reading is one unavailable source with the reason; the cron line
+    stands on the scan alone. The record's mark moves only when the history answered."""
+    try:
+        part = await flights.run(
+            CRON_RUNS,
+            read_runs,
+            env,
+            since=_runs_since(cache, now),
+            streak_for=_streak_ids(scan),
+            now=now,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError:
+        return None, _runs_unavailable("history read timed out")
+    except StillRunning:
+        return None, _runs_unavailable("still reading the history")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, _incident = _collector_crashed(CRON_RUNS, "official", exc)
+        return None, source
+    if part[0] is not None:
+        cache["runs_checked_at"] = now.isoformat()
+    return part
+
+
+def _runs_unavailable(detail: str) -> SourceObservation:
+    return SourceObservation(CRON_RUNS, "official", "unavailable", detail=detail)
+
+
+def _cron_guarded(
+    cache: dict[str, Any], *, scan: Scan, now: datetime, runs: Runs | None
+) -> CronPart:
+    """The block from the scan, the history and the record, on the loop; a surprise while
+    assembling is one unavailable source, not a dead tick."""
+    try:
+        return assemble_cron(scan, cache, now=now, runs=runs)
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(CRON, "official", exc)
+        return CronSummary("unknown", detail=source.detail), source, (incident,)
 
 
 async def _drift_off_loop(

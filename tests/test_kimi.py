@@ -428,6 +428,8 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
         "gemini_log",
         "drift",
         "backup",
+        "cron",
+        "cron_runs",
     ]
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
