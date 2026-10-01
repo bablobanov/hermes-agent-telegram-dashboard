@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from probe_fakes import until
 
 from telegram_dashboard import collect
 from telegram_dashboard.collect import CommandResult, collect_all_async
@@ -315,6 +316,8 @@ def test_a_slow_external_source_never_holds_the_tick_and_the_screen_keeps_its_li
     runner = BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, ""))
     flights, caches = Flights(), {}
     early = NOW - timedelta(minutes=30)
+    (source,) = external.read_sources([{"url": EXT_URL}])
+    worker = f"external:{source.key}"
 
     def tick(at):
         return collect_all_async(
@@ -336,7 +339,8 @@ def test_a_slow_external_source_never_holds_the_tick_and_the_screen_keeps_its_li
         second = await tick(NOW)
         took = time.monotonic() - started
         third = await tick(NOW + timedelta(minutes=1))
-        await asyncio.sleep(0.8)  # the abandoned worker returns and writes the cache
+        # The abandoned worker returns and writes the cache.
+        await until(lambda: not flights.busy(worker))
         fourth = await tick(NOW + timedelta(minutes=2))
         return first, second, took, third, fourth
 
@@ -454,7 +458,7 @@ def test_a_slow_gemini_log_never_holds_the_tick_and_the_line_keeps_the_record(
         first = await tick()
         took = time.monotonic() - started
         second = await tick()
-        await asyncio.sleep(0.5)  # the abandoned worker returns
+        await until(lambda: not flights.busy(collect.GEMINI_LOG))  # the abandoned worker returns
         third = await tick()
         return first, took, second, third
 
@@ -800,7 +804,7 @@ def test_a_slow_traffic_log_read_never_holds_the_tick_and_the_word_comes_from_th
         first = await tick()
         took = time.monotonic() - started
         second = await tick()
-        await asyncio.sleep(0.5)  # the abandoned worker returns
+        await until(lambda: not flights.busy(collect.TRAFFIC))  # the abandoned worker returns
         third = await tick()
         return first, took, second, third
 

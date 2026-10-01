@@ -825,6 +825,39 @@ def test_a_public_verb_that_takes_a_parse_mode_is_preferred_over_the_private_one
     assert ctx.state.data["probe"]["html_error"] is None
 
 
+class _AttemptsNoted(PublicHtmlAdapter):
+    """Notes each HTML attempt through the public verb with the plain edits before it and the
+    record as it stood: with a tick every 10 ms, no moment after the retry ticks is safe from the
+    next tick, so the record is read at the attempt itself."""
+
+    def __init__(self, ctx: FakeContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.ctx = ctx
+        self.attempts: list[tuple[int, dict[str, Any]]] = []
+
+    async def edit_message(
+        self, chat: str, message_id: str, text: str, *, parse_mode: Any = None
+    ) -> Any:
+        if parse_mode is not None:
+            self.attempts.append((len(self.edits), dict(self.ctx.state.data["probe"])))
+        return await super().edit_message(chat, message_id, text, parse_mode=parse_mode)
+
+
+class _EditTextAttemptsNoted(FakeAdapter):
+    """The same notes for an adapter whose HTML goes through its own ``_edit_text``."""
+
+    def __init__(self, ctx: FakeContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.ctx = ctx
+        self.attempts: list[tuple[int, dict[str, Any]]] = []
+
+    async def _edit_text(
+        self, chat_id: str, message_id: str, text: str, parse_mode: Any = None
+    ) -> None:
+        self.attempts.append((len(self.edits), dict(self.ctx.state.data["probe"])))
+        await super()._edit_text(chat_id, message_id, text, parse_mode)
+
+
 def test_a_public_verb_refusing_the_form_falls_back_to_plain_in_the_same_tick(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -837,27 +870,28 @@ def test_a_public_verb_refusing_the_form_falls_back_to_plain_in_the_same_tick(
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
-    adapter = PublicHtmlAdapter(
-        reject_public_html="Bad Request: can't parse entities: unsupported start tag"
+    adapter = _AttemptsNoted(
+        ctx, reject_public_html="Bad Request: can't parse entities: unsupported start tag"
     )
     retry = plugin.HTML_RETRY_TICKS
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
-        assert len(adapter.public_html_edits) == 1  # one refusal, then plain without asking again
-        assert adapter.html_edits == []
-        assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
-        record = ctx.state.data["probe"]
-        assert record["last_status"] == "edited"
-        assert record["screen_format"] == "plain"
-        assert (
-            record["html_error"]
-            == "edit_message: Bad Request: can't parse entities: unsupported start tag"
-        )
-        assert record["html_verb"] is None
-        await until(lambda: len(adapter.public_html_edits) >= 2, timeout=10.0)  # the probe returns
+        await until(lambda: len(adapter.attempts) >= 2, timeout=10.0)  # the probe returns
 
     _run(runtime, adapter, scenario)
+
+    (plain_before_first, _), (plain_before_second, record) = adapter.attempts[:2]
+    assert plain_before_first == 0
+    assert plain_before_second >= retry  # one refusal, then plain without asking again
+    assert adapter.html_edits == []
+    assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
+    assert record["last_status"] == "edited"
+    assert record["screen_format"] == "plain"
+    assert (
+        record["html_error"]
+        == "edit_message: Bad Request: can't parse entities: unsupported start tag"
+    )
+    assert record["html_verb"] is None
 
 
 def test_a_public_verb_swallowing_keywords_does_not_count_as_taking_a_parse_mode(
@@ -895,23 +929,26 @@ def test_a_refused_html_edit_falls_back_to_plain_in_the_same_tick_and_probes_aga
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
-    adapter = FakeAdapter(reject_html="Bad Request: can't parse entities: unsupported start tag")
+    adapter = _EditTextAttemptsNoted(
+        ctx, reject_html="Bad Request: can't parse entities: unsupported start tag"
+    )
     retry = plugin.HTML_RETRY_TICKS
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.edits) >= retry, timeout=10.0)
-        assert len(adapter.html_edits) == 1  # one refusal, then plain without asking again
-        assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
-        assert "<b>" not in adapter.edits[0] and "🧠 LIMITS USED" in adapter.edits[0]
-        assert ctx.state.data["probe"]["last_status"] == "edited"
-        assert ctx.state.data["probe"]["screen_format"] == "plain"
-        assert ctx.state.data["probe"]["html_error"] == "RuntimeError"
-        await until(lambda: len(adapter.html_edits) >= 2, timeout=10.0)  # the probe returns
-        assert runtime.ticks >= retry + 1
+        await until(lambda: len(adapter.attempts) >= 2, timeout=10.0)  # the probe returns
 
     with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
         _run(runtime, adapter, scenario)
 
+    (plain_before_first, _), (plain_before_second, record) = adapter.attempts[:2]
+    assert plain_before_first == 0
+    assert plain_before_second >= retry  # one refusal, then plain without asking again
+    assert runtime.ticks >= retry + 1
+    assert adapter.texts[0] in adapter.edits  # the very tick that was refused still landed
+    assert "<b>" not in adapter.edits[0] and "🧠 LIMITS USED" in adapter.edits[0]
+    assert record["last_status"] == "edited"
+    assert record["screen_format"] == "plain"
+    assert record["html_error"] == "RuntimeError"
     refused = [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
     assert len(refused) == 1, "one warning per verdict, not one per tick"
     assert "RuntimeError" in refused[0].getMessage()
@@ -1071,10 +1108,15 @@ def test_the_tick_reads_the_traffic_counters_off_the_live_adapter_and_records_th
     _alive(monkeypatch, runtime, tmp_path)
     adapter = CountingAdapter()
 
+    def received() -> Any:
+        return ((ctx.state.get("probe") or {}).get("traffic_cache") or {}).get("received_total")
+
     async def scenario() -> None:
         await until(lambda: len(adapter.html_edits) >= 1)
         adapter._updates_received_total = 7
-        await until(lambda: len(adapter.html_edits) >= 2)
+        # The next screen may come from a tick that read the counters before the change: wait for
+        # the record of a tick that read them after it.
+        await until(lambda: received() == 7)
 
     _run(runtime, adapter, scenario)
 
