@@ -94,15 +94,22 @@ RELEASE_CACHE_KEY = "release_cache"
 EXTERNAL_CACHE_KEY = "external_cache"
 # The last Gemini 429 the engine's log showed, so one that rotated out of the log stays "last".
 GEMINI_CACHE_KEY = "gemini_log_cache"
+# The cron line's record (0.9.0): the failures the engine erased between two ticks, held a
+# while, and where the run-history read left off.
+CRON_CACHE_KEY = "cron_cache"
+# The channel's record (0.9.0): the counter and generation last seen, the daily gaps, the
+# first sighting of a blocked send path, the last send error.
+TRAFFIC_CACHE_KEY = "traffic_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
-DASHBOARD_MODULES = ("collect", "compat", "freshness", "render")
+DASHBOARD_MODULES = ("collect", "compat", "freshness", "render", "telegram_traffic")
 # What the tick calls; a copy of the package that lacks any of it is refused at import time.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
     # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
-    # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1): a copy
-    # without them would reject the tick's arguments every time.
+    # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
+    # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
+    # (0.9.0): a copy without them would reject the tick's arguments every time.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -111,10 +118,13 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "collect_external",
         "read_sources",
         "GEMINI_LOG",
+        "CRON_RUNS",
+        "TRAFFIC",
     ),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
+    "telegram_traffic": ("probe_adapter",),
 }
 # The Bot API name of the parse mode, passed as a string: ``telegram.constants.ParseMode.HTML``
 # is that string, and importing it would tie the plugin to the engine's PTB.
@@ -159,6 +169,7 @@ class Dashboard:
     compat: Any
     freshness: Any
     render: Any
+    telegram_traffic: Any
     origin: str
 
 
@@ -402,6 +413,8 @@ class ProbeRuntime:
         # from which it is worth trying again.
         self.html: bool | None = None
         self.html_retry_tick = 0
+        # The adapter's own counters, read as attributes before each screen is composed.
+        self.traffic_probe: Any = None
 
     # ------------------------------------------------------------------ factory (connect-time)
 
@@ -472,11 +485,13 @@ class ProbeRuntime:
         return period
 
     async def tick(self) -> None:
-        if self.live_adapter() is None:
+        live = self.live_adapter()
+        if live is None:
             # Composing costs a facade call; not worth it while nothing can be delivered.
             self._note(status="waiting", error="no connected Telegram adapter")
             return
         self.ticks += 1
+        self.traffic_probe = self._probe(live)
         now = datetime.now(UTC)
         screen = await self.compose(now)
         live = self.live_adapter()
@@ -665,6 +680,9 @@ class ProbeRuntime:
             external_interval_seconds=self.settings.limits_refresh_seconds,
             period_seconds=self.settings.period_seconds,
             gemini_cache=self.gemini_cache(),
+            cron_cache=self.cron_cache(),
+            traffic_probe=self.traffic_probe,
+            traffic_cache=self.traffic_cache(),
         )
 
     def quota_caches(self) -> dict[str, dict[str, Any]]:
@@ -711,6 +729,35 @@ class ProbeRuntime:
             cache = {}
             self.record[GEMINI_CACHE_KEY] = cache
         return cache
+
+    def cron_cache(self) -> dict[str, Any]:
+        """The cron line's record inside the plugin's record, the same object on every tick so
+        the history reader that returns after the deadline still writes into it."""
+        cache = self.record.get(CRON_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[CRON_CACHE_KEY] = cache
+        return cache
+
+    def traffic_cache(self) -> dict[str, Any]:
+        """The channel's record inside the plugin's record, the same object on every tick."""
+        cache = self.record.get(TRAFFIC_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[TRAFFIC_CACHE_KEY] = cache
+        return cache
+
+    def _probe(self, live: Any) -> Any:
+        """The adapter's own counters, read as attributes before the screen is composed; a
+        package without the module (an older copy) means no traffic line."""
+        dashboard = self.dashboard
+        if dashboard is None:
+            return None
+        try:
+            return dashboard.telegram_traffic.probe_adapter(live)
+        except Exception as exc:  # the probe never raises by contract; belt and braces
+            logger.warning("probe: traffic counters not read (%s)", type(exc).__name__)
+            return None
 
     def _render_period(self) -> int:
         return max(1, round(self.settings.period_seconds))

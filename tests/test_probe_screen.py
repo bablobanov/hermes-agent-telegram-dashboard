@@ -17,6 +17,7 @@ import html
 import json
 import os
 import shutil
+import time
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -1025,3 +1026,167 @@ def test_external_sources_reach_the_collector_with_their_own_cache_and_the_perio
     assert seen[0]["external_interval_seconds"] == runtime.settings.limits_refresh_seconds
     stored = ctx.state.data["probe"]["external_cache"]
     assert stored == {"abcd1234": {"attempted_at": now.isoformat()}}
+
+
+# ----------------------------------------------------------------------------- 0.9.0: cron and traffic
+#
+# The traffic counters are read off the live adapter as attributes before every screen; the
+# cron record and the traffic record live in the plugin's state beside the other caches.
+
+
+class CountingAdapter(FakeAdapter):
+    """The engine's four counters on the fake: what the plugin reads off the live adapter."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._updates_received_total = 5
+        self._polling_generation = 1
+        self._polling_last_progress_monotonic = time.monotonic()
+        self._polling_generation_started_monotonic = time.monotonic() - 600
+        self._send_path_degraded = False
+
+
+def _alive(monkeypatch: pytest.MonkeyPatch, runtime: Any, home: Path) -> None:
+    """Liveness cannot be asked on Windows; the screen under test is the composition, so the
+    gateway's pid probe answers "alive", the platform entry is the running process's own
+    (``writer_pid`` is its pid) and the Telegram line reads ``connected``."""
+    path = home / "gateway_state.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["platforms"]["telegram"]["writer_pid"] = payload["pid"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    collect = runtime.dashboard.collect
+    real = collect.collect_gateway
+    monkeypatch.setattr(
+        collect, "collect_gateway", lambda env, *, now: real(env, now=now, pid_probe=lambda _: True)
+    )
+
+
+def test_the_tick_reads_the_traffic_counters_off_the_live_adapter_and_records_them(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    runtime = plugin.register(ctx)
+    _alive(monkeypatch, runtime, tmp_path)
+    adapter = CountingAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 1)
+        adapter._updates_received_total = 7
+        await until(lambda: len(adapter.html_edits) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    record = ctx.state.get("probe")
+    assert record["traffic_cache"]["received_total"] == 7
+    assert record["traffic_cache"]["last_update_seen_at"]
+    assert "cron_cache" in record and record["cron_cache"]["checked_at"]
+    assert "Gateway ✓ · Telegram ✓" in html.unescape(adapter.last_text)
+
+
+def test_a_degraded_send_path_on_an_old_generation_is_the_word_on_the_line(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    runtime = plugin.register(ctx)
+    _alive(monkeypatch, runtime, tmp_path)
+    adapter = CountingAdapter()
+    adapter._send_path_degraded = True
+    adapter._polling_last_progress_monotonic = None
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 1)
+
+    _run(runtime, adapter, scenario)
+
+    text = html.unescape(adapter.last_text)
+    assert "Gateway ✓ · Telegram ⚠️ no sends" in text
+    assert "🔴" in text.splitlines()[0]
+
+
+def test_an_adapter_without_counters_is_no_data_on_the_traffic_source(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    runtime = plugin.register(ctx)
+    _alive(monkeypatch, runtime, tmp_path)
+    adapter = FakeAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 1)
+
+    _run(runtime, adapter, scenario)
+
+    text = html.unescape(adapter.last_text)
+    assert "Telegram traffic: adapter has no traffic counters" in text
+    assert "Gateway ✓ · Telegram ✓" in text
+
+
+PLANTED = (
+    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /var/lib/hermes/.hermes chat -1001234567890 "
+    "telegram:-1001234567890:17 user 987654321"
+)
+
+
+def test_planted_secrets_in_the_engine_s_cron_records_never_reach_the_message(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Edit (b) of 01.10, end to end: the engine's error texts in jobs.json and in the ticker
+    marker go through the whole tick and never reach the text Telegram gets, in any form."""
+    home = _home(tmp_path)
+    cron = home / "cron"
+    cron.mkdir()
+    jobs = [
+        {
+            "id": "b1",
+            "name": f"digest {PLANTED}",
+            "enabled": True,
+            "state": "scheduled",
+            "last_status": "delivery_failed",
+            "last_delivery_error": f"Chat not found: {PLANTED}",
+            "last_run_at": "2026-09-09T20:40:00+00:00",
+        }
+    ]
+    (cron / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    (cron / "ticker_heartbeat").write_text(str(time.time()), encoding="utf-8")
+    (cron / "ticker_last_error").write_text(
+        f"{time.time()}\nPermissionError: {PLANTED}\n", encoding="utf-8"
+    )
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, home))
+    runtime = plugin.register(ctx)
+    adapter = CountingAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 1)
+
+    _run(runtime, adapter, scenario)
+
+    seen = [html.unescape(text) for text in adapter.texts]
+    seen.append(json.dumps(ctx.state.get("probe")))
+    for rendered in seen:
+        for fragment in ("sk-live", "ABCDEFGHIJ", "/var/lib", "1001234567890", "987654321"):
+            assert fragment not in rendered, fragment
+    last = html.unescape(adapter.last_text)
+    assert "not delivered" in last and "(chat unavailable)" in last
+
+
+def test_a_package_copy_from_before_the_cron_line_is_refused_at_load(tmp_path: Path) -> None:
+    """The plugin hands ``cron_cache``, ``traffic_probe`` and ``traffic_cache`` to the collector
+    (0.9.0); a copy from before them would reject the arguments on every tick. It is refused at
+    load and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    line = "from .cron_runs import SOURCE_NAME as CRON_RUNS\n"
+    assert line in text
+    collect_py.write_text(text.replace(line, ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_cron_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"

@@ -409,6 +409,7 @@ def assemble_cron(
     ``None``) and the record. The history fills the delivery streaks and adds failures the engine
     erased between two ticks; the record holds them."""
     store = cache if cache is not None else {}
+    store["checked_at"] = now.isoformat()
     if scan.state in ("unsupported", "unknown"):
         summary = CronSummary(scan.state, detail=scan.detail)
         source_state: SourceState = "unsupported" if scan.state == "unsupported" else "unavailable"
@@ -420,7 +421,6 @@ def assemble_cron(
     jobs = {job.job_id: job for job in scan.jobs}
     failures = _with_history(scan.failures, jobs, runs, now=now)
     held = hold(store, failures, jobs, now=now)
-    store["checked_at"] = now.isoformat()
     current = tuple(f for f in failures if f.recovered_at is None)
     summary = CronSummary(
         scan.state,
