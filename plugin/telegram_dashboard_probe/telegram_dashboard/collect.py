@@ -1386,10 +1386,17 @@ async def _traffic_guarded(
     the probe and the record say without the log, like ``_gemini_guarded``. The counter and
     the send gate are noted on the loop first, so a reader that never returns cannot freeze
     the record."""
-    note_probe(cache, probe, now)
     try:
+        note_probe(cache, probe, now)
         return await flights.run(
-            TRAFFIC, collect_traffic, env, probe, cache, now=now, timeout_seconds=timeout_seconds
+            TRAFFIC,
+            collect_traffic,
+            env,
+            probe,
+            cache,
+            now=now,
+            note=False,
+            timeout_seconds=timeout_seconds,
         )
     except TimeoutError:
         return remembered_traffic(cache, probe, now=now, detail="log read timed out")

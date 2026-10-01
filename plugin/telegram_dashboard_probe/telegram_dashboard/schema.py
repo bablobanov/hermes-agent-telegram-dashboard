@@ -114,6 +114,8 @@ class TrafficSummary:
     send_errors_hour: int = 0
     quiet_seconds: float | None = None
     threshold_seconds: float | None = None
+    # The longest gap between updates seen lately, what the threshold was made from.
+    usual_gap_seconds: float | None = None
     detail: str | None = None
 
 

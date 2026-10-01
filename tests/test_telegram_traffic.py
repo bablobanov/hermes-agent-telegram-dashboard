@@ -249,3 +249,43 @@ def test_quiet_without_a_gap_history_carries_no_threshold_to_show(tmp_path: Path
     assert summary.state == "quiet" and summary.quiet_seconds == 7 * 3600.0
     assert summary.threshold_seconds is None
     assert [i.title for i in incidents] == ["Telegram quiet for 7 h"]
+
+
+# ----------------------------------------------------------------------------- review round 2
+
+
+def test_an_adapter_with_the_public_gate_but_no_counters_is_no_data() -> None:
+    """Round 2, minor 3: every engine adapter has the public property, so absent counters must
+    read as absent, not as a counter of the wrong type."""
+    probe = probe_adapter(SimpleNamespace(send_path_degraded=False), monotonic=1.0)
+
+    assert probe.problem == "adapter has no traffic counters"
+
+
+def test_the_usual_gap_is_the_longest_gap_seen_not_the_threshold_halved(tmp_path: Path) -> None:
+    """Round 2, minor 4: with a 20 min gap on record the floor sets the threshold; the details
+    must name the 20 min, never the floor halved."""
+    cache = {
+        "generation": 3,
+        "received_total": 12,
+        "last_update_seen_at": (NOW - timedelta(hours=7)).isoformat(),
+        "gaps": {"2026-09-29": 20 * 60.0},
+    }
+
+    summary, _s, _i = collect_traffic(_env(tmp_path), _probe(), cache, now=NOW)
+
+    assert summary.state == "quiet"
+    assert summary.usual_gap_seconds == 20 * 60.0
+    assert summary.threshold_seconds == QUIET_FLOOR_SECONDS
+
+
+def test_the_worker_leaves_the_bookkeeping_to_the_loop_when_told(tmp_path: Path) -> None:
+    """Round 2, minor 1: on the tick the counter and the gate are noted on the loop; the worker
+    that reads the log is told not to note, so a worker that returns late with an old probe
+    cannot rewind the record."""
+    cache: dict = {}
+
+    summary, _s, _i = collect_traffic(_env(tmp_path), _probe(), cache, now=NOW, note=False)
+
+    assert "received_total" not in cache and "generation" not in cache
+    assert summary.state == "ok" and "checked_at" in cache

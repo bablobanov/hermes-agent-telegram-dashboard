@@ -81,7 +81,7 @@ def recent_failures(
     rows = conn.execute(
         "SELECT job_id, status, delivery_outcome, claimed_at, finished_at FROM executions"
         " WHERE status = 'failed' OR delivery_outcome = 'failed'"
-        " ORDER BY claimed_at DESC LIMIT ?",
+        " ORDER BY COALESCE(finished_at, claimed_at) DESC LIMIT ?",
         (limit,),
     ).fetchall()
     runs: list[Run] = []

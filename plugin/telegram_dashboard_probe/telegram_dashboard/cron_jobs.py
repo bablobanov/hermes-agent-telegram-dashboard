@@ -356,6 +356,7 @@ def hold(
             and entry.get("kind") == failure.kind
         )
         if not same:
+            held.pop(failure.job_id, None)  # re-recorded: the newest position
             held[failure.job_id] = {
                 "kind": failure.kind,
                 "at": failure.at,

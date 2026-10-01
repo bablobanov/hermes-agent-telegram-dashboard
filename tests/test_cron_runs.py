@@ -119,3 +119,14 @@ def test_a_run_claimed_before_the_window_but_finished_inside_it_is_seen(tmp_path
 
     assert [r.job_id for r in runs] == ["b1"]
     conn.close()
+
+
+def test_the_newest_rows_are_taken_by_their_finish(tmp_path: Path) -> None:
+    """Round 2, minor 9: the row limit follows the same moment as the window."""
+    rows = [("b1", "failed", None, _at(90), _at(10)), ("b2", "failed", None, _at(20), _at(20))]
+    conn = open_readonly(_db(tmp_path, rows))
+
+    runs = recent_failures(conn, since=NOW - timedelta(hours=2), limit=1)
+
+    assert [r.job_id for r in runs] == ["b1"]
+    conn.close()

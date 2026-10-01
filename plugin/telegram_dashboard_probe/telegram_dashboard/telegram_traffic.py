@@ -94,6 +94,8 @@ def probe_adapter(adapter: object, *, monotonic: float | None = None) -> Probe:
     if all(values[name] is None for name in (ATTR_RECEIVED, ATTR_GENERATION, ATTR_DEGRADED)):
         return Probe(problem="adapter has no traffic counters")
     received = values[ATTR_RECEIVED]
+    if received is None:
+        return Probe(problem="adapter has no traffic counters")
     if not isinstance(received, int) or isinstance(received, bool):
         return Probe(problem=f"adapter counter {ATTR_RECEIVED} is not a number")
     generation = values[ATTR_GENERATION]
@@ -172,8 +174,16 @@ def _verdict(
 
 
 def _gaps_seen(store: Mapping[str, Any]) -> bool:
+    return _longest_gap(store) is not None
+
+
+def _longest_gap(store: Mapping[str, Any]) -> float | None:
+    """The longest gap between updates on record; ``None`` when none was ever seen."""
     gaps = store.get("gaps")
-    return isinstance(gaps, Mapping) and any(_number(gap) for gap in gaps.values())
+    if not isinstance(gaps, Mapping):
+        return None
+    seen = [float(gap) for gap in gaps.values() if _number(gap)]
+    return max(seen) if seen else None
 
 
 def _polling_at(probe: Probe, now: datetime) -> str | None:
@@ -263,16 +273,20 @@ def collect_traffic(
     *,
     now: datetime,
     tail_bytes: int = TAIL_BYTES,
+    note: bool = True,
 ) -> TrafficPart:
-    """The block, the source and the events from the probe, the record and the log's tail."""
+    """The block, the source and the events from the probe, the record and the log's tail.
+    With ``note`` off the record is left to ``note_probe`` on the loop (the tick's worker
+    may return after a newer tick noted a newer counter; it must not rewind it)."""
     store = cache if cache is not None else {}
     if probe is None:
         return _off("unsupported", "no adapter on the cron path")
     if probe.problem:
         return _off("unknown", probe.problem)
-    _note_updates(store, probe, now)
+    if note:
+        note_probe(store, probe, now)
     last_error, hour = _log_errors(env, store, now, tail_bytes)
-    blocked_since = _note_degraded(store, probe, now)
+    blocked_since = _text(store.get("degraded_since")) if probe.send_path_degraded else None
     state, quiet, threshold = _verdict(probe, store, now)
     summary = TrafficSummary(
         state,
@@ -283,6 +297,7 @@ def collect_traffic(
         send_errors_hour=hour,
         quiet_seconds=quiet if state == "quiet" else None,
         threshold_seconds=threshold if state == "quiet" and _gaps_seen(store) else None,
+        usual_gap_seconds=_longest_gap(store) if state == "quiet" else None,
     )
     store["checked_at"] = now.isoformat()
     source = SourceObservation(SOURCE_NAME, "local", "fresh", observed_at=now.isoformat())
@@ -309,6 +324,7 @@ def remembered_traffic(
         send_errors_hour=0,
         quiet_seconds=quiet if state == "quiet" else None,
         threshold_seconds=threshold if state == "quiet" and _gaps_seen(store) else None,
+        usual_gap_seconds=_longest_gap(store) if state == "quiet" else None,
     )
     source = SourceObservation(SOURCE_NAME, "local", "unavailable", detail=detail)
     return summary, source, incidents_for(summary)

@@ -314,8 +314,8 @@ def _traffic_words(traffic: TrafficSummary, zone: tzinfo) -> list[str]:
         parts.append(f"sends blocked since {since}")
     if traffic.state == "quiet" and traffic.quiet_seconds is not None:
         words = f"quiet {describe_age(traffic.quiet_seconds).removesuffix(' ago')}"
-        if traffic.threshold_seconds:
-            usual = describe_age(traffic.threshold_seconds / 2).removesuffix(" ago")
+        if traffic.usual_gap_seconds:
+            usual = describe_age(traffic.usual_gap_seconds).removesuffix(" ago")
             words += f", usual gap up to {usual}"
         parts.append(words)
     last = format_day_time(traffic.last_send_error_at, zone)
@@ -353,15 +353,14 @@ def _cron_line(
 
 
 def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
-    ticker = format_in_zone(cron.ticker_at, zone, "%H:%M")
-    if ticker is None:
-        ticker = "no heartbeat"
-        if cron.detail:
-            ticker += f" ({sanitize_public_text(cron.detail, limit=60)})"
+    ticker = format_in_zone(cron.ticker_at, zone, "%H:%M") or "no heartbeat"
     head = f"Cron {cron.active or 0} active · {cron.paused or 0} paused · ticker {ticker}"
     ok = format_in_zone(cron.ticker_ok_at, zone, "%H:%M")
     if ok and ok != ticker:
         head += f" · tick ok {ok}"
+    if cron.detail:
+        # A stamp the scan could not read, named beside the ticker it belongs to.
+        head += f" ({sanitize_public_text(cron.detail, limit=60)})"
     words = [head]
     words.extend(_failure_words(failure, zone) for failure in (*cron.failing, *cron.held))
     if cron.ticker_error:

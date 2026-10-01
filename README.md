@@ -283,7 +283,7 @@ sighting of a blocked send path and the last send error the engine logged.
 ### The cron line
 
 ```
-Cron ✓ 27 jobs                      active jobs (enabled, scheduled or running); paused ones in the details
+Cron ✓ 27 jobs                      active jobs (enabled: scheduled, running, or parked in error); paused in the details
 Cron ⚠️ 2 of 27 failing             a run failed, a result was not delivered, a job is blocked or overdue
 Cron ⚠️ ticker silent 12 min        no heartbeat for longer than the engine's own threshold (200 s)
 Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in an error
@@ -378,7 +378,8 @@ gate, `send_path_degraded`, is the adapter's public API since 0.21.1 and is read
 four polling attributes are not part of the engine's public contract: like `_edit_text` for the
 HTML form, a future adapter that renames or retypes them degrades the line to no data with the
 reason and never raises inside the adapter (`tests/test_invariants.py` pins that nothing is
-called on it). The plugin's catalog entry discloses the two on lines of their own, and a public
+called on it). The plugin's catalog entry is to disclose the two on lines of their own with this
+release, and a public
 snapshot of the polling state on the adapter is the upstream change that would turn the
 capability into a contract.
 

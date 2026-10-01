@@ -1172,3 +1172,34 @@ def test_a_ticker_stamp_that_could_not_be_read_names_its_reason_in_the_details()
         "> Cron 27 active · 3 paused · ticker no heartbeat (ticker_heartbeat is not a stamp)"
         in (text.splitlines())
     )
+
+
+def test_the_usual_gap_in_the_details_is_the_longest_gap_seen() -> None:
+    """Round 2, minor 4: the clause names the longest gap this installation has seen."""
+    traffic = TrafficSummary(
+        "quiet",
+        last_update_seen_at="2026-09-24T22:20:00Z",
+        polling_at="2026-09-25T07:20:00Z",
+        quiet_seconds=9 * 3600,
+        threshold_seconds=8 * 3600,
+        usual_gap_seconds=4 * 3600,
+    )
+
+    text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
+
+    assert (
+        "> Telegram last update seen Sep 24 22:20 · polling ok 07:20 · quiet 9 h, usual gap up to 4 h"
+        in text.splitlines()
+    )
+
+
+def test_a_success_stamp_that_could_not_be_read_names_its_reason_beside_a_live_heartbeat() -> None:
+    """Round 2, minor 5: the reason is shown whenever the scan recorded one, not only without
+    a heartbeat."""
+    cron = replace(CRON_OK, ticker_ok_at=None, detail="ticker_last_success is not a stamp")
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert "> Cron 27 active · 3 paused · ticker 07:19 (ticker_last_success is not a stamp)" in (
+        text.splitlines()
+    )

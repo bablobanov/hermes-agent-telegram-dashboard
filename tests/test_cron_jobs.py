@@ -487,3 +487,21 @@ def test_the_held_record_keeps_the_newest_entries_when_it_is_full() -> None:
     ids = [h.job_id for h in held]
     assert (ids[0], ids[-1]) == ("b30", "b79")
     assert "b79" in cache["held"] and "b0" not in cache["held"]
+
+
+def test_a_failure_recorded_again_moves_to_the_end_of_the_record() -> None:
+    """Round 2, minor 8: a re-recorded failure takes the newest position, so the trim of the
+    oldest entries means what it says."""
+    from telegram_dashboard.schema import CronFailure
+
+    cache = {
+        "held": {
+            "a": {"kind": "run", "at": "2026-09-30T00:00:00+00:00", "name": "ja", "shown": 0},
+            "b": {"kind": "run", "at": "2026-09-30T00:00:00+00:00", "name": "jb", "shown": 0},
+        }
+    }
+    again = CronFailure("a", "ja", "run", at="2026-09-30T01:00:00+00:00")
+
+    hold(cache, (again,), {}, now=NOW)
+
+    assert list(cache["held"]) == ["b", "a"]

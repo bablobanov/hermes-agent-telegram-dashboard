@@ -760,11 +760,11 @@ def test_a_slow_traffic_log_read_never_holds_the_tick_and_the_word_comes_from_th
     real = collect.collect_traffic
     calls: list[datetime] = []
 
-    def slow(env, probe, cache, *, now):
+    def slow(env, probe, cache, *, now, **kwargs):
         calls.append(now)
         if len(calls) == 1:
             time.sleep(0.4)
-        return real(env, probe, cache, now=now)
+        return real(env, probe, cache, now=now, **kwargs)
 
     monkeypatch.setattr(collect, "collect_traffic", slow)
     (tmp_path / "logs").mkdir()
@@ -870,7 +870,7 @@ def test_a_hanging_log_reader_never_freezes_the_traffic_bookkeeping(
     from telegram_dashboard.telegram_traffic import Probe
     from telegram_dashboard.workers import Flights
 
-    def hanging(env, probe, cache, *, now):
+    def hanging(env, probe, cache, *, now, **kwargs):
         time.sleep(0.6)
         return collect.remembered_traffic(cache, probe, now=now, detail="never")
 
@@ -905,3 +905,77 @@ def test_a_hanging_log_reader_never_freezes_the_traffic_bookkeeping(
     assert cache["received_total"] == 7 and cache["last_update_seen_at"] == NOW.isoformat()
     assert second.traffic is not None and second.traffic.last_update_seen_at == NOW.isoformat()
     assert first.traffic is not None and first.traffic.state == "ok"
+
+
+def test_a_log_reader_that_returns_late_never_rewinds_the_traffic_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """Round 2, minor 1: the worker of tick one returns after tick two noted a newer counter;
+    the record keeps the newer one."""
+    from telegram_dashboard.telegram_traffic import Probe
+    from telegram_dashboard.workers import Flights
+
+    real = collect.collect_traffic
+    calls: list[int] = []
+
+    def slow(env, probe, cache, *, now, **kwargs):
+        calls.append(probe.received_total)
+        if len(calls) == 1:
+            time.sleep(0.3)
+        return real(env, probe, cache, now=now, **kwargs)
+
+    monkeypatch.setattr(collect, "collect_traffic", slow)
+    (tmp_path / "logs").mkdir()
+    cache: dict = {}
+    flights = Flights()
+
+    def tick(received: int):
+        probe = Probe(received_total=received, generation=1, progress_age_seconds=5.0)
+        return collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=flights,
+            traffic_probe=probe,
+            traffic_cache=cache,
+            traffic_timeout_seconds=0.05,
+        )
+
+    async def scenario():
+        await tick(5)
+        await tick(7)
+        await asyncio.sleep(0.4)  # the first worker returns with the old probe
+
+    asyncio.run(scenario())
+
+    assert calls == [5]  # the second tick started no reader while the first one ran
+    assert cache["received_total"] == 7
+
+
+def test_a_surprise_in_the_traffic_bookkeeping_is_one_unavailable_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """Round 2, minor 2: the noting on the loop is inside the guard like every collector."""
+    from telegram_dashboard.telegram_traffic import Probe
+
+    def crash(cache, probe, now):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(collect, "note_probe", crash)
+    (tmp_path / "logs").mkdir()
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            traffic_probe=Probe(received_total=5, generation=1, progress_age_seconds=5.0),
+            traffic_cache={},
+        )
+    )
+
+    source = next(s for s in snapshot.sources if s.name == "telegram_traffic")
+    assert (source.state, source.detail) == ("unavailable", "collector crashed: RuntimeError")
+    assert snapshot.traffic is not None
