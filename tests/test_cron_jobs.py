@@ -539,6 +539,32 @@ def test_a_job_parked_in_the_error_state_is_counted_among_the_active(tmp_path: P
     assert "Cron ⚠️ 1 of 1 failing" in text.splitlines()
 
 
+def test_a_disabled_job_parked_in_error_is_no_failure_and_is_counted_paused(
+    tmp_path: Path,
+) -> None:
+    """0.9.2, review of 01.10: a job switched off (``enabled: false``) is never fired whatever its
+    state, and ``hermes cron status`` does not read it (``list_jobs(include_disabled=False)``,
+    v2026.9.14): the engine's ``error`` on it is history, as for any paused job. It is counted
+    among the paused, so the line never reads ``1 of 0 failing``."""
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.schema import DashboardSnapshot
+
+    off = _job(
+        id="b1", enabled=False, state="error", last_status=None, last_error="schedule invalid"
+    )
+    env = _home(tmp_path, [off], heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+    text = render_dashboard(
+        DashboardSnapshot(overall="normal", observed_at=NOW.isoformat(), cron=summary), now=NOW
+    )
+
+    assert classify(job_of(off), now=NOW, ticker_alive=True) is None
+    assert (summary.state, summary.active, summary.paused) == ("ok", 0, 1)
+    assert summary.failing == () and incidents == ()
+    assert "Cron ✓ 0 jobs" in text.splitlines()
+
+
 @pytest.mark.parametrize(
     "text",
     [
