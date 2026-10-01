@@ -90,11 +90,12 @@ details (see "Gemini refusals from the engine log"). Nothing is dropped from the
 only moved: a line without a number still names its reason, in the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
-installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
-(`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen only when it is
-incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details also name the
-dashboard's own version (`Dashboard 0.9.0`), so the installed copy can be told from the pinned
-message.
+installation says `unsupported`. Both lower coverage; neither turns green (one exception, the
+cron run history: it only adds to a line that stands on its own file, see "The cron line").
+Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
+only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
+also name the dashboard's own version (`Dashboard 0.9.0`), so the installed copy can be told
+from the pinned message.
 
 ## Freshness is a load-bearing requirement
 
@@ -314,9 +315,11 @@ nobody saw: the history shows it, and the details keep it for two ticks with the
 replaced it (`Cron daily-digest: run failed Sep 30 11:35, ok since 11:40`; `cron_cache.held` in
 the record). A history that cannot be read, or one the installation does not keep, is one
 source that did not answer: the line and the events stand on `jobs.json`, the delivery
-streak reads `streak unknown`, the coverage says `Not observed: cron history (unavailable)`,
-and with nothing else wrong the status is ⚪, as for any source, never green (a `chronos`
-cron provider keeps no history: `not on this installation`, the same way).
+streak reads `streak unknown`, the coverage says `Not observed: cron history (unavailable)`
+(a `chronos` cron provider keeps no history: `not on this installation`), and the status is
+left to the other sources. The history is the one source that lowers the coverage and never
+the status: it only adds to a line that stands on `jobs.json`, and an installation that keeps
+none would otherwise never be green. The jobs file that cannot be read is ⚪ like any source.
 
 **The engine's error texts never reach the screen.** `last_error`, `last_delivery_error` and the
 ticker's error are reduced to the kind of the error in a word, in the order the engine's own

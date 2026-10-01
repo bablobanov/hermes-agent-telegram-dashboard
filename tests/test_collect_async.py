@@ -822,43 +822,53 @@ def test_a_slow_traffic_log_read_never_holds_the_tick_and_the_word_comes_from_th
     assert "checked_at" in cache
 
 
-def test_an_unreadable_run_history_lowers_coverage_and_the_status_like_any_source() -> None:
-    """Review, important 2: the plan's claim "the status does not fall to unknown because of the
-    history" holds only while an event colours the screen. Without one, an unavailable history
-    is a source that did not answer, and the status is unknown like for any other (the credo:
-    neither turns green). Pinned here so the README says what the code does."""
+def test_a_run_history_unread_or_not_kept_lowers_the_coverage_never_the_status() -> None:
+    """Review focus 5, decided by Ilya on 01.10: the history only adds to the cron line (the
+    streaks, the failures erased between ticks); the line itself stands on jobs.json. A history
+    that did not answer, or one the installation does not keep, is named in the coverage and
+    leaves the status to everything else. Only the history: the jobs file that did not answer
+    still turns the status unknown, like any other source."""
     from telegram_dashboard.collect import build_snapshot
+    from telegram_dashboard.render import render_dashboard
     from telegram_dashboard.schema import CapacitySummary, CronSummary, Incident, SourceObservation
 
-    fresh = tuple(
-        SourceObservation(name, "official", "fresh", observed_at=NOW.isoformat())
-        for name in ("gateway_state", "limits", "drift", "backup", "cron")
-    )
-    history = SourceObservation(
-        "cron_runs", "official", "unavailable", detail="history read timed out"
-    )
+    def fresh(name: str) -> SourceObservation:
+        return SourceObservation(name, "official", "fresh", observed_at=NOW.isoformat())
+
+    others = tuple(fresh(name) for name in ("gateway_state", "limits", "drift", "backup"))
     cron = CronSummary("ok", active=27, paused=0)
+    undelivered = Incident("cron:delivery:b1", "warning", "Cron undelivered: daily-digest")
 
-    quiet = build_snapshot(
-        now=NOW,
-        gateway=None,
-        drift=None,
-        capacity=CapacitySummary(),
-        sources=(*fresh, history),
-        incidents=(),
-        cron=cron,
-    )
-    loud = build_snapshot(
-        now=NOW,
-        gateway=None,
-        drift=None,
-        capacity=CapacitySummary(),
-        sources=(*fresh, history),
-        incidents=(Incident("cron:delivery:b1", "warning", "Cron undelivered: daily-digest"),),
-        cron=cron,
-    )
+    def snapshot(sources, incidents=()):
+        return build_snapshot(
+            now=NOW,
+            gateway=None,
+            drift=None,
+            capacity=CapacitySummary(),
+            sources=sources,
+            incidents=incidents,
+            cron=cron,
+        )
 
-    assert quiet.overall == "unknown" and loud.overall == "warning"
+    for history, reason in (
+        (
+            SourceObservation("cron_runs", "official", "unavailable", detail="timed out"),
+            "unavailable",
+        ),
+        (SourceObservation("cron_runs", "official", "unsupported"), "not on this installation"),
+    ):
+        quiet = snapshot((*others, fresh("cron"), history))
+        loud = snapshot((*others, fresh("cron"), history), (undelivered,))
+        main = render_dashboard(quiet, now=NOW).splitlines()
+
+        assert (quiet.overall, loud.overall) == ("normal", "warning"), reason
+        assert main[0].startswith("🟢 Healthy"), main
+        assert f"Not observed: cron history ({reason})" in main
+
+    jobs_unread = SourceObservation(
+        "cron", "official", "unavailable", detail="jobs.json unreadable"
+    )
+    assert snapshot((*others, jobs_unread, fresh("cron_runs"))).overall == "unknown"
 
 
 def test_a_hanging_log_reader_never_freezes_the_traffic_bookkeeping(

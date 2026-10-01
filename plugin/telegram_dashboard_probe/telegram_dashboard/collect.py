@@ -853,6 +853,12 @@ def _capacity_unsupported(detail: str) -> CapacitySummary:
 # ----------------------------------------------------------------------------- composition
 
 
+# Sources that count in the coverage and leave the status to the rest: the run history only
+# adds to the cron line (streaks, failures erased between ticks), the line itself stands on
+# jobs.json, so a history unread or not kept is named in the coverage, never a grey status.
+_COVERAGE_ONLY = frozenset({CRON_RUNS})
+
+
 def build_snapshot(
     *,
     now: datetime,
@@ -869,7 +875,8 @@ def build_snapshot(
 ) -> DashboardSnapshot:
     ordered = tuple(sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))[:5])
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
-    overall = derive_overall(coverage=cov, sources=sources, incidents=ordered)
+    counted = tuple(source for source in sources if source.name not in _COVERAGE_ONLY)
+    overall = derive_overall(coverage=cov, sources=counted, incidents=ordered)
     return DashboardSnapshot(
         overall=overall,
         observed_at=now.isoformat(),
