@@ -33,6 +33,7 @@ def _job(**over):
         "name": "daily-digest",
         "enabled": True,
         "state": "scheduled",
+        "paused_at": None,
         "next_run_at": (NOW + timedelta(minutes=5)).isoformat(),
         "last_run_at": (NOW - timedelta(minutes=25)).isoformat(),
         "last_status": "ok",
@@ -70,14 +71,15 @@ def test_job_of_reads_the_runtime_fields_and_nothing_private() -> None:
     job = job_of(_job())
 
     assert job is not None
-    assert (job.job_id, job.name, job.enabled, job.state, job.last_status, job.failure_streak) == (
-        "b1",
-        "daily-digest",
-        True,
-        "scheduled",
-        "ok",
-        0,
-    )
+    assert (
+        job.job_id,
+        job.name,
+        job.enabled,
+        job.state,
+        job.paused_at,
+        job.last_status,
+        job.failure_streak,
+    ) == ("b1", "daily-digest", True, "scheduled", None, "ok", 0)
     assert not hasattr(job, "prompt") and not hasattr(job, "deliver")
 
 
@@ -239,6 +241,58 @@ def test_a_paused_job_s_old_failure_is_not_a_failure() -> None:
     )
 
     assert classify(job_of(paused), now=NOW, ticker_alive=True) is None
+
+
+def test_a_pause_stamp_alone_is_a_pause_as_the_ticker_reads_it(tmp_path: Path) -> None:
+    """0.9.1: ``enabled: true`` with a ``paused_at`` stamp is a half-pause (``cron/jobs.py``
+    ``_has_pause_marker`` and ``is_job_runnable`` at v2026.9.14 and main): the ticker does not
+    fire it and self-disables it on its next loop, so it is paused here too, never overdue
+    whatever ``next_run_at`` says, and its old failure is history. ``hermes cron list`` shows it
+    active until the engine heals it; the plugin follows what fires."""
+    half = _job(
+        paused_at=(NOW - timedelta(hours=2)).isoformat(),
+        next_run_at=(NOW - timedelta(seconds=OVERDUE_SECONDS + 60)).isoformat(),
+        last_status="error",
+        last_error="x",
+        failure_streak=1,
+    )
+    env = _home(tmp_path, [half], heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert classify(job_of(half), now=NOW, ticker_alive=True) is None
+    assert (summary.state, summary.active, summary.paused) == ("ok", 0, 1)
+    assert incidents == ()
+
+
+def test_a_null_or_missing_pause_stamp_is_no_pause() -> None:
+    """The engine writes ``paused_at: null`` on a resume and on a job created running; an older
+    record may have no key at all."""
+    with_null = job_of(_job(paused_at=None))
+    raw = _job()
+    del raw["paused_at"]
+    without = job_of(raw)
+
+    assert with_null is not None and not with_null.paused and with_null.active
+    assert without is not None and not without.paused and without.active
+
+
+def test_a_half_paused_job_parked_in_error_is_still_a_failure_among_the_active(
+    tmp_path: Path,
+) -> None:
+    """The engine's terminal ``error`` state is kept whatever the stamps say: the job is reported
+    and counted, so the line never reads ``1 of 0`` (as for an enabled one, review of 0.9.0)."""
+    broken = _job(
+        state="error",
+        last_status=None,
+        last_error="schedule invalid",
+        paused_at=(NOW - timedelta(hours=2)).isoformat(),
+    )
+    env = _home(tmp_path, [broken], heartbeat=_epoch(NOW))
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    assert (summary.state, summary.active, len(summary.failing)) == ("failing", 1, 1)
 
 
 # ----------------------------------------------------------------------------- the ticker

@@ -112,6 +112,8 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
 
     assert "jobs.json" in cron["probe"] and "first token" in cron["probe"]
     assert {"prompt", "script", "deliver"} <= set(cron["never_reads"])
+    assert any("paused_at" in line for line in cron["reads"])  # 0.9.1: the half-pause
+    assert "pause marker" in cron["contract"]
     assert "200" in cron["contract"] and "15 min" in cron["contract"]
     assert "error_kind" in cron["contract"] or "kind of the error" in cron["contract"]
     assert verification_for(matrix, "cron", "0.21.3").startswith("verified on 0.21.3")

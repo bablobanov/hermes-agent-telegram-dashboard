@@ -284,7 +284,7 @@ sighting of a blocked send path and the last send error the engine logged.
 ### The cron line
 
 ```
-Cron ✓ 27 jobs                      active jobs (enabled: scheduled, running, or parked in error); paused in the details
+Cron ✓ 27 jobs                      active jobs (enabled, no pause marker: scheduled, running, or parked in error); paused in the details
 Cron ⚠️ 2 of 27 failing             a run failed, a result was not delivered, a job is blocked or overdue
 Cron ⚠️ ticker silent 12 min        no heartbeat for longer than the engine's own threshold (200 s)
 Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in an error
@@ -294,7 +294,7 @@ Cron: not observed                  no cron directory on this installation
 
 The sources are the engine's own files under `HERMES_HOME/cron/`, read only: `jobs.json`
 (every job with the outcome of its last run: `last_status`, `last_error`, `last_delivery_error`,
-`failure_streak`, `next_run_at`, `last_run_at`, `state`), the ticker's stamps
+`failure_streak`, `next_run_at`, `last_run_at`, `state`, `paused_at`), the ticker's stamps
 (`ticker_heartbeat`, `ticker_last_success`, `ticker_last_error`; the first token of each is the
 epoch, which is why main's `<epoch> <pid>` heartbeat reads the same), and `executions.db`, the
 run history, opened `mode=ro` with `PRAGMA query_only` in a worker under the tick's deadline
@@ -308,7 +308,10 @@ reached its chat, a failure like any other (decision of 01.10: a job that ran bu
 not green); `blocked_config` is blocked; a `next_run_at` more than 15 minutes in the past while
 the ticker lives is overdue. A failed run's streak is the engine's `failure_streak`; the delivery
 streak the engine does not keep is counted from the history (`delivery_outcome = 'failed'` rows
-in a row). A paused job carries no failure: its last run is history.
+in a row). A paused job carries no failure: its last run is history. A pause is read as the
+ticker reads it (`is_job_runnable`): a job off, in the `paused` state or stamped `paused_at` is
+paused, so an enabled record with the stamp alone (a half-pause the engine itself self-disables
+on its next loop, and `hermes cron list` shows active until then) is never overdue here (0.9.1).
 
 A failure the next successful run erased from `jobs.json` between two ticks is still a failure
 nobody saw: the history shows it, and the details keep it for two ticks with the run that

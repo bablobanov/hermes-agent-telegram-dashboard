@@ -139,6 +139,8 @@ class Job:
     name: str
     enabled: bool
     state: str
+    # The engine's pause stamp: with ``enabled`` and ``state`` one of its three pause markers.
+    paused_at: str | None
     next_run_at: str | None
     last_run_at: str | None
     last_status: str | None
@@ -148,13 +150,22 @@ class Job:
 
     @property
     def paused(self) -> bool:
-        return not self.enabled or self.state == "paused"
+        """As the ticker reads it (``cron/jobs.py`` ``_has_pause_marker`` and
+        ``is_job_runnable``, v2026.9.14 and main): off, in the ``paused`` state, or stamped
+        ``paused_at``. The engine does not fire an enabled record with the stamp alone (a
+        half-pause, from a hand edit) and self-disables it on its next loop; until then
+        ``hermes cron list`` shows it active, since ``effective_job_state`` trusts ``enabled``.
+        The plugin follows what fires (0.9.1)."""
+        return not self.enabled or self.state == "paused" or self.paused_at is not None
 
     @property
     def active(self) -> bool:
-        """Enabled and scheduled or running, or parked by the engine in its terminal ``error``
-        state: a job that should be running counts, so the line never reads ``1 of 0``."""
-        return self.enabled and self.state in ("scheduled", "running", "error")
+        """Not paused and scheduled or running, or enabled and parked by the engine in its
+        terminal ``error`` state whatever its stamps: a job that should be running counts, so
+        the line never reads ``1 of 0``."""
+        if self.state == "error":
+            return self.enabled
+        return not self.paused and self.state in ("scheduled", "running")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +209,7 @@ def job_of(raw: object) -> Job | None:
         name=_name(raw.get("name") or raw["id"]),
         enabled=raw.get("enabled", True) is not False,
         state=(_text(raw.get("state")) or "scheduled").lower(),
+        paused_at=_text(raw.get("paused_at")),
         next_run_at=_text(raw.get("next_run_at")),
         last_run_at=_text(raw.get("last_run_at")),
         last_status=_text(raw.get("last_status")),
