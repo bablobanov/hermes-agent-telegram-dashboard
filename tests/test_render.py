@@ -912,3 +912,32 @@ def test_a_gemini_log_that_is_not_there_is_named_as_such() -> None:
     main = _main_part(render_dashboard(snapshot, now=NOW))
 
     assert "Not observed: Gemini log (not on this installation)" in main
+
+
+# ----------------------------------------------------------------------------- private ids
+#
+# Decision of 01.10 (0.9.0): a reason a provider or a local source answers with may quote a
+# delivery target or a chat id; it reaches the details masked, like a secret or a path.
+
+
+def test_a_provider_reason_with_a_chat_target_is_masked_in_the_details() -> None:
+    snapshot = DashboardSnapshot(
+        overall="normal",
+        observed_at=NOW.isoformat(),
+        capacity=CapacitySummary(
+            (
+                QuotaMetric(
+                    "Grok",
+                    "unavailable",
+                    detail="HTTP 400 for telegram:-1001234567890:17 user 987654321",
+                ),
+            )
+        ),
+        incidents=(Incident("grok:error", "warning", "Grok refused chat -1001234567890"),),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+
+    assert "1001234567890" not in text and "987654321" not in text
+    assert "Grok: HTTP 400 for [target] user [id]" in _details_lines(text)
+    assert "- Grok refused chat [id]" in _main_part(text)
