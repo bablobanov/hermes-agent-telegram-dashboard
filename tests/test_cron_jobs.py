@@ -484,5 +484,6 @@ def test_the_held_record_keeps_the_newest_entries_when_it_is_full() -> None:
 
     held = hold(cache, (), {}, now=NOW)
 
-    assert [h.job_id for h in held][0] == "b30" and [h.job_id for h in held][-1] == "b79"
+    ids = [h.job_id for h in held]
+    assert (ids[0], ids[-1]) == ("b30", "b79")
     assert "b79" in cache["held"] and "b0" not in cache["held"]
