@@ -160,10 +160,10 @@ def test_error_kind_follows_the_engine_s_order(text, word) -> None:
 
 
 PLANTED = (
-    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /var/lib/hermes/.hermes chat -1001234567890 "
+    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
     "telegram:-1001234567890:17 user 987654321"
 )
-FRAGMENTS = ("sk-live", "ABCDEFGHIJ", "/var/lib", "1001234567890", "987654321")
+FRAGMENTS = ("sk-live", "ABCDEFGHIJ", "/home/someone", "1001234567890", "987654321")
 
 
 def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(

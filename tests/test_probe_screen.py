@@ -1125,7 +1125,7 @@ def test_an_adapter_without_counters_is_no_data_on_the_traffic_source(
 
 
 PLANTED = (
-    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /var/lib/hermes/.hermes chat -1001234567890 "
+    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
     "telegram:-1001234567890:17 user 987654321"
 )
 
@@ -1167,7 +1167,7 @@ def test_planted_secrets_in_the_engine_s_cron_records_never_reach_the_message(
     seen = [html.unescape(text) for text in adapter.texts]
     seen.append(json.dumps(ctx.state.get("probe")))
     for rendered in seen:
-        for fragment in ("sk-live", "ABCDEFGHIJ", "/var/lib", "1001234567890", "987654321"):
+        for fragment in ("sk-live", "ABCDEFGHIJ", "/home/someone", "1001234567890", "987654321"):
             assert fragment not in rendered, fragment
     last = html.unescape(adapter.last_text)
     assert "not delivered" in last and "(chat unavailable)" in last
