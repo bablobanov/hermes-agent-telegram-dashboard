@@ -74,6 +74,9 @@ from .schema import (
     TrafficSummary,
     VersionSummary,
 )
+from .telegram_traffic import SOURCE_NAME as TRAFFIC
+from .telegram_traffic import Probe as TrafficProbe
+from .telegram_traffic import TrafficPart, collect_traffic, remembered_traffic
 from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
@@ -900,6 +903,8 @@ def collect_all(
     external_fetch: ExternalFetch | None = None,
     gemini_cache: dict[str, Any] | None = None,
     cron_cache: dict[str, Any] | None = None,
+    traffic_probe: TrafficProbe | None = None,
+    traffic_cache: dict[str, Any] | None = None,
 ) -> DashboardSnapshot:
     externals = _externals_sync(
         env,
@@ -919,6 +924,9 @@ def collect_all(
     if runs is not None:
         cron_store["runs_checked_at"] = now.isoformat()
     cron, cron_source, cron_incidents = assemble_cron(scan, cron_store, now=now, runs=runs)
+    traffic, traffic_source, traffic_incidents = collect_traffic(
+        env, traffic_probe, traffic_cache, now=now
+    )
     capacity, limits_source, probe = collect_limits(env, now=now, resolve=resolve_limits)
     if probe.status == "supported":
         grok, grok_source = collect_grok(
@@ -950,6 +958,7 @@ def collect_all(
         drift=drift,
         backup=backup,
         cron=cron,
+        traffic=traffic,
         capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
         sources=(
             gateway_source,
@@ -961,6 +970,7 @@ def collect_all(
             backup_source,
             cron_source,
             runs_source,
+            traffic_source,
         ),
         incidents=(
             *gateway_incidents,
@@ -968,6 +978,7 @@ def collect_all(
             *backup_incidents,
             *gemini_incidents,
             *cron_incidents,
+            *traffic_incidents,
             *(incident for part in externals for incident in part[2]),
         ),
     )
@@ -1085,6 +1096,9 @@ async def collect_all_async(
     gemini_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     cron_cache: dict[str, Any] | None = None,
     cron_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    traffic_probe: TrafficProbe | None = None,
+    traffic_cache: dict[str, Any] | None = None,
+    traffic_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1101,7 +1115,10 @@ async def collect_all_async(
     the log stays the last one. ``cron_cache`` is the record of the cron line: the failures the
     engine erased between two ticks and where the history read left off; the history itself
     (``executions.db``) is read in a worker under ``cron_timeout_seconds``, the two small files
-    (``jobs.json``, the ticker stamps) on the loop.
+    (``jobs.json``, the ticker stamps) on the loop. ``traffic_probe`` is what the plugin read off
+    the live adapter before the tick (``telegram_traffic.probe_adapter``; ``None`` on the cron
+    path), ``traffic_cache`` the record of the channel; the send errors come from the engine's
+    log, read in a worker under ``traffic_timeout_seconds``.
     """
     flights = flights or Flights()
     cron_store = cron_cache if cron_cache is not None else {}
@@ -1111,6 +1128,17 @@ async def collect_all_async(
     runs_task = asyncio.ensure_future(
         _runs_guarded(
             env, cron_store, scan, now=now, timeout_seconds=cron_timeout_seconds, flights=flights
+        )
+    )
+    traffic_store = traffic_cache if traffic_cache is not None else {}
+    traffic_task = asyncio.ensure_future(
+        _traffic_guarded(
+            env,
+            traffic_probe,
+            traffic_store,
+            now=now,
+            timeout_seconds=traffic_timeout_seconds,
+            flights=flights,
         )
     )
     # The upstream release check starts with the tick and runs beside every other source: a
@@ -1205,6 +1233,7 @@ async def collect_all_async(
         version, version_incidents = await version_task
         externals = await externals_task
         runs, runs_source = await runs_task
+        traffic, traffic_source, traffic_incidents = await traffic_task
         cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
         if gemini_task is None:
             gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
@@ -1218,6 +1247,7 @@ async def collect_all_async(
             backup=backup,
             version=version,
             cron=cron,
+            traffic=traffic,
             capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
             sources=(
                 gateway_source,
@@ -1229,6 +1259,7 @@ async def collect_all_async(
                 backup_source,
                 cron_source,
                 runs_source,
+                traffic_source,
             ),
             incidents=(
                 *gateway_incidents,
@@ -1239,6 +1270,7 @@ async def collect_all_async(
                 *kimi_incidents,
                 *gemini_incidents,
                 *cron_incidents,
+                *traffic_incidents,
                 *version_incidents,
                 *(incident for part in externals for incident in part[2]),
             ),
@@ -1248,6 +1280,7 @@ async def collect_all_async(
         version_task.cancel()
         externals_task.cancel()
         runs_task.cancel()
+        traffic_task.cancel()
         if gemini_task is not None:
             gemini_task.cancel()
 
@@ -1338,6 +1371,35 @@ def _cron_guarded(
     except BaseException as exc:
         source, incident = _collector_crashed(CRON, "official", exc)
         return CronSummary("unknown", detail=source.detail), source, (incident,)
+
+
+async def _traffic_guarded(
+    env: Environment,
+    probe: TrafficProbe | None,
+    cache: dict[str, Any],
+    *,
+    now: datetime,
+    timeout_seconds: float,
+    flights: Flights,
+) -> TrafficPart:
+    """``collect_traffic`` in the log's own worker under the tick's deadline; a miss shows what
+    the probe and the record say without the log, like ``_gemini_guarded``."""
+    try:
+        return await flights.run(
+            TRAFFIC, collect_traffic, env, probe, cache, now=now, timeout_seconds=timeout_seconds
+        )
+    except TimeoutError:
+        return remembered_traffic(cache, probe, now=now, detail="log read timed out")
+    except StillRunning:
+        return remembered_traffic(cache, probe, now=now, detail="still reading the log")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(TRAFFIC, "local", exc)
+        summary, _source, incidents = remembered_traffic(
+            cache, probe, now=now, detail=source.detail or "collector crashed"
+        )
+        return summary, source, (*incidents, incident)
 
 
 async def _drift_off_loop(

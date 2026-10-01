@@ -566,6 +566,7 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
         "backup",
         "cron",
         "cron_runs",
+        "telegram_traffic",
     ]
     grok_quota = next(q for q in second.capacity.quotas if q.provider == "Grok")
     assert grok_quota.kind == "official" and grok_quota.fetched_at == NOW.isoformat()
@@ -577,7 +578,7 @@ def test_the_tick_keeps_the_grok_cache_in_the_caller_s_dict_and_counts_the_sourc
     assert "Claude · no data" in lines and "> Claude: no account token" in lines
     seen = [s for s in second.sources if s.state in ("fresh", "stale")]
     assert "grok_quota" in [s.name for s in seen]
-    assert f"sources {len(seen)}/9" in text  # nine sources, Grok counted
+    assert f"sources {len(seen)}/10" in text  # ten sources, Grok counted
 
 
 def test_a_week_not_started_counts_the_source_and_leaves_no_gap_on_the_screen(

@@ -148,6 +148,7 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
         "backup",
         "cron",
         "cron_runs",
+        "telegram_traffic",
     }
     assert by_name[source_name].state == "unavailable"
     assert "KeyError" in (by_name[source_name].detail or "")
@@ -180,6 +181,7 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
         "backup",
         "cron",
         "cron_runs",
+        "telegram_traffic",
     ]
     assert all(source.state == "unsupported" for source in snapshot.sources)
 
@@ -739,3 +741,82 @@ def test_a_cron_collector_that_crashes_is_one_unavailable_source(
     source = next(s for s in snapshot.sources if s.name == "cron")
     assert (source.state, source.detail) == ("unavailable", "collector crashed: RuntimeError")
     assert snapshot.cron is not None and snapshot.cron.state == "unknown"
+
+
+# ----------------------------------------------------------------------------- traffic (0.9.0)
+
+
+def test_a_slow_traffic_log_read_never_holds_the_tick_and_the_word_comes_from_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """The send-error read of ``errors.log`` runs in a worker under the tick's deadline, like the
+    Gemini one. On a miss the verdict still comes from the probe and the record (the blocked
+    send path is on the line), the last send error is the record's, the source says why."""
+    from datetime import timedelta
+
+    from telegram_dashboard.telegram_traffic import Probe
+    from telegram_dashboard.workers import Flights
+
+    real = collect.collect_traffic
+    calls: list[datetime] = []
+
+    def slow(env, probe, cache, *, now):
+        calls.append(now)
+        if len(calls) == 1:
+            time.sleep(0.4)
+        return real(env, probe, cache, now=now)
+
+    monkeypatch.setattr(collect, "collect_traffic", slow)
+    (tmp_path / "logs").mkdir()
+    blocked = (NOW - timedelta(minutes=30)).isoformat()
+    failed = (NOW - timedelta(minutes=20)).isoformat()
+    cache = {"degraded_since": blocked, "last_send_error_at": failed}
+    probe = Probe(
+        received_total=5,
+        generation=1,
+        progress_age_seconds=10.0,
+        generation_age_seconds=900.0,
+        send_path_degraded=True,
+    )
+    flights = Flights()
+
+    def tick():
+        return collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=flights,
+            traffic_probe=probe,
+            traffic_cache=cache,
+            traffic_timeout_seconds=0.05,
+        )
+
+    def traffic_of(snapshot):
+        return snapshot.traffic, next(s for s in snapshot.sources if s.name == "telegram_traffic")
+
+    async def scenario():
+        started = time.monotonic()
+        first = await tick()
+        took = time.monotonic() - started
+        second = await tick()
+        await asyncio.sleep(0.5)  # the abandoned worker returns
+        third = await tick()
+        return first, took, second, third
+
+    first, took, second, third = asyncio.run(scenario())
+
+    assert took < 0.3, took
+    traffic, source = traffic_of(first)
+    assert (source.state, source.detail) == ("unavailable", "log read timed out")
+    assert traffic is not None and traffic.state == "no_sends"
+    assert (traffic.sends_blocked_since, traffic.last_send_error_at) == (blocked, failed)
+    assert traffic.send_errors_hour == 0
+    assert "Telegram: sends blocked" in [i.title for i in first.incidents]
+    traffic, source = traffic_of(second)
+    assert (source.state, source.detail) == ("unavailable", "still reading the log")
+    assert traffic is not None and traffic.state == "no_sends"
+    assert len(calls) == 2, "the second tick started no reader while the first one ran"
+    traffic, source = traffic_of(third)
+    assert source.state == "fresh" and traffic is not None and traffic.state == "no_sends"
+    assert "checked_at" in cache

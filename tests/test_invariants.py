@@ -7,7 +7,8 @@ a later change cannot undo one of them quietly:
 4. state is written through the engine's ``PluginState`` only (``HERMES_HOME/plugin-data/``)
 5. nothing outlives a disable: the one task is spawned through ``ctx.spawn_task``
 
-Three more since 0.9.0 (the cron sources), numbered 6 to 8 below their tests.
+Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 below
+their tests.
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -157,11 +158,12 @@ def test_a_bot_token_variable_is_never_a_source_key(monkeypatch) -> None:
 
 # ----------------------------------------------------------------------------- 0.9.0, cron sources
 #
-# Three more properties for the cron line (plan of 01.10): the run history is read-only at the
+# Four more properties for 0.9.0 (plan of 01.10): the run history is read-only at the
 # connection and at the statement, nothing under HERMES_HOME/cron is ever written, the entry
-# registers nothing but the platform handler and the one task.
+# registers nothing but the platform handler and the one task, and the traffic probe reads
+# the adapter's counters without calling anything on it.
 
-CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py")
+CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py", "telegram_traffic.py")
 
 
 def test_the_runs_database_is_opened_read_only_and_query_only() -> None:
@@ -214,3 +216,19 @@ def test_the_plugin_registers_no_hook_tool_middleware_or_command() -> None:
     entry = _code_only(ENTRY.read_text(encoding="utf-8"))
     assert not re.search(r"register_(hook|tool|middleware|command|locale)", entry)
     assert entry.count("register_platform_handler(") == 1
+
+
+def test_the_traffic_probe_reads_attributes_and_calls_no_adapter_method() -> None:
+    """9. The four adapter counters are read as attributes of the object; the probe calls nothing
+    on it, so a renamed attribute is no data, never an exception in the adapter."""
+    source = (PACKAGE / "telegram_traffic.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    probe = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "probe_adapter"
+    )
+    allowed = {"getattr", "isinstance", "all", "Probe", "_age", "time.monotonic"}
+    for node in ast.walk(probe):
+        if isinstance(node, ast.Call):
+            assert ast.unparse(node.func) in allowed, ast.unparse(node)
