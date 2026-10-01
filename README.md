@@ -43,9 +43,11 @@ collapsed:
 
 ```
 🟢 Healthy · Sep 25 12:21 +05       status and the dated data stamp (the pinned header shows it)
-Gateway ✓ · Telegram ✓              words when something is off: stopped, disconnected
+Gateway ✓ · Telegram ✓              words when something is off: stopped, disconnected;
+                                    ⚠️ no sends / stalled / quiet: connected but deaf
 Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
 Drift ✓ 0 of 481                    keys that differ from the approved baseline
+Cron ✓ 27 jobs                      active jobs; ⚠️ N of M failing, ticker silent, ticks failing
 
 🧠 Limits used
 Claude · no data                    a line without a number never shows a zero
@@ -58,14 +60,16 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
-                                    time, release dates, the reason of every "no data"
+                                    time, the cron failures and the channel's times, release
+                                    dates, the reason of every "no data"
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
-status line, and the message under it carries the rest: gateway and Telegram state, the last
-backup, config drift, the account limits of every provider with the time to each reset, the
+status line, and the message under it carries the rest: gateway and Telegram state (and whether
+the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs, the
+account limits of every provider with the time to each reset, the
 Hermes version the gateway runs next to the latest upstream release, and a collapsed details
 block with the reasons and the timestamps. Nothing to open, nothing to install
 on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
@@ -86,7 +90,7 @@ only moved: a line without a number still names its reason, in the details.
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
-(`Profiles 1/1 · sources 7/7`) lives in the details and comes up to the screen only when it is
+(`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen only when it is
 incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`).
 
 ## Freshness is a load-bearing requirement
@@ -119,9 +123,12 @@ What "verified" means here, honestly:
 | Hermes | How |
 |---|---|
 | 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
-| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`) |
+| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
+ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
+source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`) |
 | 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3 |
 | main (`485979ddf4`, 2026-09-28) | `edit_message` and `_edit_text` read in the engine source: same signatures, the public verb still without a parse mode |
+| main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
 Anything else is not verified. Above these versions the sources are probed at runtime and
@@ -153,7 +160,8 @@ and edits the same message; the counter text of the vertical slice is gone.
 register(ctx) → ctx.register_platform_handler("telegram", wire)
              → adapter.connect() calls wire(app, adapter)
              → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
-             → each tick: collect_all_async → render_dashboard → to_telegram_html and
+             → each tick: the traffic counters read off the adapter as attributes, then
+               collect_all_async → render_dashboard → to_telegram_html and
                to_telegram_plain, then adapter = runner.adapters["telegram"] if connected,
                adapter.send(plain) once, then every tick the HTML form through the verb the
                adapter has for it: edit_message(html, parse_mode="HTML") when its signature
@@ -261,7 +269,107 @@ source under the first eight hex digits of its URL's SHA-256 (the URL itself is 
 with the provider, the plan and the login date it last named. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
 message; the limit and the retry are kept, not shown) and when the log was last read
-(`checked_at`), so a 429 that rotated out of the log is still the last one.
+(`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
+where the run-history read left off (`runs_checked_at`), the last tick that looked
+(`checked_at`) and the failures the engine erased that the details still hold (`held`, by job
+id: the kind, the time, the name, the kind of the error in a word, how many ticks shown).
+`traffic_cache` holds the polling generation and the update counter last seen, the last tick
+that saw the counter grow, the longest gap between updates per day of the last seven, the first
+sighting of a blocked send path and the last send error the engine logged.
+
+### The cron line
+
+```
+Cron ✓ 27 jobs                      active jobs (enabled, scheduled or running); paused ones in the details
+Cron ⚠️ 2 of 27 failing             a run failed, a result was not delivered, a job is blocked or overdue
+Cron ⚠️ ticker silent 12 min        no heartbeat for longer than the engine's own threshold (200 s)
+Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in an error
+Cron: no data                       the files could not be read; the reason in the details
+Cron: not observed                  no cron directory on this installation
+```
+
+The sources are the engine's own files under `HERMES_HOME/cron/`, read only: `jobs.json`
+(every job with the outcome of its last run: `last_status`, `last_error`, `last_delivery_error`,
+`failure_streak`, `next_run_at`, `last_run_at`, `state`), the ticker's stamps
+(`ticker_heartbeat`, `ticker_last_success`, `ticker_last_error`; the first token of each is the
+epoch, which is why main's `<epoch> <pid>` heartbeat reads the same), and `executions.db`, the
+run history, opened `mode=ro` with `PRAGMA query_only` in a worker under the tick's deadline
+(`cron_jobs.py`, `cron_runs.py`). Never read: `prompt`, `script`, `deliver` (chat ids live
+there), `skills`, the model, the `error` column of the history, `state.db`.
+
+What counts as a failure is the engine's own rule set (`hermes cron status`): a `last_status`
+outside `ok`, `delivery_failed`, `delivery_queued` is a failed run (a literal the plugin does not
+know is named as it is and is never green); a `last_delivery_error` is a run whose result never
+reached its chat, a failure like any other (decision of 01.10: a job that ran but nobody heard is
+not green); `blocked_config` is blocked; a `next_run_at` more than 15 minutes in the past while
+the ticker lives is overdue. A failed run's streak is the engine's `failure_streak`; the delivery
+streak the engine does not keep is counted from the history (`delivery_outcome = 'failed'` rows
+in a row). A paused job carries no failure: its last run is history.
+
+A failure the next successful run erased from `jobs.json` between two ticks is still a failure
+nobody saw: the history shows it, and the details keep it for two ticks with the run that
+replaced it (`Cron daily-digest: run failed Sep 30 11:35, ok since 11:40`; `cron_cache.held` in
+the record).
+
+**The engine's error texts never reach the screen.** `last_error`, `last_delivery_error` and the
+ticker's error are reduced to the kind of the error in a word, in the order the engine's own
+health projection uses (`auth`, `rate limit`, `timeout`, `not connected`, `chat unavailable`,
+`network`, `permission denied`, `fd exhaustion`, `stale code`, else `error`): `(rate limit)` in
+the details, the text nowhere, not even in the record. The shared sanitizer, which since 0.9.0
+also masks chat ids (`[id]`) and delivery targets (`[target]`), is the second line, not the
+first.
+
+Severity: a failed run, an undelivered result, a blocked or an overdue job is a warning; a dead
+ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
+three cron events on the screen; the line carries the full count; the details name every job
+with its time, its streak and the kind of its error. The thresholds are the engine's own: 200 s
+for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
+the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
+[itpartypattaya/hermes-cron](https://github.com/itpartypattaya/hermes-cron) (MIT); no code is
+taken from it. `python -m telegram_dashboard --demo 3`, `21` and `22` show the forms.
+
+### Connected but deaf: the Telegram line
+
+`Gateway ✓ · Telegram ✓` says the adapter is running: `is_connected` on the engine's adapter is
+literally "the adapter was started", nothing about updates arriving or replies leaving. The
+adapter keeps counters of its own for that, and the plugin reads five of them off the live
+adapter object it already holds, as attributes, once per tick, calling nothing on it:
+`_updates_received_total`, `_polling_generation`, `_polling_last_progress_monotonic`,
+`_polling_generation_started_monotonic` and `_send_path_degraded` (`telegram_traffic.py`).
+
+Three verdicts replace the tick on the line while the adapter says connected:
+
+```
+Gateway ✓ · Telegram ⚠️ no sends   the adapter's own send gate is closed past the 120 s reconnect
+                                    grace: every reply fails while this message may still move (critical)
+Gateway ✓ · Telegram ⚠️ stalled    no successful getUpdates round-trip for five minutes (critical)
+Gateway ✓ · Telegram ⚠️ quiet      no update seen for longer than this installation usually waits (warning)
+```
+
+The quiet threshold is relative: twice the longest gap between updates seen in the last seven
+days, at least 6 hours and at most 48, and never before the first update was seen at all. An
+absolute threshold lies at night on a one-person bot; a relative one without a floor shouts on a
+chatty group at lunch; one without a ceiling never surfaces a dead bot on a quiet installation.
+A new polling generation (a reconnect) resets the counter: a lower number is a reset, not
+silence, and the first update of the new generation counts.
+
+The details always carry the times: `Telegram last update seen Sep 30 12:30 · polling ok 12:30`
+(plus `sends blocked since …` and `quiet 9 h, usual gap up to 4 h` when they apply) and
+`Telegram send errors: last Sep 30 11:58` or `none in the log`. "Last update seen" is the tick
+that saw the counter grow, not the update's own time. Failed sends are the engine's own
+`Failed to send Telegram message` ERROR lines in `logs/errors.log` (the same tail the Gemini
+line reads, in its own worker); three in an hour are an event. Successful sends are not logged
+at that level: the last successful send the plugin can vouch for is its own confirmed edit
+(`Confirmed` in the details). Without the counters (an adapter of another shape, or the cron
+path, which holds no adapter) the line keeps its old word and the details say `Telegram traffic:
+no data` with the reason. `python -m telegram_dashboard --demo 23` shows the form.
+
+**Five private attributes, read as a capability, not a promise.** Like `_edit_text` for the
+HTML form, these are not part of the engine's public contract: a future adapter that renames or
+retypes them degrades the line to no data with the reason and never raises inside the adapter
+(`tests/test_invariants.py` pins that nothing is called on it). The plugin's catalog entry
+discloses this on a line of its own, and a public snapshot of the channel's health on the
+adapter is the upstream change that would turn the capability into a contract.
 
 ### The backup line
 
@@ -645,6 +753,14 @@ helpers takes that same patched package, not a second copy of it under the plugi
 importable; to run it, use an interpreter with the engine and `python-telegram-bot` installed
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
+
+`tests/test_invariants.py` reads the plugin's own source and pins nine properties a later change
+cannot undo quietly: the bot token is never read, no port is listened on, the drift command
+runs without a shell, state goes through the engine's plugin state only, the one task is
+spawned through `ctx.spawn_task`, the run history is opened read-only and query-only (the only
+SQLite the plugin opens), nothing under `HERMES_HOME/cron` is ever written and the cron and
+traffic modules import no network client, the entry registers no hook, tool, middleware or
+command, and the traffic probe reads the adapter's counters without calling anything on it.
 
 ## License
 

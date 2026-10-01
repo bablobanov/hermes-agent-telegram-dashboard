@@ -97,3 +97,34 @@ def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() 
     assert "0.21.3" in row["verified"]
     assert "engine's own calls" in row["caveat"]
     assert "always unsupported" not in sources["limits"]["contract"]
+
+
+def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None:
+    """0.9.0: the cron line reads the engine's cron files and its run history read-only; the
+    deaf verdict reads four private counters off the live adapter as a capability. Each row
+    says what is read, what never is, and on which engine source it was read."""
+    matrix = load_matrix()
+    sources = matrix["sources"]
+    cron = sources["cron"]
+    runs = sources["cron_runs"]
+    traffic = sources["telegram_traffic"]
+
+    assert "jobs.json" in cron["probe"] and "first token" in cron["probe"]
+    assert {"prompt", "script", "deliver"} <= set(cron["never_reads"])
+    assert "200" in cron["contract"] and "15 min" in cron["contract"]
+    assert "error_kind" in cron["contract"] or "kind of the error" in cron["contract"]
+    assert verification_for(matrix, "cron", "0.21.3").startswith("verified on 0.21.3")
+    assert "main" in cron["verified"] and "6ec05205a9" in cron["verified"]["main"]
+
+    assert "mode=ro" in runs["probe"] and "query_only" in runs["contract"]
+    assert "error" in runs["never_reads"] and "state.db" in runs["never_reads"]
+    assert "1000" in runs["contract"]
+    assert "0.21.3" in runs["verified"]
+
+    assert (
+        "_updates_received_total" in traffic["probe"] and "_send_path_degraded" in traffic["probe"]
+    )
+    assert "attribute" in traffic["contract"] and "never" in traffic["contract"]
+    assert "capability" in traffic["caveat"] and "promise" in traffic["caveat"]
+    assert "0.21.3" in traffic["verified"] and "main" in traffic["verified"]
+    assert "Failed to send Telegram message" in traffic["contract"]
