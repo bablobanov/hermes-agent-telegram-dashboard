@@ -39,7 +39,10 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 ## What the message shows
 
 One phone screen, about thirty characters per line, then a details block that Telegram shows
-collapsed:
+collapsed. The width is a guide, not a law: a phone sets a proportional font, so a line of the
+same count fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a Latin
+one), and the two lines seen to wrap on a phone are kept shorter on purpose, a marked limits
+line and an event with a name beyond ASCII:
 
 ```
 🟢 Healthy · Sep 25 12:21 +05       status and the dated data stamp (the pinned header shows it)
@@ -94,7 +97,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-also name the dashboard's own version (`Dashboard 0.9.0`), so the installed copy can be told
+also name the dashboard's own version (`Dashboard 0.9.1`), so the installed copy can be told
 from the pinned message.
 
 ## Freshness is a load-bearing requirement
@@ -335,11 +338,13 @@ first.
 Severity: a failed run, an undelivered result, a blocked or an overdue job is a warning; a dead
 ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
 three cron events on the screen; the line carries the full count; the details name every job
-with its time, its streak and the kind of its error. The thresholds are the engine's own: 200 s
+with its time, its streak and the kind of its error. The job's name in an event is cut to eleven
+characters and an ellipsis, to eight when it carries a character beyond ASCII (Cyrillic glyphs
+are wider on a phone); the details carry it whole, up to 24. The thresholds are the engine's own: 200 s
 for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
 [itpartypattaya/hermes-cron](https://github.com/itpartypattaya/hermes-cron) (MIT); no code is
-taken from it. `python -m telegram_dashboard --demo 3`, `21` and `22` show the forms.
+taken from it. `python -m telegram_dashboard --demo 3`, `21`, `22` and `24` show the forms.
 
 ### Connected but deaf: the Telegram line
 
@@ -469,7 +474,13 @@ An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provi
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
 screen is spent, never remaining, from every source; the heading says `🧠 Limits used`) and the
 time to that window's reset in whole minutes rounded up (`45m`, `1h21m`, `24h`, `1d5h`), whole
-days from two days on (`4d`), `(?)` when the reset date cannot be read. The mark comes from 90%
+days from two days on (`4d`), `(?)` when the reset date cannot be read. A line with the warning
+mark keeps one character under the phone line (the mark is an emoji two columns wide) and, when
+the full times do not fit, writes them coarse, one unit rounded up, whole hours under a day and
+whole days from a day on (`⚠️ Claude 29% (4h) · 87% (4d)`): the time is when the quota is back,
+and a line never promises it earlier. It is never cut, and the one shape that still reaches 32,
+both windows at 100% with one reset under an hour and the other within the day, may wrap on a
+narrow phone. The mark comes from 90%
 spent in any window, or from a window the provider itself calls `warning` or `critical`. A
 window carries no length label: the share and its reset are what the reader acts on, the plan
 (where the provider names it) is in the details, and a length the source does not state would

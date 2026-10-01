@@ -1,7 +1,7 @@
 """Ten static states from section 11 of the research, two for the message itself, one for the
 Hermes version line, three showcase states for the catalog screenshots, two for an external
-limits source, two for Gemini's 429 from the engine's log, and three for the cron line and
-the deaf channel.
+limits source, two for Gemini's 429 from the engine's log, three for the cron line and the
+deaf channel, and one for the narrow phone.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -18,7 +18,9 @@ STATES = all_states()
 # A phone shows about 30 characters per line and about 15 lines of a message; emoji are wider
 # than letters, so the columns are tighter than the count suggests. The lines are counted as the
 # phone shows them: the blank line before the collapsed Details is one of them (decision of
-# 01.10, when the cron line made the healthy screen 15 lines).
+# 01.10, when the cron line made the healthy screen 15 lines). The 32 is a guide (decision of
+# 01.10, from Ilya's phone): a marked limits line keeps to 31 and an event with a name beyond
+# ASCII is cut at eight, see test_render and test_cron_jobs.
 PHONE_LINES = 15
 PHONE_COLUMNS = 32
 
@@ -34,8 +36,8 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_twenty_three_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 24))
+def test_twenty_four_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 25))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -528,11 +530,44 @@ def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
     assert len(main) <= PHONE_LINES + 3
 
 
+def test_state_24_the_narrow_phone_keeps_the_two_lines_that_wrapped_shorter() -> None:
+    """0.9.1, decision of 01.10 from Ilya's phone: the 32 is a guide; a marked limits line keeps
+    to 31 with its times coarse (one unit, rounded up), and an event with a name beyond ASCII is
+    cut at eight. The event is a literal, held to what ``cron_jobs.incidents_for`` builds for
+    the same record; the showcase's own marked line (31, Codex) keeps its minutes."""
+    state = STATES[23]
+    text = _render(state)
+    main = _main_part(text)
+    healthy = [
+        "⚠️ Claude 29% (4h) · 87% (4d)" if line.startswith("Claude ") else line
+        for line in SHOWCASE_HEALTHY
+    ]
+
+    assert state.title == "The narrow phone: a marked limits line and a Cyrillic job name"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        *healthy[1:4],
+        "Cron ⚠️ 1 of 27 failing",
+        "",
+        "## Needs attention",
+        "- Cron undelivered: Утренняя…",
+        *healthy[5:],  # the Claude line: 3h34m up to 4h, the week exactly four days away
+    ]
+    assert "⚠️ Codex 93% (1h20m) · 58% (5d)" in main
+    # The events block adds three lines to the healthy form; an exception is never pushed out.
+    assert len(main) <= PHONE_LINES + 3
+    assert max(len(line) + (1 if line.startswith("⚠️") else 0) for line in main) <= PHONE_COLUMNS
+    assert (
+        "> Cron Утренняя сводка проекта: not delivered Sep 26 20:05, 1 run (chat unavailable)"
+        in text.splitlines()
+    )
+
+
 def test_the_cron_states_carry_what_the_collector_builds() -> None:
-    """The demo events of states 3, 21 and 22 are literals; they must stay what ``cron_jobs``
-    says for the same block."""
+    """The demo events of states 3, 21, 22 and 24 are literals; they must stay what
+    ``cron_jobs`` says for the same block."""
     from telegram_dashboard.cron_jobs import incidents_for
 
-    for state in (STATES[2], STATES[20], STATES[21]):
+    for state in (STATES[2], STATES[20], STATES[21], STATES[23]):
         assert state.snapshot.cron is not None
         assert incidents_for(state.snapshot.cron, now=state.now) == state.snapshot.incidents

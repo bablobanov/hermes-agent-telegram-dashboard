@@ -485,6 +485,58 @@ def _cron_states() -> tuple[State, ...]:
     )
 
 
+# The narrow phone state (24, 0.9.1): the showcase installation with the two lines that wrapped
+# on a phone on 01.10, kept shorter on purpose: Claude's marked line with two windows writes its
+# times coarse (one unit, rounded up), and an event with a name beyond ASCII is cut at eight. The
+# mark on the Claude line is the provider's own ``warning`` on the week, as it was on that phone;
+# the week resets exactly four days away. The event is a literal; ``test_states`` holds it to
+# what ``cron_jobs.incidents_for`` builds for the record.
+_S_IN_3H34M = "2026-09-27T00:34:00+00:00"
+_S_IN_4D = "2026-09-30T21:00:00+00:00"
+
+
+def _phone_states() -> tuple[State, ...]:
+    undelivered = CronFailure(
+        "b2",
+        "Утренняя сводка проекта",
+        "delivery",
+        at="2026-09-26T20:05:00+00:00",
+        streak=1,
+        reason="chat unavailable",
+    )
+    claude = QuotaMetric(
+        "Claude",
+        "official",
+        windows=(
+            QuotaWindow("5h", 29.0, _S_IN_3H34M),
+            QuotaWindow("7d", 87.0, _S_IN_4D, severity="warning"),
+        ),
+        detail="official",
+    )
+    return (
+        State(
+            24,
+            "The narrow phone: a marked limits line and a Cyrillic job name",
+            _showcase_snapshot(
+                "warning",
+                incidents=(Incident("cron:delivery:b2", "warning", "Cron undelivered: Утренняя…"),),
+                capacity=_external_limits(claude),
+                cron=CronSummary(
+                    "failing",
+                    active=27,
+                    paused=3,
+                    failing=(undelivered,),
+                    ticker_at=_S_MINUS_2M,
+                    ticker_ok_at=_S_MINUS_2M,
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -663,4 +715,5 @@ def all_states() -> tuple[State, ...]:
         *_external_states(),
         *_gemini_states(),
         *_cron_states(),
+        *_phone_states(),
     )
