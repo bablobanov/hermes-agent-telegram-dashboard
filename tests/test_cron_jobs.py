@@ -362,6 +362,33 @@ def test_a_long_name_is_cut_so_the_event_fits_the_phone(tmp_path: Path) -> None:
     assert len("- " + incidents[0].title) <= 32
 
 
+def test_a_name_beyond_ascii_is_cut_shorter_in_the_event(tmp_path: Path) -> None:
+    """Decision of 01.10 (0.9.1), from Ilya's phone: Cyrillic glyphs are wider in a proportional
+    font, so an event of 32 characters with a Cyrillic name wrapped where the Latin one of the
+    same count fits. A name with any character beyond ASCII is cut at eight and an ellipsis;
+    the full name (up to 24) stays in the details, as before."""
+    job = _job(
+        name="Утренняя сводка проекта", last_status="delivery_failed", last_delivery_error="x"
+    )
+    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert incidents[0].title == "Cron undelivered: Утренняя…"
+    assert len("- " + incidents[0].title) <= 29
+    assert summary.failing[0].name == "Утренняя сводка проекта"
+
+
+def test_a_short_name_beyond_ascii_stays_whole(tmp_path: Path) -> None:
+    """Eight characters fit; the cut is for what does not."""
+    job = _job(name="Дайджест", last_status="delivery_failed", last_delivery_error="x")
+    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+
+    _summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert incidents[0].title == "Cron undelivered: Дайджест"
+
+
 @pytest.mark.parametrize(
     "payload, detail",
     [("[]", "jobs.json is not an object"), ("{", "jobs.json unreadable: JSONDecodeError")],

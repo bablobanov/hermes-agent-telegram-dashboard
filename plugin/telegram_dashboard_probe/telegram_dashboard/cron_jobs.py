@@ -59,8 +59,12 @@ HOLD_TICKS = 2
 HELD_LIMIT = 50
 MAX_EVENTS = 3
 NAME_LIMIT = 24
-# Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns.
+# Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns. A name
+# with any character beyond ASCII is cut at eight (decision of 01.10, from Ilya's phone): Cyrillic
+# glyphs are wider in a proportional font, and an event of the same count with a Cyrillic name
+# wrapped where the Latin one fits.
 EVENT_NAME_LIMIT = 12
+EVENT_NAME_LIMIT_BEYOND_ASCII = 9
 EVENT_TITLES: dict[CronFailureKind, str] = {
     "run": "Cron run failed",
     "delivery": "Cron undelivered",
@@ -476,6 +480,17 @@ def _with_history(
     return tuple(out)
 
 
+def _event_name(name: str) -> str:
+    """The job's name for an event line: whole up to ``EVENT_NAME_LIMIT``, else cut with an
+    ellipsis; ``EVENT_NAME_LIMIT_BEYOND_ASCII`` when any character of it is beyond ASCII, the
+    ellipsis of the sanitizer's own cut at ``NAME_LIMIT`` aside."""
+    beyond = not name.replace("…", "").isascii()
+    limit = EVENT_NAME_LIMIT_BEYOND_ASCII if beyond else EVENT_NAME_LIMIT
+    if len(name) <= limit:
+        return name
+    return name[: limit - 1].rstrip() + "…"
+
+
 def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...]:
     if summary.state in ("stalled", "ticks_failing"):
         stamp = summary.ticker_at if summary.state == "stalled" else summary.ticker_ok_at
@@ -487,9 +502,7 @@ def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...
         return (Incident("cron:ticker", "critical", title),)
     events: list[Incident] = []
     for failure in summary.failing[:MAX_EVENTS]:
-        name = sanitize_public_text(failure.name, limit=NAME_LIMIT)
-        if len(name) > EVENT_NAME_LIMIT:
-            name = name[: EVENT_NAME_LIMIT - 1].rstrip() + "…"
+        name = _event_name(sanitize_public_text(failure.name, limit=NAME_LIMIT))
         title = f"{EVENT_TITLES[failure.kind]}: {name}"
         events.append(Incident(f"cron:{failure.kind}:{failure.job_id}", "warning", title))
     return tuple(events)
