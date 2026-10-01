@@ -596,12 +596,23 @@ def _windows_line(
     provider: str, windows: tuple[QuotaWindow, ...], reference: datetime | None
 ) -> str:
     """``Claude 37% (3h) · 12% (4d)``: every window in the provider's own order, each with the
-    time to its reset. A line without a number says the provider's states in words."""
+    time to its reset. A line without a number says the provider's states in words. The line
+    keeps to the phone line (decision of 01.10, from Ilya's phone): the warning mark is an emoji
+    two columns wide, so a marked line has one character less, and a line still too long writes
+    its times coarse (``_duration_words``); it is never cut, a number stays whole."""
     numbered = [window.used_percent for window in windows if window.used_percent is not None]
-    words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
+        words = " · ".join(_window_words(window, reference) for window in windows)
         return f"{provider} · {words}"
-    return f"{_mark(windows)}{provider} {words}"
+    mark = _mark(windows)
+    budget = _LINE_COLUMNS - 1 if mark else _LINE_COLUMNS
+    line = ""
+    for coarse in (False, True):
+        words = " · ".join(_window_words(window, reference, coarse=coarse) for window in windows)
+        line = f"{mark}{provider} {words}"
+        if len(line) <= budget:
+            break
+    return line
 
 
 def _mark(windows: tuple[QuotaWindow, ...]) -> str:
@@ -614,13 +625,14 @@ def _mark(windows: tuple[QuotaWindow, ...]) -> str:
     return ""
 
 
-def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
+def _window_words(window: QuotaWindow, reference: datetime | None, *, coarse: bool = False) -> str:
     """``37% (3h)``, ``Opus 5% (4d)``, ``Fable 100% (4h)``; the provider's state in words when
     it gave no number; ``?`` otherwise. A state in words never becomes a number."""
     scope = window.scope or _SCOPE_LABELS.get(window.label)
     head = f"{scope} " if scope else ""
     if window.used_percent is not None:
-        return f"{head}{window.used_percent:.0f}%{_reset_suffix(window.reset_at, reference)}"
+        suffix = _reset_suffix(window.reset_at, reference, coarse=coarse)
+        return f"{head}{window.used_percent:.0f}%{suffix}"
     return f"{head}{window.note or '?'}"
 
 
@@ -629,29 +641,40 @@ def _warn(percent: float) -> str:
     return f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
 
 
-def _reset_suffix(value: object, reference: datetime | None) -> str:
+def _reset_suffix(value: object, reference: datetime | None, *, coarse: bool = False) -> str:
     """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
     reset date at all."""
     if not value:
         return ""
-    return f" ({_until(value, reference) or '?'})"
+    minutes = _minutes_until(value, reference)
+    words = _duration_words(minutes, coarse=coarse) if minutes is not None else "?"
+    return f" ({words})"
 
 
-def _until(value: object, reference: datetime | None) -> str | None:
-    """Whole minutes to ``value`` from ``reference``, rounded up, in ``_duration_words``; a
-    reset already behind the data time is ``0m``. ``None`` when either side is unreadable."""
+def _minutes_until(value: object, reference: datetime | None) -> int | None:
+    """Whole minutes to ``value`` from ``reference``, rounded up; a reset already behind the data
+    time is 0. ``None`` when either side is unreadable."""
     moment = parse_timestamp(value)
     if moment is None or reference is None:
         return None
     ahead = age_seconds(reference, moment)
     if ahead is None:
         return None
-    return _duration_words(max(0, math.ceil(ahead / 60)))
+    return max(0, math.ceil(ahead / 60))
 
 
-def _duration_words(minutes: int) -> str:
+def _duration_words(minutes: int, *, coarse: bool = False) -> str:
     """The status-line form: whole days from two days on (``4d``), ``1d5h`` or ``24h`` on the
-    first day, then ``1h21m``, ``3h`` and ``45m``."""
+    first day, then ``1h21m``, ``3h`` and ``45m``. Coarse, for a line that would not keep to the
+    phone line otherwise: one unit, rounded up (decision of 01.10: the time is when the quota is
+    back, and a line must never promise it earlier), whole days from a day on (``1d5h`` →
+    ``2d``), whole hours under it (``3h34m`` → ``4h``), the minutes under an hour as they are."""
+    if coarse:
+        if minutes >= _MINUTES_PER_DAY:
+            return f"{math.ceil(minutes / _MINUTES_PER_DAY)}d"
+        if minutes >= 60:
+            return f"{math.ceil(minutes / 60)}h"
+        return f"{minutes}m"
     days, rest = divmod(minutes, _MINUTES_PER_DAY)
     hours, mins = divmod(rest, 60)
     if days >= 2:

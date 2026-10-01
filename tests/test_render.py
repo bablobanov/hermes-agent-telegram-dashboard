@@ -238,14 +238,18 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
     assert "> Period 5 min" in lines
 
 
-def _codex_line(*windows: QuotaWindow) -> str:
+def _provider_line(provider: str, *windows: QuotaWindow) -> str:
     snapshot = DashboardSnapshot(
         overall="normal",
         observed_at=NOW.isoformat(),
-        capacity=CapacitySummary((QuotaMetric("Codex", "official", windows=windows),)),
+        capacity=CapacitySummary((QuotaMetric(provider, "official", windows=windows),)),
     )
     lines = render_dashboard(snapshot, now=NOW).splitlines()
-    return next(line for line in lines if "Codex" in line and not line.startswith(">"))
+    return next(line for line in lines if provider in line and not line.startswith(">"))
+
+
+def _codex_line(*windows: QuotaWindow) -> str:
+    return _provider_line("Codex", *windows)
 
 
 @pytest.mark.parametrize(
@@ -278,10 +282,12 @@ def test_windows_carry_no_length_label_only_a_model_scope_in_the_provider_s_orde
     """The engine's words (``agent/account_usage.py``: Codex ``Session``/``Weekly`` by position,
     whatever the window's length; Claude ``Current session``/``Current week``) never reach the
     screen; a limit for one model keeps its scope."""
+    # Whole hours and days: a marked line this long is coarse (0.9.1), and a part of a day would
+    # round up to the next one.
     line = _codex_line(
         QuotaWindow("Session", 37.0, (NOW + timedelta(hours=3)).isoformat()),
-        QuotaWindow("Weekly", 95.0, (NOW + timedelta(days=4, hours=2)).isoformat()),
-        QuotaWindow("Opus week", 5.0, (NOW + timedelta(days=4, hours=2)).isoformat()),
+        QuotaWindow("Weekly", 95.0, (NOW + timedelta(days=4)).isoformat()),
+        QuotaWindow("Opus week", 5.0, (NOW + timedelta(days=4)).isoformat()),
         QuotaWindow("Sonnet week", None, None, note="usage not started"),
     )
 
@@ -612,6 +618,84 @@ def test_a_model_limit_spent_less_than_the_account_keeps_its_line() -> None:
 
     assert _screen_lines(text, "Claude") == ["Claude 42% (2h) · 71% (4h)", "Claude Fable 60%"]
     assert not any("Fable" in line for line in _details_lines(text))
+
+
+# Decision of 01.10 (0.9.1), from Ilya's phone: the warning mark is an emoji two columns wide, so
+# a marked limits line of 32 characters wrapped where one of 31 fits. The 32 the states are held
+# to stays a guide; a marked line keeps one character under it, and writes its times coarse when
+# the full form does not fit: one unit, rounded up, since the time is when the quota is back and
+# a line must never promise it earlier. Nothing is ever cut: a number stays whole.
+_IN_3H34M = (NOW + timedelta(hours=3, minutes=34)).isoformat()
+_IN_3H4M = (NOW + timedelta(hours=3, minutes=4)).isoformat()
+_IN_4D = (NOW + timedelta(days=4)).isoformat()
+
+
+def test_a_marked_limits_line_of_thirty_two_writes_its_times_coarse() -> None:
+    """The two lines of the screenshots of 01.10: the first wrapped and loses its minutes, the
+    second fit and stays as it is. The mark comes from the provider's own ``warning`` on the
+    week, not from 90%."""
+    wrapped = _provider_line(
+        "Claude",
+        QuotaWindow("5h", 29.0, _IN_3H34M),
+        QuotaWindow("7d", 87.0, _IN_4D, severity="warning"),
+    )
+    fitting = _provider_line(
+        "Claude",
+        QuotaWindow("5h", 37.0, _IN_3H4M),
+        QuotaWindow("7d", 88.0, _IN_4D, severity="warning"),
+    )
+
+    assert wrapped == "⚠️ Claude 29% (4h) · 87% (4d)"
+    assert fitting == "⚠️ Claude 37% (3h4m) · 88% (4d)"
+    assert len(wrapped) <= 31 and len(fitting) <= 31
+
+
+@pytest.mark.parametrize(
+    ("ahead", "words"),
+    [
+        (timedelta(minutes=-5), "0m"),  # as in the full form: due now
+        (timedelta(minutes=45), "45m"),  # under an hour the minutes stay
+        (timedelta(hours=1), "1h"),  # a whole hour is a whole hour
+        (timedelta(hours=1, minutes=21), "2h"),  # ``1h21m`` in the full form: up, never early
+        (timedelta(hours=23, minutes=59), "24h"),  # under a day still hours
+        (timedelta(days=1), "1d"),  # ``24h`` in the full form
+        (timedelta(days=1, hours=5, minutes=40), "2d"),  # ``1d5h`` in the full form
+        (timedelta(days=2, hours=23, minutes=59), "3d"),  # ``2d`` in the full form
+        (timedelta(days=4, hours=2), "5d"),  # ``4d`` in the full form
+    ],
+)
+def test_the_coarse_form_is_one_unit_rounded_up(ahead: timedelta, words: str) -> None:
+    """Two windows at 100% with ``3h34m`` on the first make a marked line too long whatever the
+    second says, so both times come out coarse: the first ``4h``, the second by the table."""
+    line = _provider_line(
+        "Claude",
+        QuotaWindow("5h", 100.0, _IN_3H34M),
+        QuotaWindow("7d", 100.0, (NOW + ahead).isoformat()),
+    )
+
+    assert line == f"⚠️ Claude 100% (4h) · 100% ({words})"
+
+
+def test_a_reset_that_cannot_be_read_stays_a_question_mark_on_a_marked_line() -> None:
+    line = _provider_line(
+        "Claude", QuotaWindow("5h", 100.0, _IN_3H34M), QuotaWindow("7d", 100.0, "soon")
+    )
+
+    assert line == "⚠️ Claude 100% (4h) · 100% (?)"
+
+
+def test_the_coarse_line_is_returned_whole_when_it_still_does_not_fit() -> None:
+    """The coarse form is the last step and a number is never cut. Both windows at 100%, one
+    under an hour and the other within the day, is the one shape of the account's two windows
+    that still reaches 32 and more; the README names it."""
+    line = _provider_line(
+        "Claude",
+        QuotaWindow("5h", 100.0, (NOW + timedelta(minutes=45)).isoformat()),
+        QuotaWindow("7d", 100.0, (NOW + timedelta(hours=23)).isoformat()),
+    )
+
+    assert line == "⚠️ Claude 100% (45m) · 100% (23h)"
+    assert len(line) == 33
 
 
 def test_a_model_limit_with_its_own_reset_says_the_time() -> None:
