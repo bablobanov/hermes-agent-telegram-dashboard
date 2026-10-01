@@ -97,7 +97,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.9.1`) after a blank line, so the installed
+close with the dashboard's own version (`Dashboard 0.9.2`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
 
 ## Freshness is a load-bearing requirement
