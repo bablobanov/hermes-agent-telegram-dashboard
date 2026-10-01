@@ -35,7 +35,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypeGuard
 
 from .backup import describe_age
 from .compat import Environment
@@ -95,10 +95,11 @@ def probe_adapter(adapter: object, *, monotonic: float | None = None) -> Probe:
         return Probe(problem=f"adapter counter {ATTR_RECEIVED} is not a number")
     generation = values[ATTR_GENERATION]
     degraded = values[ATTR_DEGRADED]
-    counted = isinstance(generation, int) and not isinstance(generation, bool)
+    if not isinstance(generation, int) or isinstance(generation, bool):
+        generation = None
     return Probe(
         received_total=received,
-        generation=generation if counted else None,
+        generation=generation,
         progress_age_seconds=_age(values[ATTR_PROGRESS], clock),
         generation_age_seconds=_age(values[ATTR_GENERATION_STARTED], clock),
         send_path_degraded=degraded if isinstance(degraded, bool) else None,
@@ -111,7 +112,7 @@ def _age(value: object, clock: float) -> float | None:
     return None
 
 
-def _number(value: object) -> bool:
+def _number(value: object) -> TypeGuard[int | float]:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
@@ -152,13 +153,13 @@ def _verdict(
     raw_gaps = store.get("gaps")
     threshold = quiet_threshold(raw_gaps if isinstance(raw_gaps, Mapping) else {})
     generation_age = probe.generation_age_seconds or 0.0
+    # No progress since the last round-trip, or none at all since the generation started.
     progress_age = probe.progress_age_seconds
+    idle = progress_age if progress_age is not None else generation_age
     state: TrafficState = "ok"
     if probe.send_path_degraded and generation_age > RECONNECT_GRACE_SECONDS:
         state = "no_sends"
-    elif progress_age is not None and progress_age > STALL_SECONDS:
-        state = "stalled"
-    elif progress_age is None and generation_age > STALL_SECONDS:
+    elif idle > STALL_SECONDS:
         state = "stalled"
     elif quiet is not None and quiet > threshold:
         state = "quiet"
@@ -182,9 +183,10 @@ def _note_updates(store: dict[str, Any], probe: Probe, now: datetime) -> None:
     received = probe.received_total
     same = store.get("generation") == probe.generation
     previous = store.get("received_total")
-    counted = isinstance(previous, int) and not isinstance(previous, bool)
+    if not isinstance(previous, int) or isinstance(previous, bool):
+        previous = None
     grew = received is not None and (
-        (same and counted and received > previous) or (not same and received > 0)
+        (same and previous is not None and received > previous) or (not same and received > 0)
     )
     if grew:
         seen = parse_timestamp(store.get("last_update_seen_at"))
