@@ -7,6 +7,8 @@ a later change cannot undo one of them quietly:
 4. state is written through the engine's ``PluginState`` only (``HERMES_HOME/plugin-data/``)
 5. nothing outlives a disable: the one task is spawned through ``ctx.spawn_task``
 
+Three more since 0.9.0 (the cron sources), numbered 6 to 8 below their tests.
+
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
 through the state object, one task across reconnects), ``test_collect.py`` (the drift command).
@@ -151,3 +153,64 @@ def test_a_bot_token_variable_is_never_a_source_key(monkeypatch) -> None:
     forged = external.Source(1, "http://127.0.0.1:18080/u", "TELEGRAM_BOT_TOKEN", 20.0)
     item = external.fetch_item(forged, now=now, get=get)
     assert calls == [] and item["reason"] == "key_env names a bot token variable"
+
+
+# ----------------------------------------------------------------------------- 0.9.0, cron sources
+#
+# Three more properties for the cron line (plan of 01.10): the run history is read-only at the
+# connection and at the statement, nothing under HERMES_HOME/cron is ever written, the entry
+# registers nothing but the platform handler and the one task.
+
+CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py")
+
+
+def test_the_runs_database_is_opened_read_only_and_query_only() -> None:
+    """6. executions.db is the only SQLite the plugin opens: mode=ro in the URI, uri=True,
+    PRAGMA query_only right after; no write statement, no sqlite3 CLI, never state.db."""
+    sources = _plugin_sources()
+    assert any(path.name == "cron_runs.py" for path, _ in sources)
+    for path, source in sources:
+        code = _code_only(source)
+        if path.name != "cron_runs.py":
+            assert "sqlite3" not in code, path.name
+            continue
+        calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "sqlite3.connect"
+        ]
+        assert len(calls) == 1
+        (call,) = calls
+        assert {kw.arg for kw in call.keywords} >= {"uri", "timeout"}
+        assert any(
+            isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in call.keywords
+            if kw.arg == "uri"
+        )
+        assert "?mode=ro" in code and "PRAGMA query_only = 1" in code
+        assert not re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|DROP|VACUUM|ALTER|REPLACE)\b", code)
+        assert not re.search(r"journal_mode|\.commit\(|executescript|immutable=1", code)
+        assert "state.db" not in code and "subprocess" not in code
+
+
+def test_the_cron_sources_never_write_under_the_engine_home_and_never_reach_the_network() -> None:
+    """7. jobs.json, the ticker stamps and the database are read; nothing under HERMES_HOME/cron
+    is ever written, renamed or removed, and the new modules import no network client (the
+    words themselves may appear: ``cron_jobs`` names ``socket`` in an error-kind pattern)."""
+    clients = r"urllib|http\.client|requests|aiohttp|httpx|socket"
+    for name in CRON_SOURCE_MODULES:
+        code = _code_only((PACKAGE / name).read_text(encoding="utf-8"))
+        assert not re.search(
+            r"write_text|write_bytes|\.open\((\"|')[wax]|mkdir|unlink|rename\(|os\.replace"
+            r"|shutil|os\.remove",
+            code,
+        ), name
+        assert not re.search(rf"\b(import|from)\s+({clients})\b", code), name
+
+
+def test_the_plugin_registers_no_hook_tool_middleware_or_command() -> None:
+    """8. The catalog entry says ``no tools or hooks`` (provides_hooks: [], provides_tools: []):
+    the entry asks the context for a platform handler factory and a task, nothing else."""
+    entry = _code_only(ENTRY.read_text(encoding="utf-8"))
+    assert not re.search(r"register_(hook|tool|middleware|command|locale)", entry)
+    assert entry.count("register_platform_handler(") == 1
