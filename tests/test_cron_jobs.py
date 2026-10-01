@@ -585,6 +585,21 @@ def test_a_disabled_job_parked_in_error_is_no_failure_and_is_counted_paused(
     assert "Cron ✓ 0 jobs" in text.splitlines()
 
 
+def test_a_completed_job_left_enabled_by_hand_is_no_failure(tmp_path: Path) -> None:
+    """Review of 0.9.2: the engine turns a job off when it completes; a record left
+    ``enabled: true`` and ``completed`` by hand counts neither active nor paused, so a failure
+    on it would read ``1 of 0 failing``. A failure is reported only for a job counted among the
+    active."""
+    done = _job(state="completed", last_status="error", last_error="x")
+    env = _home(tmp_path, [done], heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert classify(job_of(done), now=NOW, ticker_alive=True) is None
+    assert (summary.state, summary.active, summary.paused) == ("ok", 0, 0)
+    assert summary.failing == () and incidents == ()
+
+
 @pytest.mark.parametrize(
     "text",
     [

@@ -291,12 +291,13 @@ def _error_kind_of_file(path: Path) -> str | None:
 
 
 def classify(job: Job, *, now: datetime, ticker_alive: bool) -> CronFailure | None:
-    """What is wrong with ``job`` by the engine's own rules, or nothing. A paused job has no
-    failures: its last run is history. A half-paused job parked in ``error`` is still among the
-    active (``Job.active``) and reported; a disabled one in ``error`` is not (0.9.2: the engine
-    never fires it, and ``hermes cron status`` does not read it). A new status literal is named
-    as it is and is never green."""
-    if job.paused and not job.active:
+    """What is wrong with ``job`` by the engine's own rules, or nothing. Only a job counted among
+    the active (``Job.active``) can fail, so the line never reads ``1 of 0`` (0.9.2): a paused
+    job's last run is history, a disabled one in ``error`` is never fired and ``hermes cron
+    status`` does not read it, and a ``completed`` one is done. A half-paused job parked in
+    ``error`` is among the active and reported. A new status literal is named as it is and is
+    never green."""
+    if not job.active:
         return None
     status = (job.last_status or "").lower()
     if job.state == "error" or (status and status not in RUN_OK_STATUSES):
