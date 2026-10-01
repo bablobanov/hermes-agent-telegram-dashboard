@@ -731,8 +731,8 @@ class ProbeRuntime:
         return cache
 
     def cron_cache(self) -> dict[str, Any]:
-        """The cron line's record inside the plugin's record, the same object on every tick so
-        the history reader that returns after the deadline still writes into it."""
+        """The cron line's record inside the plugin's record, the same object on every tick:
+        where the history read left off and the failures the details still hold."""
         cache = self.record.get(CRON_CACHE_KEY)
         if not isinstance(cache, dict):
             cache = {}

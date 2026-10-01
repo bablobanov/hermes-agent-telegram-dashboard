@@ -101,7 +101,8 @@ def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() 
 
 def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None:
     """0.9.0: the cron line reads the engine's cron files and its run history read-only; the
-    deaf verdict reads four private counters off the live adapter as a capability. Each row
+    deaf verdict reads four private counters off the live adapter as a capability and the
+    send gate through its public property. Each row
     says what is read, what never is, and on which engine source it was read."""
     matrix = load_matrix()
     sources = matrix["sources"]

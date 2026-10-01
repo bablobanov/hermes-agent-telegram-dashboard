@@ -171,6 +171,11 @@ def _verdict(
     return state, quiet, threshold
 
 
+def _gaps_seen(store: Mapping[str, Any]) -> bool:
+    gaps = store.get("gaps")
+    return isinstance(gaps, Mapping) and any(_number(gap) for gap in gaps.values())
+
+
 def _polling_at(probe: Probe, now: datetime) -> str | None:
     if probe.progress_age_seconds is None:
         return None
@@ -178,6 +183,16 @@ def _polling_at(probe: Probe, now: datetime) -> str | None:
 
 
 # ----------------------------------------------------------------------------- the record
+
+
+def note_probe(store: dict[str, Any], probe: Probe | None, now: datetime) -> None:
+    """The counter and the send gate noted in the record, dict operations only: the tick
+    calls this on the loop before the log read goes to its worker, so a reader that never
+    returns cannot freeze the last sighting. Calling it again in the worker changes nothing."""
+    if probe is None or probe.problem:
+        return
+    _note_updates(store, probe, now)
+    _note_degraded(store, probe, now)
 
 
 def _note_updates(store: dict[str, Any], probe: Probe, now: datetime) -> None:
@@ -267,7 +282,7 @@ def collect_traffic(
         last_send_error_at=last_error,
         send_errors_hour=hour,
         quiet_seconds=quiet if state == "quiet" else None,
-        threshold_seconds=threshold if state == "quiet" else None,
+        threshold_seconds=threshold if state == "quiet" and _gaps_seen(store) else None,
     )
     store["checked_at"] = now.isoformat()
     source = SourceObservation(SOURCE_NAME, "local", "fresh", observed_at=now.isoformat())
@@ -293,7 +308,7 @@ def remembered_traffic(
         last_send_error_at=_text(store.get("last_send_error_at")),
         send_errors_hour=0,
         quiet_seconds=quiet if state == "quiet" else None,
-        threshold_seconds=threshold if state == "quiet" else None,
+        threshold_seconds=threshold if state == "quiet" and _gaps_seen(store) else None,
     )
     source = SourceObservation(SOURCE_NAME, "local", "unavailable", detail=detail)
     return summary, source, incidents_for(summary)

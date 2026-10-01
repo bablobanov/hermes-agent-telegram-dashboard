@@ -312,7 +312,11 @@ in a row). A paused job carries no failure: its last run is history.
 A failure the next successful run erased from `jobs.json` between two ticks is still a failure
 nobody saw: the history shows it, and the details keep it for two ticks with the run that
 replaced it (`Cron daily-digest: run failed Sep 30 11:35, ok since 11:40`; `cron_cache.held` in
-the record).
+the record). A history that cannot be read, or one the installation does not keep, is one
+source that did not answer: the line and the events stand on `jobs.json`, the delivery
+streak reads `streak unknown`, the coverage says `Not observed: cron history (unavailable)`,
+and with nothing else wrong the status is ⚪, as for any source, never green (a `chronos`
+cron provider keeps no history: `not on this installation`, the same way).
 
 **The engine's error texts never reach the screen.** `last_error`, `last_delivery_error` and the
 ticker's error are reduced to the kind of the error in a word, in the order the engine's own

@@ -312,10 +312,12 @@ def _traffic_words(traffic: TrafficSummary, zone: tzinfo) -> list[str]:
     since = format_in_zone(traffic.sends_blocked_since, zone, "%H:%M")
     if since:
         parts.append(f"sends blocked since {since}")
-    if traffic.state == "quiet" and traffic.quiet_seconds is not None and traffic.threshold_seconds:
-        quiet = describe_age(traffic.quiet_seconds).removesuffix(" ago")
-        usual = describe_age(traffic.threshold_seconds / 2).removesuffix(" ago")
-        parts.append(f"quiet {quiet}, usual gap up to {usual}")
+    if traffic.state == "quiet" and traffic.quiet_seconds is not None:
+        words = f"quiet {describe_age(traffic.quiet_seconds).removesuffix(' ago')}"
+        if traffic.threshold_seconds:
+            usual = describe_age(traffic.threshold_seconds / 2).removesuffix(" ago")
+            words += f", usual gap up to {usual}"
+        parts.append(words)
     last = format_day_time(traffic.last_send_error_at, zone)
     errors = f"last {last}" if last else "none in the log"
     return [" · ".join(parts), f"Telegram send errors: {errors}"]
@@ -339,10 +341,10 @@ def _cron_line(
         stamp = cron.ticker_at if cron.state == "stalled" else cron.ticker_ok_at
         moment = parse_timestamp(stamp)
         age = age_seconds(moment, reference) if moment and reference else None
-        words = (
-            describe_age(max(age, 0.0)).removesuffix(" ago") if age is not None else "age unknown"
-        )
         what = "ticker silent" if cron.state == "stalled" else "ticks failing"
+        if age is None:
+            return f"Cron {WARN_MARK} {what}"
+        words = describe_age(max(age, 0.0)).removesuffix(" ago")
         return f"Cron {WARN_MARK} {what} {words}"
     total = cron.active or 0
     if cron.state == "failing":
@@ -351,7 +353,11 @@ def _cron_line(
 
 
 def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
-    ticker = format_in_zone(cron.ticker_at, zone, "%H:%M") or "no heartbeat"
+    ticker = format_in_zone(cron.ticker_at, zone, "%H:%M")
+    if ticker is None:
+        ticker = "no heartbeat"
+        if cron.detail:
+            ticker += f" ({sanitize_public_text(cron.detail, limit=60)})"
     head = f"Cron {cron.active or 0} active · {cron.paused or 0} paused · ticker {ticker}"
     ok = format_in_zone(cron.ticker_ok_at, zone, "%H:%M")
     if ok and ok != ticker:

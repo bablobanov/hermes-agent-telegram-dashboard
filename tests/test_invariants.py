@@ -219,7 +219,8 @@ def test_the_plugin_registers_no_hook_tool_middleware_or_command() -> None:
 
 
 def test_the_traffic_probe_reads_attributes_and_calls_no_adapter_method() -> None:
-    """9. The four adapter counters are read as attributes of the object; the probe calls nothing
+    """9. The adapter's four counters and its public send gate are read as attributes of the
+    object; the probe calls nothing
     on it, so a renamed attribute is no data, never an exception in the adapter."""
     source = (PACKAGE / "telegram_traffic.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

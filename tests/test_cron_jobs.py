@@ -427,3 +427,62 @@ def test_the_held_record_is_bounded_and_tolerates_junk() -> None:
     held = hold(cache, (), {}, now=NOW)
 
     assert "junk" not in cache["held"] and len(held) == 50
+
+
+# ----------------------------------------------------------------------------- review of 01.10
+
+
+def test_a_job_parked_in_the_error_state_is_counted_among_the_active(tmp_path: Path) -> None:
+    """Review, important 1: an enabled job the engine parked in its terminal ``error`` state is a
+    job that should be running; it is counted in the total, so the line never reads
+    ``1 of 0 failing``."""
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.schema import DashboardSnapshot
+
+    broken = _job(id="b1", state="error", last_status=None, last_error="schedule invalid")
+    env = _home(tmp_path, [broken], heartbeat=_epoch(NOW))
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+    text = render_dashboard(
+        DashboardSnapshot(overall="warning", observed_at=NOW.isoformat(), cron=summary), now=NOW
+    )
+
+    assert (summary.state, summary.active, len(summary.failing)) == ("failing", 1, 1)
+    assert "Cron ⚠️ 1 of 1 failing" in text.splitlines()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Model yielded an empty response",
+        "Tool 'connection_pool' misconfigured",
+        "quota_hold_until reached",
+    ],
+)
+def test_error_kind_matches_words_not_substrings(text: str) -> None:
+    """Review, minor 2: ``yield``, ``connection`` and ``quota`` are words, not substrings."""
+    assert error_kind(text) == "error"
+
+
+def test_a_ticker_verdict_without_a_readable_stamp_carries_no_age() -> None:
+    """Review, minor 4: ``age unknown`` made the line 33 columns; the words are dropped."""
+    from telegram_dashboard.cron_jobs import incidents_for
+    from telegram_dashboard.schema import CronSummary
+
+    (event,) = incidents_for(CronSummary("stalled"), now=NOW)
+
+    assert event.title == "Cron ticker silent"
+
+
+def test_the_held_record_keeps_the_newest_entries_when_it_is_full() -> None:
+    """Review, minor 7: the record trims the oldest entries, and returns what it keeps."""
+    entries = {
+        f"b{i}": {"kind": "run", "at": "2026-09-30T00:00:00+00:00", "name": f"j{i}", "shown": 0}
+        for i in range(80)
+    }
+    cache = {"held": entries}
+
+    held = hold(cache, (), {}, now=NOW)
+
+    assert [h.job_id for h in held][0] == "b30" and [h.job_id for h in held][-1] == "b79"
+    assert "b79" in cache["held"] and "b0" not in cache["held"]

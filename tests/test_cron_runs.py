@@ -107,3 +107,15 @@ def test_a_database_without_the_table_is_unavailable_with_the_class(tmp_path: Pa
 
     assert runs is None
     assert (source.state, source.detail) == ("unavailable", "executions.db: OperationalError")
+
+
+def test_a_run_claimed_before_the_window_but_finished_inside_it_is_seen(tmp_path: Path) -> None:
+    """Review, minor 8: the window is where the read left off; a run claimed before that moment
+    and failed after it must not fall between two ticks."""
+    rows = [("b1", "failed", None, _at(90), _at(30)), ("b2", "failed", None, _at(90), _at(80))]
+    conn = open_readonly(_db(tmp_path, rows))
+
+    runs = recent_failures(conn, since=NOW - timedelta(hours=1))
+
+    assert [r.job_id for r in runs] == ["b1"]
+    conn.close()

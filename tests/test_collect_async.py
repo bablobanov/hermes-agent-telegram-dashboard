@@ -820,3 +820,88 @@ def test_a_slow_traffic_log_read_never_holds_the_tick_and_the_word_comes_from_th
     traffic, source = traffic_of(third)
     assert source.state == "fresh" and traffic is not None and traffic.state == "no_sends"
     assert "checked_at" in cache
+
+
+def test_an_unreadable_run_history_lowers_coverage_and_the_status_like_any_source() -> None:
+    """Review, important 2: the plan's claim "the status does not fall to unknown because of the
+    history" holds only while an event colours the screen. Without one, an unavailable history
+    is a source that did not answer, and the status is unknown like for any other (the credo:
+    neither turns green). Pinned here so the README says what the code does."""
+    from telegram_dashboard.collect import build_snapshot
+    from telegram_dashboard.schema import CapacitySummary, CronSummary, Incident, SourceObservation
+
+    fresh = tuple(
+        SourceObservation(name, "official", "fresh", observed_at=NOW.isoformat())
+        for name in ("gateway_state", "limits", "drift", "backup", "cron")
+    )
+    history = SourceObservation(
+        "cron_runs", "official", "unavailable", detail="history read timed out"
+    )
+    cron = CronSummary("ok", active=27, paused=0)
+
+    quiet = build_snapshot(
+        now=NOW,
+        gateway=None,
+        drift=None,
+        capacity=CapacitySummary(),
+        sources=(*fresh, history),
+        incidents=(),
+        cron=cron,
+    )
+    loud = build_snapshot(
+        now=NOW,
+        gateway=None,
+        drift=None,
+        capacity=CapacitySummary(),
+        sources=(*fresh, history),
+        incidents=(Incident("cron:delivery:b1", "warning", "Cron undelivered: daily-digest"),),
+        cron=cron,
+    )
+
+    assert quiet.overall == "unknown" and loud.overall == "warning"
+
+
+def test_a_hanging_log_reader_never_freezes_the_traffic_bookkeeping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """Review, minor 1: the counter and the send gate are noted on the loop before the log read
+    goes to its worker, so a reader that never returns cannot freeze ``last_update_seen_at`` and
+    turn a live channel into ``quiet``."""
+    from telegram_dashboard.telegram_traffic import Probe
+    from telegram_dashboard.workers import Flights
+
+    def hanging(env, probe, cache, *, now):
+        time.sleep(0.6)
+        return collect.remembered_traffic(cache, probe, now=now, detail="never")
+
+    monkeypatch.setattr(collect, "collect_traffic", hanging)
+    (tmp_path / "logs").mkdir()
+    cache: dict = {}
+    flights = Flights()
+
+    def tick(received: int):
+        probe = Probe(received_total=received, generation=1, progress_age_seconds=5.0)
+        return collect_all_async(
+            _env(tmp_path),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=flights,
+            traffic_probe=probe,
+            traffic_cache=cache,
+            traffic_timeout_seconds=0.05,
+        )
+
+    async def scenario():
+        first = await tick(5)
+        second = await tick(7)
+        await asyncio.sleep(0.7)  # the abandoned worker returns
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    source = next(s for s in second.sources if s.name == "telegram_traffic")
+    assert (source.state, source.detail) == ("unavailable", "still reading the log")
+    assert cache["received_total"] == 7 and cache["last_update_seen_at"] == NOW.isoformat()
+    assert second.traffic is not None and second.traffic.last_update_seen_at == NOW.isoformat()
+    assert first.traffic is not None and first.traffic.state == "ok"

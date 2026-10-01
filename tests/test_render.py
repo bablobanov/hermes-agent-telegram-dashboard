@@ -1126,3 +1126,49 @@ def test_the_details_name_the_dashboard_s_own_version() -> None:
 
     assert f"Dashboard {__version__}" in _details_lines(text)
     assert not any("Dashboard" in line for line in _main_part(text))
+
+
+# ----------------------------------------------------------------------------- review of 01.10
+
+
+def test_a_ticker_verdict_without_a_readable_stamp_fits_the_line() -> None:
+    """Review, minor 4: no ``age unknown`` on the line (33 columns); the words are dropped."""
+    cron = replace(CRON_OK, state="stalled", ticker_at=None, ticker_ok_at=None)
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert "Cron ⚠️ ticker silent" in _main_part(text)
+    assert all(len(line) <= 32 for line in _main_part(text))
+
+
+def test_a_quiet_channel_without_a_gap_history_names_no_usual_gap() -> None:
+    """Review, minor 6: ``usual gap up to 3 h`` was the floor halved, not a gap ever seen."""
+    traffic = TrafficSummary(
+        "quiet",
+        last_update_seen_at="2026-09-25T00:20:00Z",
+        polling_at="2026-09-25T07:20:00Z",
+        quiet_seconds=7 * 3600,
+        threshold_seconds=None,
+    )
+
+    text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
+
+    assert "> Telegram last update seen Sep 25 00:20 · polling ok 07:20 · quiet 7 h" in (
+        text.splitlines()
+    )
+    assert "usual gap" not in text
+
+
+def test_a_ticker_stamp_that_could_not_be_read_names_its_reason_in_the_details() -> None:
+    """Review, minor 9: a stamp that is not a number was ``ticker no heartbeat`` without the
+    reason the scan recorded."""
+    cron = replace(
+        CRON_OK, ticker_at=None, ticker_ok_at=None, detail="ticker_heartbeat is not a stamp"
+    )
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert (
+        "> Cron 27 active · 3 paused · ticker no heartbeat (ticker_heartbeat is not a stamp)"
+        in (text.splitlines())
+    )

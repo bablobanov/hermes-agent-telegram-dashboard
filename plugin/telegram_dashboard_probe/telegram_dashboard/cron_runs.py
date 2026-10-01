@@ -74,8 +74,10 @@ def open_readonly(path: Path) -> sqlite3.Connection:
 def recent_failures(
     conn: sqlite3.Connection, *, since: datetime, limit: int = ROW_LIMIT
 ) -> list[Run]:
-    """Runs that failed or were not delivered, newest first, claimed at ``since`` or later. The
-    engine stamps ``claimed_at`` in the profile's zone, so the moment is compared in Python."""
+    """Runs that failed or were not delivered, newest first, finished (or, without a finish
+    stamp, claimed) at ``since`` or later: a run claimed before the last check and failed
+    after it must not fall between two ticks. The engine stamps the moments in the profile's
+    zone, so they are compared in Python."""
     rows = conn.execute(
         "SELECT job_id, status, delivery_outcome, claimed_at, finished_at FROM executions"
         " WHERE status = 'failed' OR delivery_outcome = 'failed'"
@@ -84,7 +86,7 @@ def recent_failures(
     ).fetchall()
     runs: list[Run] = []
     for job_id, status, outcome, claimed_at, finished_at in rows:
-        moment = parse_timestamp(claimed_at)
+        moment = parse_timestamp(finished_at) or parse_timestamp(claimed_at)
         if moment is None or moment < since:
             continue
         runs.append(

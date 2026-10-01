@@ -232,3 +232,20 @@ def test_no_adapter_is_the_cron_path_and_a_problem_is_no_data(tmp_path: Path) ->
         "unavailable",
         "adapter has no traffic counters",
     )
+
+
+def test_quiet_without_a_gap_history_carries_no_threshold_to_show(tmp_path: Path) -> None:
+    """Review, minor 6: the floor decides the verdict, but it is not a gap this installation
+    has seen, so the details must not call it the usual one."""
+    cache = {
+        "generation": 3,
+        "received_total": 12,
+        "last_update_seen_at": (NOW - timedelta(hours=7)).isoformat(),
+        "gaps": {},
+    }
+
+    summary, _s, incidents = collect_traffic(_env(tmp_path), _probe(), cache, now=NOW)
+
+    assert summary.state == "quiet" and summary.quiet_seconds == 7 * 3600.0
+    assert summary.threshold_seconds is None
+    assert [i.title for i in incidents] == ["Telegram quiet for 7 h"]

@@ -76,7 +76,7 @@ from .schema import (
 )
 from .telegram_traffic import SOURCE_NAME as TRAFFIC
 from .telegram_traffic import Probe as TrafficProbe
-from .telegram_traffic import TrafficPart, collect_traffic, remembered_traffic
+from .telegram_traffic import TrafficPart, collect_traffic, note_probe, remembered_traffic
 from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
@@ -1383,7 +1383,10 @@ async def _traffic_guarded(
     flights: Flights,
 ) -> TrafficPart:
     """``collect_traffic`` in the log's own worker under the tick's deadline; a miss shows what
-    the probe and the record say without the log, like ``_gemini_guarded``."""
+    the probe and the record say without the log, like ``_gemini_guarded``. The counter and
+    the send gate are noted on the loop first, so a reader that never returns cannot freeze
+    the record."""
+    note_probe(cache, probe, now)
     try:
         return await flights.run(
             TRAFFIC, collect_traffic, env, probe, cache, now=now, timeout_seconds=timeout_seconds

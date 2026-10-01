@@ -81,7 +81,7 @@ _ERROR_KINDS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "auth",
     ),
-    (re.compile(r"rate.?limit|\b429\b|quota", re.IGNORECASE), "rate limit"),
+    (re.compile(r"rate.?limit|\b429\b|\bquota\b", re.IGNORECASE), "rate limit"),
     (re.compile(r"timeout|timed out", re.IGNORECASE), "timeout"),
     (re.compile(r"not connected|send_path_degraded", re.IGNORECASE), "not connected"),
     (
@@ -91,10 +91,10 @@ _ERROR_KINDS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "chat unavailable",
     ),
-    (re.compile(r"network|connection|dns|socket|unreachable", re.IGNORECASE), "network"),
+    (re.compile(r"network|\bconnection\b|dns|socket|unreachable", re.IGNORECASE), "network"),
     (re.compile(r"permission ?(?:denied|error)|errno 13", re.IGNORECASE), "permission denied"),
     (re.compile(r"too many open files|emfile", re.IGNORECASE), "fd exhaustion"),
-    (re.compile(r"stale code|yield", re.IGNORECASE), "stale code"),
+    (re.compile(r"stale code|\byield\b", re.IGNORECASE), "stale code"),
 )
 _LITERAL = re.compile(r"[a-z][a-z0-9_]{0,23}")
 
@@ -148,7 +148,9 @@ class Job:
 
     @property
     def active(self) -> bool:
-        return self.enabled and self.state in ("scheduled", "running")
+        """Enabled and scheduled or running, or parked by the engine in its terminal ``error``
+        state: a job that should be running counts, so the line never reads ``1 of 0``."""
+        return self.enabled and self.state in ("scheduled", "running", "error")
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,9 +392,9 @@ def hold(
                 recovered_at=(job.last_run_at if job is not None else None) or now.isoformat(),
             )
         )
-    for extra in list(held)[HELD_LIMIT:]:
-        del held[extra]
-    return tuple(kept[:HELD_LIMIT])
+    for oldest in list(held)[: max(0, len(held) - HELD_LIMIT)]:
+        del held[oldest]
+    return tuple(kept[-HELD_LIMIT:])
 
 
 # ----------------------------------------------------------------------------- the part
@@ -477,9 +479,11 @@ def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...
     if summary.state in ("stalled", "ticks_failing"):
         stamp = summary.ticker_at if summary.state == "stalled" else summary.ticker_ok_at
         age = _age(stamp, now)
-        words = describe_age(age).removesuffix(" ago") if age is not None else "age unknown"
         what = "ticker silent" if summary.state == "stalled" else "ticks failing"
-        return (Incident("cron:ticker", "critical", f"Cron {what} {words}"),)
+        title = f"Cron {what}"
+        if age is not None:
+            title += f" {describe_age(age).removesuffix(' ago')}"
+        return (Incident("cron:ticker", "critical", title),)
     events: list[Incident] = []
     for failure in summary.failing[:MAX_EVENTS]:
         name = sanitize_public_text(failure.name, limit=NAME_LIMIT)

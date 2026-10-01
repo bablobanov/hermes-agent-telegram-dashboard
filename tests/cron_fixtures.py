@@ -15,15 +15,18 @@ _WRITERS: list[sqlite3.Connection] = []
 
 
 def make_db(tmp_path: Path, rows, *, wal: bool = False) -> Path:
-    """``rows`` are ``(job_id, status, delivery_outcome, claimed_at)``. With ``wal`` the writer's
-    connection stays open, the way the gateway holds the file."""
+    """``rows`` are ``(job_id, status, delivery_outcome, claimed_at[, finished_at])``; without a
+    ``finished_at`` the run finished when it was claimed. With ``wal`` the writer's connection
+    stays open, the way the gateway holds the file."""
     (tmp_path / "cron").mkdir(exist_ok=True)
     path = tmp_path / "cron" / "executions.db"
     conn = sqlite3.connect(path)
     if wal:
         conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(SCHEMA)
-    for i, (job_id, status, outcome, claimed_at) in enumerate(rows):
+    for i, row in enumerate(rows):
+        job_id, status, outcome, claimed_at = row[:4]
+        finished_at = row[4] if len(row) > 4 else claimed_at
         conn.execute(
             "INSERT INTO executions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -38,7 +41,7 @@ def make_db(tmp_path: Path, rows, *, wal: bool = False) -> Path:
                 None,
                 claimed_at,
                 claimed_at,
-                claimed_at,
+                finished_at,
                 ERROR_SENTINEL,
                 outcome,
                 None,
