@@ -204,12 +204,12 @@ def read_jobs(path: Path) -> list[Job]:
 
 
 def job_of(raw: object) -> Job | None:
-    if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not raw["id"]:
-        return None
     """One record, its pause fields read as the ticker reads them (``cron/jobs.py``
     ``is_job_runnable`` and ``_has_pause_marker``, v2026.9.14; 0.9.2): ``enabled`` and
     ``paused_at`` by their truth (``null`` is off, a number is a stamp), ``state`` as written
     (``Paused`` is no pause marker)."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not raw["id"]:
+        return None
     streak = raw.get("failure_streak")
     counted = isinstance(streak, int) and not isinstance(streak, bool) and streak >= 0
     stamp = raw.get("paused_at")

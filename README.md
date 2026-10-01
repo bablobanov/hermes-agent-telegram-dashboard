@@ -319,8 +319,9 @@ The fields are read as the ticker reads them (0.9.2): `enabled: null` is off, a 
 `paused_at` is a stamp, a `Paused` state written by hand is no pause marker, and a job the
 ticker may fire is active whatever its state short of `completed`.
 The engine's terminal `error` state is a failure on an enabled job whatever its stamps, counted
-among the active; a job switched off carries no failure in any state and is counted paused, as
-`hermes cron status` does not read it (0.9.2).
+among the active. Only a job counted among the active carries a failure, so the line never reads
+`1 of 0` (0.9.2): a job switched off carries none in any state and is counted paused (one that
+completed in neither column), as `hermes cron status` does not read it.
 
 A failure the next successful run erased from `jobs.json` between two ticks is still a failure
 nobody saw: the history shows it, and the details keep it for two ticks with the run that
@@ -485,8 +486,9 @@ the hour, the hour rounded up (`1d`, `1d5h`, `4d3h` for four days, two hours and
 zero second unit is not written (`3h`, `4d`); `(?)` when the reset date cannot be read. The time
 of a limit is never rounded for the width: a line with two windows and the warning mark can pass
 the phone line and wraps on a narrow phone (`⚠️ Claude 29% (3h34m) · 87% (4d)`), a number and a
-time stay whole. The mark comes from 90% spent in any window, or from a window the provider itself calls `warning` or `critical`. A
-window carries no length label: the share and its reset are what the reader acts on, the plan
+time stay whole. The mark comes from 90% spent in any window, or from a window the provider
+itself calls `warning` or `critical`. A window carries no length label: the share and its reset
+are what the reader acts on, the plan
 (where the provider names it) is in the details, and a length the source does not state would
 be a guess (the engine names Codex's windows `Session` and `Weekly` by position, and on some
 plans the first one is the week). A limit for one model keeps its scope
