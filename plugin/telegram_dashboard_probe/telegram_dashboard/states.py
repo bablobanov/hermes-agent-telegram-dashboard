@@ -1,7 +1,8 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
 for the pinned message itself, one for the Hermes version line, three showcase states for the
-catalog screenshots, two for an external limits source and two for Gemini's 429 from the
-engine's log. No real Hermes is touched: every state is a snapshot literal.
+catalog screenshots, two for an external limits source, two for Gemini's 429 from the
+engine's log, and three for the cron line and the deaf channel. No real Hermes is touched:
+every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -17,6 +18,8 @@ from .schema import (
     BackupSummary,
     CapacitySummary,
     Coverage,
+    CronFailure,
+    CronSummary,
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
@@ -27,6 +30,7 @@ from .schema import (
     Severity,
     SourceObservation,
     SourceState,
+    TrafficSummary,
     VersionSummary,
 )
 
@@ -104,6 +108,8 @@ def _snapshot(
     gateway: GatewaySummary | None = None,
     capacity: CapacitySummary | None = None,
     version: VersionSummary | None = None,
+    cron: CronSummary | None = None,
+    traffic: TrafficSummary | None = None,
 ) -> DashboardSnapshot:
     return DashboardSnapshot(
         overall=overall,
@@ -115,6 +121,8 @@ def _snapshot(
         gateway=gateway or GatewaySummary("running", "connected", _T_MINUS_2M),
         sources=sources or _sources(),
         version=version,
+        cron=cron,
+        traffic=traffic,
     )
 
 
@@ -141,6 +149,7 @@ _S_MINUS_2M = "2026-09-26T20:58:00+00:00"
 _S_MINUS_20M = "2026-09-26T20:40:00+00:00"
 _S_DRIFT_08 = "2026-09-26T08:00:00+00:00"
 _S_BACKUP = "2026-09-26T11:00:00+00:00"
+_S_LAST_UPDATE = "2026-09-26T20:30:00+00:00"
 _V0_21_3 = "2026-09-14T16:04:14Z"
 _V0_21_5 = "2026-09-24T10:09:38Z"
 # The Gemini line as the engine's log makes it (``gemini_log.py``): no number without billing.
@@ -193,6 +202,8 @@ def _showcase_snapshot(
     drift: DriftSummary | None = None,
     capacity: CapacitySummary | None = None,
     extra_sources: tuple[SourceObservation, ...] = (),
+    cron: CronSummary | None = None,
+    traffic: TrafficSummary | None = None,
 ) -> DashboardSnapshot:
     return DashboardSnapshot(
         overall=overall,
@@ -209,6 +220,9 @@ def _showcase_snapshot(
             SourceObservation("grok_quota", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("kimi_quota", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("gemini_log", "local", "fresh", observed_at=_S),
+            SourceObservation("cron", "official", "fresh", observed_at=_S_MINUS_2M),
+            SourceObservation("cron_runs", "official", "fresh", observed_at=_S),
+            SourceObservation("telegram_traffic", "local", "fresh", observed_at=_S),
             *extra_sources,
         ),
         version=VersionSummary(
@@ -220,6 +234,10 @@ def _showcase_snapshot(
             list_size=36,
             checked_at=_S,
         ),
+        cron=cron
+        or CronSummary("ok", active=27, paused=3, ticker_at=_S_MINUS_2M, ticker_ok_at=_S_MINUS_2M),
+        traffic=traffic
+        or TrafficSummary("ok", last_update_seen_at=_S_LAST_UPDATE, polling_at=_S_MINUS_2M),
     )
 
 
@@ -391,6 +409,82 @@ def _gemini_states() -> tuple[State, ...]:
     )
 
 
+# The cron and traffic states (21-23): the showcase installation when a run fails three times in
+# a row (a warning, the job on the Cron line and in the events), when the cron ticker goes silent
+# (critical: nothing scheduled runs), and when the adapter is connected but its own counters say
+# the channel is deaf (critical: the screen itself cannot reach anyone). The events are literals;
+# ``test_states`` holds them to what ``cron_jobs.incidents_for`` and ``telegram_traffic``
+# build for the same records.
+_S_TICKER_SILENT = "2026-09-26T20:48:00+00:00"
+
+
+def _cron_states() -> tuple[State, ...]:
+    failed_run = CronFailure(
+        "b1",
+        "daily-digest",
+        "run",
+        at="2026-09-26T20:05:00+00:00",
+        streak=3,
+        reason="rate limit",
+    )
+    return (
+        State(
+            21,
+            "Cron: a run failed three times in a row",
+            _showcase_snapshot(
+                "warning",
+                incidents=(Incident("cron:run:b1", "warning", "Cron run failed: daily-digest"),),
+                cron=CronSummary(
+                    "failing",
+                    active=27,
+                    paused=3,
+                    failing=(failed_run,),
+                    ticker_at=_S_MINUS_2M,
+                    ticker_ok_at=_S_MINUS_2M,
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+        State(
+            22,
+            "Cron: the ticker went silent",
+            _showcase_snapshot(
+                "critical",
+                incidents=(Incident("cron:ticker", "critical", "Cron ticker silent 12 min"),),
+                cron=CronSummary(
+                    "stalled",
+                    active=27,
+                    paused=3,
+                    ticker_at=_S_TICKER_SILENT,
+                    ticker_ok_at=_S_TICKER_SILENT,
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "critical",
+            now=SHOWCASE_NOW,
+        ),
+        State(
+            23,
+            "Telegram connected but deaf: sends blocked",
+            _showcase_snapshot(
+                "critical",
+                incidents=(Incident("telegram:no_sends", "critical", "Telegram: sends blocked"),),
+                traffic=TrafficSummary(
+                    "no_sends",
+                    last_update_seen_at=_S_LAST_UPDATE,
+                    polling_at=_S_MINUS_2M,
+                    sends_blocked_since="2026-09-26T20:40:00+00:00",
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "critical",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -421,11 +515,30 @@ def all_states() -> tuple[State, ...]:
             3,
             "Job done, delivery failed",
             _snapshot(
-                "critical",
-                incidents=(Incident("cron:delivery", "critical", "cron job result not delivered"),),
+                "warning",
+                incidents=(
+                    Incident("cron:delivery:b1", "warning", "Cron undelivered: daily-digest"),
+                ),
+                cron=CronSummary(
+                    "failing",
+                    active=9,
+                    paused=0,
+                    failing=(
+                        CronFailure(
+                            "b1",
+                            "daily-digest",
+                            "delivery",
+                            at=_T_MINUS_20M,
+                            streak=2,
+                            reason="not connected",
+                        ),
+                    ),
+                    ticker_at=_T_MINUS_2M,
+                    ticker_ok_at=_T_MINUS_2M,
+                ),
             ),
             _delivery_ok(),
-            "critical",
+            "warning",
         ),
         State(
             4,
@@ -549,4 +662,5 @@ def all_states() -> tuple[State, ...]:
         *_showcase_states(),
         *_external_states(),
         *_gemini_states(),
+        *_cron_states(),
     )

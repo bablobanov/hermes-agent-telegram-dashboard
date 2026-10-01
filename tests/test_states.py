@@ -1,6 +1,7 @@
 """Ten static states from section 11 of the research, two for the message itself, one for the
 Hermes version line, three showcase states for the catalog screenshots, two for an external
-limits source and two for Gemini's 429 from the engine's log.
+limits source, two for Gemini's 429 from the engine's log, and three for the cron line and
+the deaf channel.
 
 The criteria of the research: no false green with partial coverage, exceptions are not pushed
 out by normal metrics, the next action is nameable from the first screen. Since 25.09 one more:
@@ -30,8 +31,14 @@ def _main_part(text: str) -> list[str]:
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
 
 
-def test_twenty_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 21))
+def _screen_lines(main: list[str]) -> int:
+    """The lines of the first screen. The blank line before the collapsed Details is the gap
+    before its toggle, not a line of the screen (ruling of 01.10: the budget counts content)."""
+    return len(main[:-1] if main and main[-1] == "" else main)
+
+
+def test_twenty_three_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 24))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -107,7 +114,7 @@ def test_state_1_is_this_exact_screen() -> None:
 def test_state_1_fits_one_phone_screen() -> None:
     main = _main_part(_render(STATES[0]))
 
-    assert len(main) <= PHONE_LINES, main
+    assert _screen_lines(main) <= PHONE_LINES, main
     assert max(len(line) for line in main) <= PHONE_COLUMNS, main
 
 
@@ -119,10 +126,22 @@ def test_state_2_polling_dead_puts_the_incident_first() -> None:
     assert text.index("Telegram disconnected") < text.index("Limits used")
 
 
-def test_state_3_delivery_failed_is_critical_without_work_block() -> None:
-    text = _render(STATES[2])
+def test_state_3_delivery_failed_is_a_warning_with_the_job_on_the_cron_line() -> None:
+    """0.9.0, decision of 01.10: a result that was not delivered is a warning like a failed run;
+    the job is on the Cron line, in the events and in the details with its streak and the kind
+    of the error in a word. No ``## Work`` and no ``## Automation`` block."""
+    state = STATES[2]
+    text = _render(state)
+    main = _main_part(text)
 
-    assert "cron job result not delivered" in text
+    assert state.expect_overall == "warning"
+    assert main[0] == "🟡 Warning · Sep 9 21:00 UTC"
+    assert "Cron ⚠️ 1 of 9 failing" in main
+    assert "- Cron undelivered: daily-digest" in main
+    assert (
+        "> Cron daily-digest: not delivered Sep 9 20:40, 2 in a row (not connected)"
+        in text.splitlines()
+    )
     assert "## Work" not in text
     assert "## Automation" not in text
 
@@ -194,7 +213,7 @@ def test_state_13_is_three_releases_behind_as_information_only() -> None:
     assert "> Hermes 0.20.5 of Aug 21, latest 0.21.1 of Sep 7" in lines
     assert "> 3 releases behind · checked Sep 9 21:00" in lines
     assert "⚠" not in text
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
 
 
 SHOWCASE_HEALTHY = [
@@ -202,6 +221,7 @@ SHOWCASE_HEALTHY = [
     "Gateway ✓ · Telegram ✓",
     "Backup ✓ 10 h ago",
     "Drift ✓ 0 of 481",
+    "Cron ✓ 27 jobs",
     "",
     "## 🧠 Limits used",
     "Claude 42% (2h10m) · 67% (3d)",
@@ -216,7 +236,7 @@ SHOWCASE_HEALTHY = [
 
 
 def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_screen() -> None:
-    """The screenshot state for the catalog: a healthy installation with all six sources and
+    """The screenshot state for the catalog: a healthy installation with all ten sources and
     every line the screen can show on 2026-09-26, made-up numbers except upstream's real
     release dates, one warning mark on a spent limit. Not a verification state: the thirteen
     above keep their golden texts."""
@@ -227,11 +247,14 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
 
     assert state.title == "Showcase: every line of a healthy screen"
     assert main == SHOWCASE_HEALTHY
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
     assert "> Confirmed 20:58" in lines
-    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Profiles 1/1 · sources 10/10" in lines
+    assert "> Cron 27 active · 3 paused · ticker 20:58" in lines
+    assert "> Telegram last update seen Sep 26 20:30 · polling ok 20:58" in lines
+    assert "> Telegram send errors: none in the log" in lines
     assert "> Backup Sep 26 11:00 · integrity ok" in lines
     assert "> Drift checked 08:00" in lines
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
@@ -255,10 +278,11 @@ def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident()
         "Gateway ✓ · Telegram ✓",
         "Backup ✓ 10 h ago",
         "Drift ⚠️ 3 of 481",
+        "Cron ✓ 27 jobs",
         "",
         "## Needs attention",
         "- Config drift: 3 of 481 keys",
-        *SHOWCASE_HEALTHY[4:],
+        *SHOWCASE_HEALTHY[5:],
     ]
     assert max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the drift line and the spent limit
@@ -302,6 +326,7 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
         "Gateway ✓ · Telegram ✓",
         "Backup ✓ 10 h ago",
         "Drift ✓ 0 of 481",
+        "Cron ✓ 27 jobs",
         "",
         "## Needs attention",
         "- Claude login expires in 2 days",
@@ -310,11 +335,11 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
         "Claude 42% (2h10m) · 67% (3d)",
         "⚠️ Claude Fable 100%",
         "Claude Sonnet 20%",
-        *SHOWCASE_HEALTHY[7:],
+        *SHOWCASE_HEALTHY[8:],
     ]
     # An exception is never pushed out, so only the width is the budget here.
     assert max(len(line) for line in main) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 8/8" in lines
+    assert "> Profiles 1/1 · sources 11/11" in lines
     assert not any(line.startswith("> Claude Sonnet") for line in lines)
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login until Sep 28" in lines
@@ -336,16 +361,17 @@ def test_state_18_external_source_says_the_login_expired() -> None:
         "Gateway ✓ · Telegram ✓",
         "Backup ✓ 10 h ago",
         "Drift ✓ 0 of 481",
+        "Cron ✓ 27 jobs",
         "",
         "## Needs attention",
         "- Claude login expired",
         "",
         "## 🧠 Limits used",
         "Claude · login expired",
-        *SHOWCASE_HEALTHY[7:],
+        *SHOWCASE_HEALTHY[8:],
     ]
     assert max(len(line) for line in main) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 8/8" in lines
+    assert "> Profiles 1/1 · sources 11/11" in lines
     assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
     assert "> Claude login ended Sep 26" in lines
     assert "> Claude: " not in text  # not a "no data" reason
@@ -358,7 +384,7 @@ def test_the_external_states_leave_the_showcase_untouched() -> None:
         text = _render(state)
         assert "Plans:" not in text
         assert "login" not in text
-        assert "> Profiles 1/1 · sources 7/7" in text.splitlines()
+        assert "> Profiles 1/1 · sources 10/10" in text.splitlines()
 
 
 def test_the_external_states_carry_the_events_the_collector_builds() -> None:
@@ -385,8 +411,8 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
     lines = text.splitlines()
 
     assert state.title == "Gemini minute quota hit"
-    assert main == [*SHOWCASE_HEALTHY[:8], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[9:]]
-    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert main == [*SHOWCASE_HEALTHY[:9], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[10:]]
+    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
     assert "Needs attention" not in text
     assert (
@@ -394,7 +420,7 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
         in lines
     )
     assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
-    assert "> Profiles 1/1 · sources 7/7" in lines
+    assert "> Profiles 1/1 · sources 10/10" in lines
 
 
 def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
@@ -409,13 +435,13 @@ def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
     assert state.title == "Gemini day quota hit"
     assert main == [
         "🟡 Warning · Sep 26 21:00 UTC",
-        *SHOWCASE_HEALTHY[1:4],
+        *SHOWCASE_HEALTHY[1:5],
         "",
         "## Needs attention",
         "- Gemini daily limit used up",
-        *SHOWCASE_HEALTHY[4:8],
+        *SHOWCASE_HEALTHY[5:9],
         "⚠️ Gemini paused till 23:00",
-        *SHOWCASE_HEALTHY[9:],
+        *SHOWCASE_HEALTHY[10:],
     ]
     assert max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2
@@ -445,3 +471,60 @@ def test_the_gemini_states_carry_what_the_log_reader_builds() -> None:
         assert refusal is not None
         assert activate(replace(refusal, daily=False, active_until=None)) == refusal
         assert incidents_for(refusal, state.now) == state.snapshot.incidents
+
+
+# ----------------------------------------------------------------------------- cron and traffic (21-23)
+#
+# 0.9.0: the showcase installation when a run fails three times in a row, when the cron ticker
+# goes silent, and when the adapter is connected but its own counters say the channel is deaf.
+# The events are literals; task 4 holds them to what ``incidents_for`` builds.
+
+
+def test_state_21_a_run_failed_three_times_in_a_row() -> None:
+    state = STATES[20]
+    text = _render(state)
+    main = _main_part(text)
+
+    assert state.title == "Cron: a run failed three times in a row"
+    assert main == [
+        "🟡 Warning · Sep 26 21:00 UTC",
+        *SHOWCASE_HEALTHY[1:4],
+        "Cron ⚠️ 1 of 27 failing",
+        "",
+        "## Needs attention",
+        "- Cron run failed: daily-digest",
+        *SHOWCASE_HEALTHY[5:],
+    ]
+    assert max(len(line) for line in main) <= PHONE_COLUMNS
+    assert (
+        "> Cron daily-digest: run failed Sep 26 20:05, 3 in a row (rate limit)" in text.splitlines()
+    )
+
+
+def test_state_22_the_ticker_went_silent_is_critical() -> None:
+    state = STATES[21]
+    text = _render(state)
+    main = _main_part(text)
+
+    assert state.title == "Cron: the ticker went silent"
+    assert main[0] == "🔴 Critical · Sep 26 21:00 UTC"
+    assert "Cron ⚠️ ticker silent 12 min" in main
+    assert "- Cron ticker silent 12 min" in main
+    assert "> Cron 27 active · 3 paused · ticker 20:48" in text.splitlines()
+
+
+def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
+    state = STATES[22]
+    text = _render(state)
+    main = _main_part(text)
+
+    assert state.title == "Telegram connected but deaf: sends blocked"
+    assert main[0] == "🔴 Critical · Sep 26 21:00 UTC"
+    assert "Gateway ✓ · Telegram ⚠️ no sends" in main
+    assert "- Telegram: sends blocked" in main
+    assert (
+        "> Telegram last update seen Sep 26 20:30 · polling ok 20:58 · sends blocked since 20:40"
+        in text.splitlines()
+    )
+    # The events block adds three lines to the healthy form; an exception is never pushed out.
+    assert _screen_lines(main) <= PHONE_LINES + 3

@@ -15,6 +15,19 @@ DriftState = Literal["clean", "drift", "unknown", "unsupported"]
 BackupState = Literal["ok", "failed", "unknown", "unsupported"]
 GatewayProcessState = Literal["running", "stopped", "unknown", "unsupported"]
 PlatformState = Literal["connected", "degraded", "disconnected", "unknown", "unsupported"]
+# The cron ticker and its jobs as the engine's own records say (``cron_jobs.py``): ``failing``
+# is at least one job that did not deliver what it should, ``stalled`` a heartbeat older than
+# the engine's own threshold, ``ticks_failing`` a ticker that beats but whose every tick ends in
+# an error. ``unknown``: the records could not be read; ``unsupported``: no cron directory.
+CronState = Literal["ok", "failing", "stalled", "ticks_failing", "unknown", "unsupported"]
+CronFailureKind = Literal["run", "delivery", "blocked", "overdue"]
+# Whether messages move through a connected Telegram adapter (``telegram_traffic.py``):
+# ``no_sends`` is the adapter's own send gate closed, ``stalled`` a poll without progress,
+# ``quiet`` no update for longer than this installation usually waits, ``reconnecting`` a
+# fresh polling generation that has not received anything yet.
+TrafficState = Literal[
+    "ok", "no_sends", "stalled", "quiet", "reconnecting", "unknown", "unsupported"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +64,57 @@ class WorkSummary:
 
 
 @dataclass(frozen=True, slots=True)
-class AutomationSummary:
-    scheduler: Literal["healthy", "degraded", "unknown"] = "unknown"
-    failed_runs: int = 0
-    missed_runs: int = 0
-    delivery_failed: int = 0
+class CronFailure:
+    """One job that is not delivering what it should, as the engine's own records say."""
+
+    job_id: str
+    name: str
+    kind: CronFailureKind
+    # The failed run's end (``last_run_at``), or the overdue ``next_run_at``.
+    at: str | None = None
+    # Runs in a row; ``None`` when the history cannot say.
+    streak: int | None = None
+    # The KIND of the error in a word (``cron_jobs.error_kind``), never its text.
+    reason: str | None = None
+    # A later ok run replaced it in ``jobs.json``; held in the details for a while.
+    recovered_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CronSummary:
+    state: CronState = "unknown"
+    # Enabled and scheduled (or running).
+    active: int | None = None
+    paused: int | None = None
+    # Current: on the line and in the events.
+    failing: tuple[CronFailure, ...] = ()
+    # Erased by a later run: details only.
+    held: tuple[CronFailure, ...] = ()
+    # The last heartbeat.
+    ticker_at: str | None = None
+    # The last tick without an error.
+    ticker_ok_at: str | None = None
+    # The kind of the ticker's last error in a word, never its text.
+    ticker_error: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TrafficSummary:
+    """Whether messages move through the connected Telegram adapter, from its own counters."""
+
+    state: TrafficState = "unknown"
+    # The tick that saw the update counter grow.
+    last_update_seen_at: str | None = None
+    # The last successful getUpdates round-trip, wall clock.
+    polling_at: str | None = None
+    sends_blocked_since: str | None = None
+    # From the engine's error log.
+    last_send_error_at: str | None = None
+    send_errors_hour: int = 0
+    quiet_seconds: float | None = None
+    threshold_seconds: float | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +232,8 @@ class DashboardSnapshot:
     coverage: Coverage = field(default_factory=Coverage)
     # ``None`` means the block is not observed on this installation (outside MVP or unsupported).
     work: WorkSummary | None = None
-    automation: AutomationSummary | None = None
+    cron: CronSummary | None = None
+    traffic: TrafficSummary | None = None
     capacity: CapacitySummary = field(default_factory=CapacitySummary)
     incidents: tuple[Incident, ...] = ()
     drift: DriftSummary | None = None

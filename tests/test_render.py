@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -10,10 +11,11 @@ from telegram_dashboard.render import (
     to_telegram_plain,
 )
 from telegram_dashboard.schema import (
-    AutomationSummary,
     BackupSummary,
     CapacitySummary,
     Coverage,
+    CronFailure,
+    CronSummary,
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
@@ -22,6 +24,7 @@ from telegram_dashboard.schema import (
     QuotaWindow,
     Refusal,
     SourceObservation,
+    TrafficSummary,
     VersionSummary,
     WorkSummary,
 )
@@ -109,27 +112,6 @@ def test_work_states_are_rendered_as_distinct_counts() -> None:
     assert "Waiting for a human: 3" in rendered
     assert "Failed: 4" in rendered
     assert "Unknown: 5" in rendered
-
-
-def test_scheduler_runs_and_delivery_are_rendered_separately() -> None:
-    snapshot = DashboardSnapshot(
-        overall="warning",
-        observed_at="2026-09-09T00:00:00Z",
-        automation=AutomationSummary(
-            scheduler="degraded",
-            failed_runs=2,
-            missed_runs=1,
-            delivery_failed=3,
-        ),
-    )
-
-    rendered = render_dashboard(snapshot)
-
-    assert "## Automation" in rendered
-    assert "Scheduler: degraded" in rendered
-    assert "Failed runs: 2" in rendered
-    assert "Missed: 1" in rendered
-    assert "Delivery failed: 3" in rendered
 
 
 def test_renderer_redacts_secrets_paths_and_controls_from_incidents() -> None:
@@ -941,3 +923,188 @@ def test_a_provider_reason_with_a_chat_target_is_masked_in_the_details() -> None
     assert "1001234567890" not in text and "987654321" not in text
     assert "Grok: HTTP 400 for [target] user [id]" in _details_lines(text)
     assert "- Grok refused chat [id]" in _main_part(text)
+
+
+# ----------------------------------------------------------------------------- cron and traffic
+#
+# 0.9.0: the Cron line in the top block from the engine's own records (``cron_jobs.py``,
+# ``cron_runs.py``) and the word on the Telegram line when the adapter is connected but the
+# channel is deaf (``telegram_traffic.py``). The times are always in the details.
+
+CRON_OK = CronSummary(
+    "ok",
+    active=27,
+    paused=3,
+    ticker_at="2026-09-25T07:19:00Z",
+    ticker_ok_at="2026-09-25T07:19:00Z",
+)
+
+
+def _cron_snapshot(
+    cron: CronSummary | None,
+    traffic: TrafficSummary | None = None,
+    incidents: tuple[Incident, ...] = (),
+) -> DashboardSnapshot:
+    return DashboardSnapshot(
+        overall="normal",
+        observed_at="2026-09-25T07:21:00Z",
+        gateway=GatewaySummary("running", "connected", "2026-09-25T07:19:00Z"),
+        cron=cron,
+        traffic=traffic,
+        incidents=tuple(incidents),
+    )
+
+
+def test_the_cron_line_counts_active_jobs_and_names_paused_in_the_details() -> None:
+    text = render_dashboard(_cron_snapshot(CRON_OK), now=NOW)
+    lines = text.splitlines()
+
+    assert lines[2] == "Cron ✓ 27 jobs"
+    assert "> Cron 27 active · 3 paused · ticker 07:19" in lines
+
+
+def test_a_failing_job_is_on_the_line_in_the_events_and_in_the_details() -> None:
+    failure = CronFailure(
+        "b1", "daily-digest", "run", at="2026-09-25T07:05:00Z", streak=3, reason="rate limit"
+    )
+    cron = replace(CRON_OK, state="failing", failing=(failure,))
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert "Cron ⚠️ 1 of 27 failing" in _main_part(text)
+    assert (
+        "> Cron daily-digest: run failed Sep 25 07:05, 3 in a row (rate limit)" in text.splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    "kind, words",
+    [
+        ("delivery", "not delivered Sep 25 07:05, streak unknown (not connected)"),
+        ("blocked", "blocked Sep 25 07:05 (not connected)"),
+    ],
+)
+def test_delivery_and_blocked_failures_read_as_such(kind: str, words: str) -> None:
+    failure = CronFailure(
+        "b1", "daily-digest", kind, at="2026-09-25T07:05:00Z", reason="not connected"
+    )
+    cron = replace(CRON_OK, state="failing", failing=(failure,))
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert f"> Cron daily-digest: {words}" in text.splitlines()
+
+
+def test_an_overdue_job_names_the_missed_moment() -> None:
+    failure = CronFailure("b1", "daily-digest", "overdue", at="2026-09-25T06:50:00Z")
+    cron = replace(CRON_OK, state="failing", failing=(failure,))
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert "> Cron daily-digest: overdue since Sep 25 06:50" in text.splitlines()
+
+
+def test_a_held_failure_is_in_the_details_only_with_the_run_that_replaced_it() -> None:
+    held = CronFailure(
+        "b1",
+        "daily-digest",
+        "run",
+        at="2026-09-25T06:35:00Z",
+        streak=1,
+        reason="x",
+        recovered_at="2026-09-25T06:40:00Z",
+    )
+    cron = replace(CRON_OK, held=(held,))
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert "Cron ✓ 27 jobs" in _main_part(text)
+    assert "> Cron daily-digest: run failed Sep 25 06:35, ok since 06:40" in text.splitlines()
+
+
+@pytest.mark.parametrize(
+    "state, line, detail",
+    [
+        ("stalled", "Cron ⚠️ ticker silent 12 min", "> Cron ticker error: permission denied"),
+        ("ticks_failing", "Cron ⚠️ ticks failing 12 min", "> Cron ticker error: permission denied"),
+    ],
+)
+def test_a_dead_or_failing_ticker_is_the_line_and_the_reason_is_in_the_details(
+    state: str, line: str, detail: str
+) -> None:
+    cron = replace(
+        CRON_OK,
+        state=state,
+        ticker_at="2026-09-25T07:09:00Z",
+        ticker_ok_at="2026-09-25T07:09:00Z",
+        ticker_error="permission denied",
+    )
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert line in _main_part(text)
+    assert detail in text.splitlines()
+
+
+@pytest.mark.parametrize(
+    "state, line, reason",
+    [
+        ("unsupported", "Cron: not observed", "> Cron: no cron directory"),
+        ("unknown", "Cron: no data", "> Cron: jobs.json unreadable: ValueError"),
+    ],
+)
+def test_no_cron_data_is_never_a_zero(state: str, line: str, reason: str) -> None:
+    cron = CronSummary(state, detail=reason[len("> Cron: ") :])
+
+    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+
+    assert line in _main_part(text)
+    assert reason in text.splitlines()
+    assert "0 jobs" not in text
+
+
+@pytest.mark.parametrize(
+    "state, word",
+    [("no_sends", "⚠️ no sends"), ("stalled", "⚠️ stalled"), ("quiet", "⚠️ quiet")],
+)
+def test_a_deaf_channel_is_a_word_on_the_telegram_line(state: str, word: str) -> None:
+    traffic = TrafficSummary(
+        state,
+        last_update_seen_at="2026-09-25T03:20:00Z",
+        polling_at="2026-09-25T07:20:00Z",
+        sends_blocked_since="2026-09-25T07:10:00Z" if state == "no_sends" else None,
+        quiet_seconds=4 * 3600 if state == "quiet" else None,
+        threshold_seconds=3 * 3600 if state == "quiet" else None,
+    )
+
+    text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
+
+    line = next(item for item in _main_part(text) if item.startswith("Gateway"))
+    assert line == f"Gateway ✓ · Telegram {word}"
+    assert len(line) <= 32
+
+
+def test_traffic_times_are_always_in_the_details() -> None:
+    traffic = TrafficSummary(
+        "ok",
+        last_update_seen_at="2026-09-25T07:00:00Z",
+        polling_at="2026-09-25T07:20:00Z",
+        last_send_error_at="2026-09-25T06:58:00Z",
+    )
+
+    text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
+
+    assert "Gateway ✓ · Telegram ✓" in _main_part(text)
+    assert "> Telegram last update seen Sep 25 07:00 · polling ok 07:20" in text.splitlines()
+    assert "> Telegram send errors: last Sep 25 06:58" in text.splitlines()
+
+
+def test_the_deaf_word_never_hides_a_disconnected_adapter() -> None:
+    snapshot = replace(
+        _cron_snapshot(CRON_OK, TrafficSummary("no_sends")),
+        gateway=GatewaySummary("running", "disconnected", None),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+
+    assert "Gateway ✓ · Telegram disconnected" in _main_part(text)

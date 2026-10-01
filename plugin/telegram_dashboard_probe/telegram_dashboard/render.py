@@ -29,12 +29,15 @@ from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
 from .schema import (
     BackupSummary,
+    CronFailure,
+    CronSummary,
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
     QuotaMetric,
     QuotaWindow,
     Refusal,
+    TrafficSummary,
     VersionSummary,
 )
 from .timeparse import (
@@ -87,11 +90,6 @@ _STATUS_LABELS = {
     "critical": "🔴 Critical",
     "unknown": "⚪ Unknown",
 }
-_SCHEDULER_LABELS = {
-    "healthy": "normal",
-    "degraded": "degraded",
-    "unknown": "unknown",
-}
 _PROCESS_LABELS = {
     "running": OK_MARK,
     "stopped": "stopped",
@@ -117,6 +115,17 @@ _SOURCE_LABELS = {
     "gemini_log": "Gemini log",
     "drift": "drift",
     "backup": "backup",
+    "cron": "cron",
+    "cron_runs": "cron history",
+    "telegram_traffic": "Telegram traffic",
+}
+# The word on the Telegram line when the adapter is connected but the channel is deaf.
+_TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"}
+_FAILURE_WORDS = {
+    "run": "run failed",
+    "delivery": "not delivered",
+    "blocked": "blocked",
+    "overdue": "overdue since",
 }
 
 
@@ -175,11 +184,15 @@ def render_dashboard(
     data_stamp = format_stamp(snapshot.observed_at, zone) or "time unknown"
     lines.append(f"{_STATUS_LABELS[snapshot.overall]} · {data_stamp}")
     if snapshot.gateway is not None:
-        lines.append(_gateway_line(snapshot.gateway))
+        lines.append(_gateway_line(snapshot.gateway, snapshot.traffic))
+    if snapshot.traffic is not None:
+        details.state.extend(_traffic_words(snapshot.traffic, zone))
     if snapshot.backup is not None:
         lines.append(_backup_line(snapshot.backup, reference, zone, details))
     if snapshot.drift is not None:
         lines.append(_drift_line(snapshot.drift, zone, details))
+    if snapshot.cron is not None:
+        lines.append(_cron_line(snapshot.cron, reference, zone, details))
     lines.extend(_coverage_lines(snapshot, details))
     if snapshot.incidents:
         lines.extend(["", "## Needs attention"])
@@ -207,20 +220,6 @@ def render_dashboard(
                     f"Waiting for a human: {work.waiting_human}"
                 ),
                 f"- Failed: {work.failed} · Unknown: {work.unknown}",
-            ]
-        )
-    if snapshot.automation is not None:
-        automation = snapshot.automation
-        lines.extend(
-            [
-                "",
-                "## Automation",
-                f"- Scheduler: {_SCHEDULER_LABELS[automation.scheduler]}",
-                (
-                    f"- Failed runs: {automation.failed_runs} · "
-                    f"Missed: {automation.missed_runs} · "
-                    f"Delivery failed: {automation.delivery_failed}"
-                ),
             ]
         )
     lines.extend(details.lines())
@@ -284,10 +283,101 @@ def _source_reason(state: str) -> str:
     return "not on this installation" if state == "unsupported" else "unavailable"
 
 
-def _gateway_line(gateway: GatewaySummary) -> str:
+def _gateway_line(gateway: GatewaySummary, traffic: TrafficSummary | None) -> str:
+    """``Gateway ✓ · Telegram ✓``; when the adapter says connected and its own counters say the
+    channel is deaf, the word says so instead (32 columns at most). A disconnected adapter keeps
+    its own word: the deaf verdict is only about a connected one."""
     process = _PROCESS_LABELS[gateway.process]
     telegram = _PLATFORM_LABELS[gateway.telegram]
+    if traffic is not None and gateway.telegram == "connected" and traffic.state in _TRAFFIC_WORDS:
+        telegram = f"{WARN_MARK} {_TRAFFIC_WORDS[traffic.state]}"
     return f"Gateway {process} · Telegram {telegram}"
+
+
+def _traffic_words(traffic: TrafficSummary, zone: tzinfo) -> list[str]:
+    """The channel's times, always in the details: the last update seen, the last successful
+    poll, since when the sends are blocked, how quiet it is against the usual, the last send
+    error the engine logged."""
+    if traffic.state in ("unsupported", "unknown"):
+        reason = sanitize_public_text(traffic.detail or "not read", limit=60)
+        return [f"Telegram traffic: {reason}"]
+    seen = format_day_time(traffic.last_update_seen_at, zone) or "never"
+    polling = format_in_zone(traffic.polling_at, zone, "%H:%M") or "unknown"
+    parts = [f"Telegram last update seen {seen} · polling ok {polling}"]
+    since = format_in_zone(traffic.sends_blocked_since, zone, "%H:%M")
+    if since:
+        parts.append(f"sends blocked since {since}")
+    if traffic.state == "quiet" and traffic.quiet_seconds is not None and traffic.threshold_seconds:
+        quiet = describe_age(traffic.quiet_seconds).removesuffix(" ago")
+        usual = describe_age(traffic.threshold_seconds / 2).removesuffix(" ago")
+        parts.append(f"quiet {quiet}, usual gap up to {usual}")
+    last = format_day_time(traffic.last_send_error_at, zone)
+    errors = f"last {last}" if last else "none in the log"
+    return [" · ".join(parts), f"Telegram send errors: {errors}"]
+
+
+def _cron_line(
+    cron: CronSummary, reference: datetime | None, zone: tzinfo, details: _Details
+) -> str:
+    """``Cron ✓ 27 jobs``, the failures counted on the line, a dead or failing ticker named
+    with its age; no data is never a zero."""
+    if cron.state == "unsupported":
+        reason = sanitize_public_text(cron.detail or "source not configured", limit=60)
+        details.state.append(f"Cron: {reason}")
+        return "Cron: not observed"
+    if cron.state == "unknown":
+        reason = sanitize_public_text(cron.detail or "not read", limit=60)
+        details.state.append(f"Cron: {reason}")
+        return "Cron: no data"
+    details.state.extend(_cron_details(cron, zone))
+    if cron.state in ("stalled", "ticks_failing"):
+        stamp = cron.ticker_at if cron.state == "stalled" else cron.ticker_ok_at
+        moment = parse_timestamp(stamp)
+        age = age_seconds(moment, reference) if moment and reference else None
+        words = (
+            describe_age(max(age, 0.0)).removesuffix(" ago") if age is not None else "age unknown"
+        )
+        what = "ticker silent" if cron.state == "stalled" else "ticks failing"
+        return f"Cron {WARN_MARK} {what} {words}"
+    total = cron.active or 0
+    if cron.state == "failing":
+        return f"Cron {WARN_MARK} {len(cron.failing)} of {total} failing"
+    return f"Cron {OK_MARK} {_plural(total, 'job', 'jobs')}"
+
+
+def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
+    ticker = format_in_zone(cron.ticker_at, zone, "%H:%M") or "no heartbeat"
+    head = f"Cron {cron.active or 0} active · {cron.paused or 0} paused · ticker {ticker}"
+    ok = format_in_zone(cron.ticker_ok_at, zone, "%H:%M")
+    if ok and ok != ticker:
+        head += f" · tick ok {ok}"
+    words = [head]
+    words.extend(_failure_words(failure, zone) for failure in (*cron.failing, *cron.held))
+    if cron.ticker_error:
+        words.append(f"Cron ticker error: {sanitize_public_text(cron.ticker_error, limit=24)}")
+    return words
+
+
+def _failure_words(failure: CronFailure, zone: tzinfo) -> str:
+    name = sanitize_public_text(failure.name, limit=24)
+    when = format_day_time(failure.at, zone) or "time unknown"
+    text = f"Cron {name}: {_FAILURE_WORDS[failure.kind]} {when}"
+    if failure.recovered_at:
+        back = format_in_zone(failure.recovered_at, zone, "%H:%M") or "later"
+        return f"{text}, ok since {back}"
+    if failure.kind in ("run", "delivery"):
+        text += f", {_streak_words(failure.streak)}"
+    if failure.reason:
+        # A kind in a word (``cron_jobs.error_kind``); sanitized once more, belt and braces.
+        text += f" ({sanitize_public_text(failure.reason, limit=24)})"
+    return text
+
+
+def _streak_words(streak: int | None) -> str:
+    """``3 in a row``, ``1 run``, ``streak unknown``: the history could not say."""
+    if streak is None:
+        return "streak unknown"
+    return "1 run" if streak == 1 else f"{streak} in a row"
 
 
 def _backup_line(
