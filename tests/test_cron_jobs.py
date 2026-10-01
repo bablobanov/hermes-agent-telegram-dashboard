@@ -293,6 +293,7 @@ def test_a_half_paused_job_parked_in_error_is_still_a_failure_among_the_active(
     summary, _source, _incidents = collect_cron(env, {}, now=NOW)
 
     assert (summary.state, summary.active, len(summary.failing)) == ("failing", 1, 1)
+    assert summary.paused == 0  # counted once: among the active, not the paused (review of 01.10)
 
 
 # ----------------------------------------------------------------------------- the ticker
@@ -421,26 +422,32 @@ def test_a_name_beyond_ascii_is_cut_shorter_in_the_event(tmp_path: Path) -> None
     font, so an event of 32 characters with a Cyrillic name wrapped where the Latin one of the
     same count fits. A name with any character beyond ASCII is cut at eight and an ellipsis;
     the full name (up to 24) stays in the details, as before."""
-    job = _job(
-        name="Утренняя сводка проекта", last_status="delivery_failed", last_delivery_error="x"
-    )
+    job = _job(name="Еженедельный отчёт", last_status="delivery_failed", last_delivery_error="x")
     env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
 
     summary, _source, incidents = collect_cron(env, {}, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: Утренняя…"
+    assert incidents[0].title == "Cron undelivered: Еженедел…"
     assert len("- " + incidents[0].title) <= 29
-    assert summary.failing[0].name == "Утренняя сводка проекта"
+    assert summary.failing[0].name == "Еженедельный отчёт"
 
 
-def test_a_short_name_beyond_ascii_stays_whole(tmp_path: Path) -> None:
-    """Eight characters fit; the cut is for what does not."""
-    job = _job(name="Дайджест", last_status="delivery_failed", last_delivery_error="x")
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("Дайджесты", "Дайджесты"),  # nine characters fit whole, as twelve Latin ones do
+        ("Дайджестик", "Дайджест…"),  # the tenth brings the cut: eight and an ellipsis
+    ],
+)
+def test_a_name_beyond_ascii_is_whole_up_to_nine_characters(
+    tmp_path: Path, name: str, shown: str
+) -> None:
+    job = _job(name=name, last_status="delivery_failed", last_delivery_error="x")
     env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
 
     _summary, _source, incidents = collect_cron(env, {}, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: Дайджест"
+    assert incidents[0].title == f"Cron undelivered: {shown}"
 
 
 @pytest.mark.parametrize(

@@ -596,23 +596,22 @@ def _windows_line(
     provider: str, windows: tuple[QuotaWindow, ...], reference: datetime | None
 ) -> str:
     """``Claude 37% (3h) · 12% (4d)``: every window in the provider's own order, each with the
-    time to its reset. A line without a number says the provider's states in words. The line
-    keeps to the phone line (decision of 01.10, from Ilya's phone): the warning mark is an emoji
-    two columns wide, so a marked line has one character less, and a line still too long writes
-    its times coarse (``_duration_words``); it is never cut, a number stays whole."""
+    time to its reset. A line without a number says the provider's states in words. The marked
+    line keeps to the phone line (decision of 01.10, from Ilya's phone): the mark renders wider
+    than the two characters it counts for, so a marked line keeps one character under
+    ``_LINE_COLUMNS``, and one still too long writes its times coarse (``_duration_words``); it
+    is never cut, a number stays whole. An unmarked line is as it was: the account's two windows
+    never pass the line without the mark, and a longer one wraps with or without its minutes."""
     numbered = [window.used_percent for window in windows if window.used_percent is not None]
+    words = " · ".join(_window_words(window, reference) for window in windows)
     if not numbered:
-        words = " · ".join(_window_words(window, reference) for window in windows)
         return f"{provider} · {words}"
     mark = _mark(windows)
-    budget = _LINE_COLUMNS - 1 if mark else _LINE_COLUMNS
-    line = ""
-    for coarse in (False, True):
-        words = " · ".join(_window_words(window, reference, coarse=coarse) for window in windows)
-        line = f"{mark}{provider} {words}"
-        if len(line) <= budget:
-            break
-    return line
+    line = f"{mark}{provider} {words}"
+    if not mark or len(line) < _LINE_COLUMNS:
+        return line
+    coarse = " · ".join(_window_words(window, reference, coarse=True) for window in windows)
+    return f"{mark}{provider} {coarse}"
 
 
 def _mark(windows: tuple[QuotaWindow, ...]) -> str:

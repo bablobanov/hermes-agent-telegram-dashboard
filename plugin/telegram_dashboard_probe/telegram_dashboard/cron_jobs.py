@@ -139,7 +139,7 @@ class Job:
     name: str
     enabled: bool
     state: str
-    # The engine's pause stamp: with ``enabled`` and ``state`` one of its three pause markers.
+    # The engine's pause stamp: with ``state`` one of its two pause markers (``enabled`` gates).
     paused_at: str | None
     next_run_at: str | None
     last_run_at: str | None
@@ -161,8 +161,9 @@ class Job:
     @property
     def active(self) -> bool:
         """Not paused and scheduled or running, or enabled and parked by the engine in its
-        terminal ``error`` state whatever its stamps: a job that should be running counts, so
-        the line never reads ``1 of 0``."""
+        terminal ``error`` state whatever its stamps (until the ticker rewrites such a record on
+        its next loop): a job that should be running counts, so the line never reads ``1 of 0``;
+        it is counted once, among the active, never among the paused as well."""
         if self.state == "error":
             return self.enabled
         return not self.paused and self.state in ("scheduled", "running")
@@ -444,7 +445,7 @@ def assemble_cron(
     summary = CronSummary(
         scan.state,
         active=sum(job.active for job in scan.jobs),
-        paused=sum(job.paused and job.state != "completed" for job in scan.jobs),
+        paused=sum(job.paused and not job.active and job.state != "completed" for job in scan.jobs),
         failing=current,
         held=(*(f for f in failures if f.recovered_at is not None), *held),
         ticker_at=scan.ticker.heartbeat_at,

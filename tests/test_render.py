@@ -620,11 +620,12 @@ def test_a_model_limit_spent_less_than_the_account_keeps_its_line() -> None:
     assert not any("Fable" in line for line in _details_lines(text))
 
 
-# Decision of 01.10 (0.9.1), from Ilya's phone: the warning mark is an emoji two columns wide, so
-# a marked limits line of 32 characters wrapped where one of 31 fits. The 32 the states are held
-# to stays a guide; a marked line keeps one character under it, and writes its times coarse when
-# the full form does not fit: one unit, rounded up, since the time is when the quota is back and
-# a line must never promise it earlier. Nothing is ever cut: a number stays whole.
+# Decision of 01.10 (0.9.1), from Ilya's phone: the warning mark renders wider than the two
+# characters it counts for, so a marked limits line of 32 characters wrapped where one of 31
+# fits. The 32 the states are held to stays a guide; a marked line keeps one character under it,
+# and writes its times coarse when the full form does not fit: one unit, rounded up, since the
+# time is when the quota is back and a line must never promise it earlier. Nothing is ever cut:
+# a number stays whole.
 _IN_3H34M = (NOW + timedelta(hours=3, minutes=34)).isoformat()
 _IN_3H4M = (NOW + timedelta(hours=3, minutes=4)).isoformat()
 _IN_4D = (NOW + timedelta(days=4)).isoformat()
@@ -676,6 +677,20 @@ def test_the_coarse_form_is_one_unit_rounded_up(ahead: timedelta, words: str) ->
     assert line == f"⚠️ Claude 100% (4h) · 100% ({words})"
 
 
+def test_an_unmarked_line_keeps_its_full_times_whatever_its_length() -> None:
+    """The coarse form is for the marked line only (Ilya, 01.10: the limits line with the mark
+    and two windows). The account's two windows never pass the phone line without the mark, and
+    a longer unmarked line (models' own windows, no account window) wraps with or without its
+    minutes, so it keeps them."""
+    line = _provider_line(
+        "Claude",
+        QuotaWindow("week", 37.0, _IN_3H34M, scope="Opus"),
+        QuotaWindow("week", 12.0, (NOW + timedelta(days=1, hours=5)).isoformat(), scope="Sonnet"),
+    )
+
+    assert line == "Claude Opus 37% (3h34m) · Sonnet 12% (1d5h)"
+
+
 def test_a_reset_that_cannot_be_read_stays_a_question_mark_on_a_marked_line() -> None:
     line = _provider_line(
         "Claude", QuotaWindow("5h", 100.0, _IN_3H34M), QuotaWindow("7d", 100.0, "soon")
@@ -685,9 +700,10 @@ def test_a_reset_that_cannot_be_read_stays_a_question_mark_on_a_marked_line() ->
 
 
 def test_the_coarse_line_is_returned_whole_when_it_still_does_not_fit() -> None:
-    """The coarse form is the last step and a number is never cut. Both windows at 100%, one
-    under an hour and the other within the day, is the one shape of the account's two windows
-    that still reaches 32 and more; the README names it."""
+    """The coarse form is the last step and a number is never cut. A window at 100% with a reset
+    of three characters (``45m``, ``23h``) still reaches 32 in several shapes (the table above
+    has two); both windows at 100%, one under an hour and the other within the day, is the one
+    that reaches 33. The README names them."""
     line = _provider_line(
         "Claude",
         QuotaWindow("5h", 100.0, (NOW + timedelta(minutes=45)).isoformat()),
