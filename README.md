@@ -315,6 +315,9 @@ in a row). A paused job carries no failure: its last run is history. A pause is 
 ticker reads it (`is_job_runnable`): a job off, in the `paused` state or stamped `paused_at` is
 paused, so an enabled record with the stamp alone (a half-pause the engine itself self-disables
 on its next loop, and `hermes cron list` shows active until then) is never overdue here (0.9.1).
+The fields are read as the ticker reads them (0.9.2): `enabled: null` is off, a number in
+`paused_at` is a stamp, a `Paused` state written by hand is no pause marker, and a job the
+ticker may fire is active whatever its state short of `completed`.
 The engine's terminal `error` state is a failure on an enabled job whatever its stamps, counted
 among the active; a job switched off carries no failure in any state and is counted paused, as
 `hermes cron status` does not read it (0.9.2).

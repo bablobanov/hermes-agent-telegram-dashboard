@@ -155,18 +155,21 @@ class Job:
         ``paused_at``. The engine does not fire an enabled record with the stamp alone (a
         half-pause, from a hand edit) and self-disables it on its next loop; until then
         ``hermes cron list`` shows it active, since ``effective_job_state`` trusts ``enabled``.
-        The plugin follows what fires (0.9.1)."""
+        The plugin follows what fires (0.9.1). The fields are read as the ticker reads them
+        (``job_of``, 0.9.2)."""
         return not self.enabled or self.state == "paused" or self.paused_at is not None
 
     @property
     def active(self) -> bool:
-        """Not paused and scheduled or running, or enabled and parked by the engine in its
-        terminal ``error`` state whatever its stamps (until the ticker rewrites such a record on
-        its next loop): a job that should be running counts, so the line never reads ``1 of 0``;
-        it is counted once, among the active, never among the paused as well."""
+        """Not paused and not ``completed``: a job the ticker may fire, whatever other state a
+        hand edit wrote (0.9.2: the ticker gates on ``enabled`` and the pause markers only). Or
+        enabled and parked by the engine in its terminal ``error`` state whatever its stamps
+        (until the ticker rewrites such a record on its next loop): a job that should be running
+        counts, so the line never reads ``1 of 0``; it is counted once, among the active, never
+        among the paused as well."""
         if self.state == "error":
             return self.enabled
-        return not self.paused and self.state in ("scheduled", "running")
+        return not self.paused and self.state != "completed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,14 +206,19 @@ def read_jobs(path: Path) -> list[Job]:
 def job_of(raw: object) -> Job | None:
     if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not raw["id"]:
         return None
+    """One record, its pause fields read as the ticker reads them (``cron/jobs.py``
+    ``is_job_runnable`` and ``_has_pause_marker``, v2026.9.14; 0.9.2): ``enabled`` and
+    ``paused_at`` by their truth (``null`` is off, a number is a stamp), ``state`` as written
+    (``Paused`` is no pause marker)."""
     streak = raw.get("failure_streak")
     counted = isinstance(streak, int) and not isinstance(streak, bool) and streak >= 0
+    stamp = raw.get("paused_at")
     return Job(
         job_id=raw["id"],
         name=_name(raw.get("name") or raw["id"]),
-        enabled=raw.get("enabled", True) is not False,
-        state=(_text(raw.get("state")) or "scheduled").lower(),
-        paused_at=_text(raw.get("paused_at")),
+        enabled=bool(raw.get("enabled", True)),
+        state=_text(raw.get("state")) or "scheduled",
+        paused_at=str(stamp) if stamp else None,
         next_run_at=_text(raw.get("next_run_at")),
         last_run_at=_text(raw.get("last_run_at")),
         last_status=_text(raw.get("last_status")),

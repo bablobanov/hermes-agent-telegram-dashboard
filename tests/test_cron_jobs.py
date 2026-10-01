@@ -277,6 +277,26 @@ def test_a_null_or_missing_pause_stamp_is_no_pause() -> None:
     assert without is not None and not without.paused and without.active
 
 
+@pytest.mark.parametrize(
+    ("over", "paused", "active"),
+    [
+        ({"enabled": None}, True, False),  # bool(None): off
+        ({"paused_at": 1727800000}, True, False),  # a number is a stamp: bool() of it
+        ({"state": "Paused"}, False, True),  # the marker is ``paused`` exactly: this one fires
+        ({"state": "Scheduled"}, False, True),  # a state the ticker does not know still fires
+    ],
+)
+def test_the_fields_are_read_as_the_ticker_reads_them(over, paused, active) -> None:
+    """0.9.2, review of 01.10: ``enabled`` and ``paused_at`` by their truth, ``state`` as written
+    (``cron/jobs.py`` ``is_job_runnable`` and ``_has_pause_marker`` at v2026.9.14; the load does
+    not normalize them). The engine writes the canonical values itself; a hand-edited
+    ``jobs.json`` is read as the ticker reads it, so a job counts where it fires."""
+    job = job_of(_job(**over))
+
+    assert job is not None
+    assert (job.paused, job.active) == (paused, active)
+
+
 def test_a_half_paused_job_parked_in_error_is_still_a_failure_among_the_active(
     tmp_path: Path,
 ) -> None:
