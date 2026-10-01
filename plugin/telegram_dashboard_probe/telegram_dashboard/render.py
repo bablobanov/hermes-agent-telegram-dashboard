@@ -138,24 +138,26 @@ def _plural(count: int, one: str, many: str) -> str:
 @dataclass
 class _Details:
     """What the collapsed block says, grouped: the screen itself, backup and drift, reasons for
-    every "no data"."""
+    every "no data", the dashboard's own version last."""
 
     confirmed: str | None = None
     data: str | None = None
     period: str | None = None
     coverage: str | None = None
-    # The dashboard's own version (decision of 01.10): the installed copy, told from the message.
+    # The dashboard's own version (decision of 01.10): the installed copy, told from the message;
+    # the last line of the block, a blank line before it (Ilya, 01.10, 0.9.2).
     version: str | None = None
     state: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
-        parts = (self.confirmed, self.data, self.period, self.coverage, self.version)
+        parts = (self.confirmed, self.data, self.period, self.coverage)
         screen = [part for part in parts if part]
         groups = [
             screen,
             self.state,
             ["## No data", *self.missing] if self.missing else [],
+            [self.version] if self.version else [],
         ]
         body: list[str] = []
         for group in groups:

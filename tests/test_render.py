@@ -336,10 +336,11 @@ def test_the_first_line_is_the_status_with_the_dated_stamp_and_the_details_follo
         "> Confirmed 07:16",
         "> Period 5 min",
         "> Profiles 1/1",
-        f"> Dashboard {__version__}",
         ">",
         "> Backup Sep 25 00:31 · integrity ok",
         "> Drift checked 07:21",
+        ">",
+        f"> Dashboard {__version__}",
     ]
 
 
@@ -1193,6 +1194,25 @@ def test_the_details_name_the_dashboard_s_own_version() -> None:
 
     assert f"Dashboard {__version__}" in _details_lines(text)
     assert not any("Dashboard" in line for line in _main_part(text))
+
+
+def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None:
+    """Ilya, 01.10 (0.9.2): the version is the last line of the collapsed block, a blank line
+    before it, after the reasons of "No data" when there are any; alone it is the whole block."""
+    from telegram_dashboard import __version__
+    from telegram_dashboard.states import PERIOD_SECONDS, all_states
+
+    state = all_states()[0]  # the normal state, with "No data" for Gemini and Grok
+    full = render_dashboard(
+        state.snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
+    ).splitlines()
+    bare = render_dashboard(
+        DashboardSnapshot(overall="normal", observed_at=NOW.isoformat()), now=NOW
+    ).splitlines()
+
+    assert full[-3:] == ["> Grok: source not confirmed", ">", f"> Dashboard {__version__}"]
+    assert sum(line.startswith("> Dashboard") for line in full) == 1
+    assert bare[-2:] == ["> ## Details", f"> Dashboard {__version__}"]
 
 
 # ----------------------------------------------------------------------------- review of 01.10

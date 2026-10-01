@@ -109,7 +109,6 @@ def test_state_1_is_this_exact_screen() -> None:
         "> Confirmed 20:58",
         "> Period 5 min",
         "> Profiles 1/1 · sources 3/3",
-        f"> Dashboard {__version__}",
         ">",
         "> Drift checked 08:00",
         "> Hermes 0.21.1 of Sep 7 is the latest · checked Sep 9 21:00",
@@ -117,6 +116,8 @@ def test_state_1_is_this_exact_screen() -> None:
         "> ## No data",
         "> Gemini: source not confirmed",
         "> Grok: source not confirmed",
+        ">",
+        f"> Dashboard {__version__}",
     ]
 
     assert _render(STATES[0]).splitlines() == expected

@@ -64,8 +64,8 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
                                     time, the cron failures and the channel's times, release
-                                    dates, the dashboard's own version, the reason of every
-                                    "no data"
+                                    dates, the reason of every "no data", the dashboard's
+                                    own version last
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
@@ -97,8 +97,8 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-also name the dashboard's own version (`Dashboard 0.9.1`), so the installed copy can be told
-from the pinned message.
+close with the dashboard's own version (`Dashboard 0.9.1`) after a blank line, so the installed
+copy can be told from the pinned message at a glance.
 
 ## Freshness is a load-bearing requirement
 
