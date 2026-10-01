@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from telegram_dashboard import __version__
 from telegram_dashboard.freshness import DeliveryRecord
 from telegram_dashboard.gemini_log import incidents_for
 from telegram_dashboard.render import (
@@ -315,6 +316,7 @@ def test_the_first_line_is_the_status_with_the_dated_stamp_and_the_details_follo
         "> Confirmed 07:16",
         "> Period 5 min",
         "> Profiles 1/1",
+        f"> Dashboard {__version__}",
         ">",
         "> Backup Sep 25 00:31 · integrity ok",
         "> Drift checked 07:21",
@@ -1108,3 +1110,19 @@ def test_the_deaf_word_never_hides_a_disconnected_adapter() -> None:
     text = render_dashboard(snapshot, now=NOW)
 
     assert "Gateway ✓ · Telegram disconnected" in _main_part(text)
+
+
+# ----------------------------------------------------------------------------- the dashboard's version
+
+
+def test_the_details_name_the_dashboard_s_own_version() -> None:
+    """Decision of 01.10: the installed copy can be told from the pinned message. The line is
+    the package's own constant, in the details only."""
+    from telegram_dashboard import __version__
+
+    text = render_dashboard(
+        DashboardSnapshot(overall="normal", observed_at=NOW.isoformat()), now=NOW
+    )
+
+    assert f"Dashboard {__version__}" in _details_lines(text)
+    assert not any("Dashboard" in line for line in _main_part(text))

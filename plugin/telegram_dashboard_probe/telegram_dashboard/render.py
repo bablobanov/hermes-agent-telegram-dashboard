@@ -21,6 +21,7 @@ import math
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 
+from . import __version__
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
@@ -143,11 +144,14 @@ class _Details:
     data: str | None = None
     period: str | None = None
     coverage: str | None = None
+    # The dashboard's own version (decision of 01.10): the installed copy, told from the message.
+    version: str | None = None
     state: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
-        screen = [part for part in (self.confirmed, self.data, self.period, self.coverage) if part]
+        parts = (self.confirmed, self.data, self.period, self.coverage, self.version)
+        screen = [part for part in parts if part]
         groups = [
             screen,
             self.state,
@@ -194,6 +198,7 @@ def render_dashboard(
     if snapshot.cron is not None:
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
     lines.extend(_coverage_lines(snapshot, details))
+    details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
         lines.extend(["", "## Needs attention"])
         lines.extend(

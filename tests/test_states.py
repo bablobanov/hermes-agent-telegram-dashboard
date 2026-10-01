@@ -10,6 +10,7 @@ the first screen is one phone screen, with the explanations in a collapsed detai
 
 import pytest
 
+from telegram_dashboard import __version__
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT, render_dashboard, to_telegram_html
 from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
@@ -99,6 +100,7 @@ def test_state_1_is_this_exact_screen() -> None:
         "> Confirmed 20:58",
         "> Period 5 min",
         "> Profiles 1/1 · sources 3/3",
+        f"> Dashboard {__version__}",
         ">",
         "> Drift checked 08:00",
         "> Hermes 0.21.1 of Sep 7 is the latest · checked Sep 9 21:00",

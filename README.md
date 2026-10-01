@@ -61,7 +61,8 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
                                     time, the cron failures and the channel's times, release
-                                    dates, the reason of every "no data"
+                                    dates, the dashboard's own version, the reason of every
+                                    "no data"
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
@@ -91,7 +92,9 @@ only moved: a line without a number still names its reason, in the details.
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green. Coverage itself
 (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen only when it is
-incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`).
+incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details also name the
+dashboard's own version (`Dashboard 0.9.0`), so the installed copy can be told from the pinned
+message.
 
 ## Freshness is a load-bearing requirement
 
