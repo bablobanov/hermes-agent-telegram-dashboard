@@ -247,7 +247,7 @@ def test_a_worker_abandoned_by_its_deadline_is_not_started_again_until_it_return
         second = await collect_all_async(
             env, runner, now=NOW, drift_timeout_seconds=0.05, flights=flights
         )
-        await asyncio.sleep(0.5)  # the first worker returns
+        await until(lambda: not flights.busy("drift"))  # the first worker returns
         third = await collect_all_async(
             env, runner, now=NOW, drift_timeout_seconds=1.0, flights=flights
         )
@@ -909,7 +909,7 @@ def test_a_hanging_log_reader_never_freezes_the_traffic_bookkeeping(
     async def scenario():
         first = await tick(5)
         second = await tick(7)
-        await asyncio.sleep(0.7)  # the abandoned worker returns
+        await until(lambda: not flights.busy(collect.TRAFFIC))  # the abandoned worker returns
         return first, second
 
     first, second = asyncio.run(scenario())
@@ -959,7 +959,7 @@ def test_a_log_reader_that_returns_late_never_rewinds_the_traffic_record(
     async def scenario():
         await tick(5)
         await tick(7)
-        await asyncio.sleep(0.4)  # the first worker returns with the old probe
+        await until(lambda: not flights.busy(collect.TRAFFIC))  # the first worker returns
 
     asyncio.run(scenario())
 
