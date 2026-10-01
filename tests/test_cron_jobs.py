@@ -1,0 +1,429 @@
+"""``cron_jobs``: ``jobs.json`` and the ticker stamps as the engine keeps them, read only.
+
+Every job record is a literal with the engine's own field names (``cron/jobs.py`` at
+v2026.9.14); the private fields (``prompt``, ``deliver``) are planted so a test can prove they
+never reach the screen. The chat ids are made up.
+"""
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from telegram_dashboard.compat import Environment
+from telegram_dashboard.cron_jobs import (
+    HOLD_TICKS,
+    OVERDUE_SECONDS,
+    TICKER_STALE_SECONDS,
+    classify,
+    collect_cron,
+    error_kind,
+    hold,
+    job_of,
+    read_ticker,
+)
+
+NOW = datetime(2026, 9, 30, 12, 30, tzinfo=UTC)
+
+
+def _job(**over):
+    base = {
+        "id": "b1",
+        "name": "daily-digest",
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": (NOW + timedelta(minutes=5)).isoformat(),
+        "last_run_at": (NOW - timedelta(minutes=25)).isoformat(),
+        "last_status": "ok",
+        "last_error": None,
+        "last_delivery_error": None,
+        "failure_streak": 0,
+        "prompt": "never read",
+        "deliver": "telegram:-1001000000001:17",
+        "script": None,
+    }
+    base.update(over)
+    return base
+
+
+def _home(tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None) -> Environment:
+    cron = tmp_path / "cron"
+    cron.mkdir()
+    (cron / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    for name, value in (("ticker_heartbeat", heartbeat), ("ticker_last_success", success)):
+        if value is not None:
+            (cron / name).write_text(value, encoding="utf-8")
+    if error is not None:
+        (cron / "ticker_last_error").write_text(error, encoding="utf-8")
+    return Environment(hermes_home=tmp_path)
+
+
+def _epoch(moment: datetime) -> str:
+    return str(moment.timestamp())
+
+
+# ----------------------------------------------------------------------------- one record
+
+
+def test_job_of_reads_the_runtime_fields_and_nothing_private() -> None:
+    job = job_of(_job())
+
+    assert job is not None
+    assert (job.job_id, job.name, job.enabled, job.state, job.last_status, job.failure_streak) == (
+        "b1",
+        "daily-digest",
+        True,
+        "scheduled",
+        "ok",
+        0,
+    )
+    assert not hasattr(job, "prompt") and not hasattr(job, "deliver")
+
+
+@pytest.mark.parametrize("raw", [None, [], {"name": "no id"}, {"id": 5}])
+def test_job_of_refuses_a_record_that_is_not_a_job(raw) -> None:
+    assert job_of(raw) is None
+
+
+def test_an_ok_job_is_no_failure() -> None:
+    assert classify(job_of(_job()), now=NOW, ticker_alive=True) is None
+
+
+def test_a_run_failure_carries_the_engine_s_streak_and_error() -> None:
+    job = job_of(_job(last_status="error", last_error="Model provider 429", failure_streak=3))
+
+    failure = classify(job, now=NOW, ticker_alive=True)
+
+    assert failure is not None
+    assert (failure.kind, failure.streak, failure.reason) == ("run", 3, "rate limit")
+    assert failure.at == (NOW - timedelta(minutes=25)).isoformat()
+
+
+def test_a_delivery_failure_is_a_failure_with_an_unknown_streak() -> None:
+    job = job_of(_job(last_status="delivery_failed", last_delivery_error="Not connected"))
+
+    failure = classify(job, now=NOW, ticker_alive=True)
+
+    assert failure is not None
+    assert (failure.kind, failure.streak, failure.reason) == ("delivery", None, "not connected")
+
+
+def test_blocked_config_is_blocked_and_delivery_queued_is_not_a_failure() -> None:
+    blocked = classify(
+        job_of(_job(last_status="blocked_config", last_error="no API key")),
+        now=NOW,
+        ticker_alive=True,
+    )
+    queued = classify(job_of(_job(last_status="delivery_queued")), now=NOW, ticker_alive=True)
+
+    assert blocked is not None and blocked.kind == "blocked" and blocked.reason == "auth"
+    assert queued is None
+
+
+def test_an_unknown_status_literal_is_named_not_green() -> None:
+    """Review focus 1: the engine documents ``last_status`` as a closed set, but it already grew
+    (``delivery_queued``); a literal the plugin does not know is a failure named as it is."""
+    job = job_of(_job(last_status="quota_hold", last_error=None))
+
+    failure = classify(job, now=NOW, ticker_alive=True)
+
+    assert failure is not None and failure.kind == "run" and failure.reason == "quota_hold"
+
+
+def test_a_terminal_error_state_is_a_run_failure() -> None:
+    job = job_of(_job(state="error", last_status=None, last_error="schedule invalid"))
+
+    failure = classify(job, now=NOW, ticker_alive=True)
+
+    assert failure is not None and failure.kind == "run" and failure.reason == "error"
+
+
+@pytest.mark.parametrize(
+    "text, word",
+    [
+        ("Unauthorized: invalid API key (429 later)", "auth"),
+        ("Model provider 429 rate limit", "rate limit"),
+        ("Request timed out after 60s", "timeout"),
+        ("Not connected", "not connected"),
+        ("Bad Request: chat not found", "chat unavailable"),
+        ("Connection reset by peer", "network"),
+        ("PermissionError: [Errno 13]", "permission denied"),
+        ("OSError: [Errno 24] Too many open files", "fd exhaustion"),
+        ("Gateway is running STALE code; ticker yields", "stale code"),
+        ("schedule invalid", "error"),
+        (None, "error"),
+    ],
+)
+def test_error_kind_follows_the_engine_s_order(text, word) -> None:
+    assert error_kind(text) == word
+
+
+PLANTED = (
+    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /var/lib/hermes/.hermes chat -1001234567890 "
+    "telegram:-1001234567890:17 user 987654321"
+)
+FRAGMENTS = ("sk-live", "ABCDEFGHIJ", "/var/lib", "1001234567890", "987654321")
+
+
+def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
+    tmp_path: Path,
+) -> None:
+    """Edit (b) of 01.10: the engine's error texts are reduced to a kind in a word; nothing
+    planted reaches the text, the record, the block or the events, in any form the message
+    takes. The sanitizer's own masks (task 0) are the second line, not the first."""
+    from telegram_dashboard.render import render_dashboard, to_telegram_html, to_telegram_plain
+    from telegram_dashboard.schema import DashboardSnapshot
+
+    jobs = [
+        _job(
+            id="b1",
+            name="digest",
+            last_status="error",
+            last_error=f"Model provider 429 {PLANTED}",
+            failure_streak=2,
+        ),
+        _job(
+            id="b2",
+            name="mail",
+            last_status="delivery_failed",
+            last_delivery_error=f"Chat not found: {PLANTED}",
+        ),
+        _job(id="b3", name=f"watch {PLANTED}", last_status="blocked_config", last_error=PLANTED),
+    ]
+    env = _home(
+        tmp_path,
+        jobs,
+        heartbeat=_epoch(NOW),
+        success=_epoch(NOW),
+        error=f"{_epoch(NOW)}\nPermissionError: {PLANTED}\n",
+    )
+    cache: dict = {}
+
+    summary, _source, incidents = collect_cron(env, cache, now=NOW)
+    snapshot = DashboardSnapshot(
+        overall="warning", observed_at=NOW.isoformat(), cron=summary, incidents=incidents
+    )
+    text = render_dashboard(snapshot, now=NOW)
+
+    forms = (
+        text,
+        to_telegram_plain(text),
+        to_telegram_html(text),
+        json.dumps(cache),
+        repr(summary),
+        repr(incidents),
+    )
+    for rendered in forms:
+        for fragment in FRAGMENTS:
+            assert fragment not in rendered, fragment
+    assert "(rate limit)" in text and "(chat unavailable)" in text and "(config)" in text
+    assert "> Cron ticker error: permission denied" in text.splitlines()
+
+
+def test_an_overdue_job_is_a_failure_only_while_the_ticker_lives() -> None:
+    late = _job(next_run_at=(NOW - timedelta(seconds=OVERDUE_SECONDS + 1)).isoformat())
+    in_grace = _job(next_run_at=(NOW - timedelta(seconds=OVERDUE_SECONDS - 1)).isoformat())
+
+    failure = classify(job_of(late), now=NOW, ticker_alive=True)
+
+    assert failure is not None and failure.kind == "overdue"
+    assert failure.at == late["next_run_at"]
+    assert classify(job_of(late), now=NOW, ticker_alive=False) is None
+    assert classify(job_of(in_grace), now=NOW, ticker_alive=True) is None
+
+
+def test_a_paused_job_s_old_failure_is_not_a_failure() -> None:
+    paused = _job(
+        enabled=False, state="paused", last_status="error", last_error="x", failure_streak=2
+    )
+
+    assert classify(job_of(paused), now=NOW, ticker_alive=True) is None
+
+
+# ----------------------------------------------------------------------------- the ticker
+
+
+def test_the_ticker_reads_the_first_token_of_each_stamp(tmp_path: Path) -> None:
+    _home(
+        tmp_path,
+        [],
+        heartbeat=f"{_epoch(NOW - timedelta(seconds=30))} 4242\n",
+        success=_epoch(NOW - timedelta(minutes=5)),
+        error=f"{_epoch(NOW - timedelta(minutes=5))}\nPermissionError: jobs.json\n",
+    )
+
+    ticker = read_ticker(tmp_path / "cron")
+
+    assert ticker.heartbeat_at == (NOW - timedelta(seconds=30)).isoformat()
+    assert ticker.success_at == (NOW - timedelta(minutes=5)).isoformat()
+    assert ticker.error == "permission denied"  # the kind, never the engine's text
+
+
+def test_a_stamp_that_is_not_a_number_is_no_stamp_with_a_reason(tmp_path: Path) -> None:
+    _home(tmp_path, [], heartbeat="tomorrow\n")
+
+    ticker = read_ticker(tmp_path / "cron")
+
+    assert ticker.heartbeat_at is None
+    assert "ticker_heartbeat" in (ticker.detail or "")
+
+
+# ----------------------------------------------------------------------------- the whole
+
+
+def test_collect_cron_counts_active_and_paused_and_is_fresh(tmp_path: Path) -> None:
+    jobs = [
+        _job(),
+        _job(id="b2", enabled=False, state="paused"),
+        _job(id="b3", state="completed", enabled=False),
+    ]
+    env = _home(
+        tmp_path,
+        jobs,
+        heartbeat=_epoch(NOW - timedelta(seconds=30)),
+        success=_epoch(NOW - timedelta(seconds=30)),
+    )
+
+    summary, source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert (summary.state, summary.active, summary.paused) == ("ok", 1, 1)
+    assert (source.name, source.state) == ("cron", "fresh")
+    assert incidents == ()
+
+
+def test_a_stale_heartbeat_is_stalled_and_critical(tmp_path: Path) -> None:
+    env = _home(
+        tmp_path, [_job()], heartbeat=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 1))
+    )
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert summary.state == "stalled"
+    assert [(i.incident_id, i.severity, i.title) for i in incidents] == [
+        ("cron:ticker", "critical", "Cron ticker silent 3 min")
+    ]
+
+
+def test_a_fresh_heartbeat_with_a_stale_success_is_ticks_failing_with_the_error(
+    tmp_path: Path,
+) -> None:
+    env = _home(
+        tmp_path,
+        [_job()],
+        heartbeat=_epoch(NOW),
+        success=_epoch(NOW - timedelta(hours=2)),
+        error=f"{_epoch(NOW)}\nPermissionError: jobs.json\n",
+    )
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert summary.state == "ticks_failing" and summary.ticker_error == "permission denied"
+    assert incidents[0].title == "Cron ticks failing 2 h" and incidents[0].severity == "critical"
+
+
+def test_no_heartbeat_file_is_not_a_verdict(tmp_path: Path) -> None:
+    summary, source, incidents = collect_cron(_home(tmp_path, [_job()]), {}, now=NOW)
+
+    assert summary.state == "ok" and summary.ticker_at is None
+    assert source.state == "fresh" and incidents == ()
+
+
+def test_failures_make_the_state_failing_and_at_most_three_events(tmp_path: Path) -> None:
+    jobs = [
+        _job(id=f"b{i}", name=f"job-{i}", last_status="error", last_error="x") for i in range(5)
+    ]
+    env = _home(tmp_path, [*jobs, _job(id="ok")], heartbeat=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert summary.state == "failing" and len(summary.failing) == 5 and summary.active == 6
+    assert [i.title for i in incidents] == [
+        "Cron run failed: job-0",
+        "Cron run failed: job-1",
+        "Cron run failed: job-2",
+    ]
+    assert all(i.severity == "warning" for i in incidents)
+
+
+def test_a_long_name_is_cut_so_the_event_fits_the_phone(tmp_path: Path) -> None:
+    """Decision of 01.10: eleven characters and an ellipsis in the event, the full name (up to
+    24) in the details."""
+    job = _job(
+        name="dashboard-probe-check-and-more",
+        last_status="delivery_failed",
+        last_delivery_error="x",
+    )
+    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+
+    _summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert incidents[0].title == "Cron undelivered: dashboard-p…"
+    assert len("- " + incidents[0].title) <= 32
+
+
+@pytest.mark.parametrize(
+    "payload, detail",
+    [("[]", "jobs.json is not an object"), ("{", "jobs.json unreadable: JSONDecodeError")],
+)
+def test_a_broken_jobs_file_is_no_data_with_the_reason_and_an_event(
+    tmp_path: Path, payload, detail
+) -> None:
+    (tmp_path / "cron").mkdir()
+    (tmp_path / "cron" / "jobs.json").write_text(payload, encoding="utf-8")
+
+    summary, source, incidents = collect_cron(Environment(hermes_home=tmp_path), {}, now=NOW)
+
+    assert (summary.state, summary.detail, source.state) == ("unknown", detail, "unavailable")
+    assert [i.incident_id for i in incidents] == ["cron:unreadable"]
+
+
+def test_no_cron_directory_or_no_jobs_file_is_not_on_this_installation(tmp_path: Path) -> None:
+    summary, source, _ = collect_cron(Environment(hermes_home=tmp_path), {}, now=NOW)
+    assert (summary.state, summary.detail, source.state) == (
+        "unsupported",
+        "no cron directory",
+        "unsupported",
+    )
+
+    (tmp_path / "cron").mkdir()
+    summary, source, _ = collect_cron(Environment(hermes_home=tmp_path), {}, now=NOW)
+    assert (summary.state, summary.detail) == ("unsupported", "jobs.json not found")
+
+
+# ----------------------------------------------------------------------------- the record
+
+
+def test_a_failure_is_held_two_ticks_after_the_engine_erased_it(tmp_path: Path) -> None:
+    """#118354: a later ok run replaces the failure in ``jobs.json``; the details keep it for
+    ``HOLD_TICKS`` ticks with the run that replaced it. No ticker stamps here: the ticks are half
+    an hour apart, and a heartbeat that old would be a dead ticker, which is another test."""
+    cache: dict = {}
+    failing = _home(tmp_path, [_job(last_status="error", last_error="x", failure_streak=1)])
+
+    summary, _s, _i = collect_cron(failing, cache, now=NOW)
+    assert len(summary.failing) == 1 and summary.held == ()
+
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [_job(last_run_at=NOW.isoformat())]}), encoding="utf-8"
+    )
+    for tick in range(HOLD_TICKS):
+        later = NOW + timedelta(minutes=30 * (tick + 1))
+        summary, _s, incidents = collect_cron(failing, cache, now=later)
+        assert summary.state == "ok" and incidents == ()
+        assert [(h.kind, h.recovered_at) for h in summary.held] == [("run", NOW.isoformat())]
+
+    summary, _s, _i = collect_cron(failing, cache, now=NOW + timedelta(hours=2))
+    assert summary.held == () and cache["held"] == {}
+
+
+def test_the_held_record_is_bounded_and_tolerates_junk() -> None:
+    entries = {
+        f"b{i}": {"kind": "run", "at": "2026-09-30T00:00:00+00:00", "name": f"j{i}", "shown": 0}
+        for i in range(80)
+    }
+    cache = {"held": {"junk": 5, **entries}}
+
+    held = hold(cache, (), {}, now=NOW)
+
+    assert "junk" not in cache["held"] and len(held) == 50
