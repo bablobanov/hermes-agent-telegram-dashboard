@@ -16,8 +16,10 @@ from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
 STATES = all_states()
 # A phone shows about 30 characters per line and about 15 lines of a message; emoji are wider
-# than letters, so the budget is tighter than the count suggests.
-PHONE_LINES = 14
+# than letters, so the columns are tighter than the count suggests. The lines are counted as the
+# phone shows them: the blank line before the collapsed Details is one of them (decision of
+# 01.10, when the cron line made the healthy screen 15 lines).
+PHONE_LINES = 15
 PHONE_COLUMNS = 32
 
 
@@ -30,12 +32,6 @@ def _render(state) -> str:
 def _main_part(text: str) -> list[str]:
     lines = text.splitlines()
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
-
-
-def _screen_lines(main: list[str]) -> int:
-    """The lines of the first screen. The blank line before the collapsed Details is the gap
-    before its toggle, not a line of the screen (ruling of 01.10: the budget counts content)."""
-    return len(main[:-1] if main and main[-1] == "" else main)
 
 
 def test_twenty_three_states_are_defined_and_numbered() -> None:
@@ -116,7 +112,7 @@ def test_state_1_is_this_exact_screen() -> None:
 def test_state_1_fits_one_phone_screen() -> None:
     main = _main_part(_render(STATES[0]))
 
-    assert _screen_lines(main) <= PHONE_LINES, main
+    assert len(main) <= PHONE_LINES, main
     assert max(len(line) for line in main) <= PHONE_COLUMNS, main
 
 
@@ -215,7 +211,7 @@ def test_state_13_is_three_releases_behind_as_information_only() -> None:
     assert "> Hermes 0.20.5 of Aug 21, latest 0.21.1 of Sep 7" in lines
     assert "> 3 releases behind · checked Sep 9 21:00" in lines
     assert "⚠" not in text
-    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
 
 
 SHOWCASE_HEALTHY = [
@@ -249,7 +245,7 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
 
     assert state.title == "Showcase: every line of a healthy screen"
     assert main == SHOWCASE_HEALTHY
-    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
     assert "> Confirmed 20:58" in lines
@@ -414,7 +410,7 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
 
     assert state.title == "Gemini minute quota hit"
     assert main == [*SHOWCASE_HEALTHY[:9], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[10:]]
-    assert _screen_lines(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
+    assert len(main) <= PHONE_LINES and max(len(line) for line in main) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
     assert "Needs attention" not in text
     assert (
@@ -529,7 +525,7 @@ def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
         in text.splitlines()
     )
     # The events block adds three lines to the healthy form; an exception is never pushed out.
-    assert _screen_lines(main) <= PHONE_LINES + 3
+    assert len(main) <= PHONE_LINES + 3
 
 
 def test_the_cron_states_carry_what_the_collector_builds() -> None:
