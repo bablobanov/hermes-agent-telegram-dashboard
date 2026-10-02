@@ -18,14 +18,13 @@ import importlib
 import json
 import logging
 import math
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 from .policy import sanitize_public_text
 from .quota_cache import Fetch as Fetch
+from .quota_cache import http_get as get_without_redirect
 from .quota_cache import tick as tick
 from .timeparse import parse_timestamp
 
@@ -67,12 +66,8 @@ def resolve_token() -> str:
 
 
 def http_get(url: str, headers: dict[str, str]) -> tuple[int, str]:
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            return int(response.status), response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        return int(exc.code), exc.read(2000).decode("utf-8", "replace")
+    """One GET with the token; a redirect is not followed (``quota_cache.http_get``)."""
+    return get_without_redirect(url, headers, timeout=HTTP_TIMEOUT_SECONDS)
 
 
 # ----------------------------------------------------------------------------- parsing
