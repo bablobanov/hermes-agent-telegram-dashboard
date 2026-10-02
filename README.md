@@ -440,13 +440,14 @@ mark, no threshold, no button, no command and no advice to update. Update by you
   update check (`check_for_updates` in `hermes_cli/banner.py`) counts commits behind `main` and
   is not used
 - **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
-  own worker thread, under the same single-flight deadline (`Flights`, 25 s) and cache policy as
-  Grok and Kimi. The agent, its sessions and its tools take no part. A GitHub that hangs costs
-  this line its answer for the tick (`no answer within 25 s`) and nothing else: the check starts
-  with the tick and runs beside every other source, the gateway's event loop keeps running, the
-  tick waits for it no longer than that deadline, and a hung request is not started a second
-  time. `tests/test_hermes_version.py` pins each of these; a crash of the check is cached for
-  the day like a failed answer, so a bug cannot ask GitHub on every tick
+  own worker thread, under Grok's single-flight deadline (`Flights`, 25 s; Kimi's is 15 s, for
+  one request) and the cache policy Grok and Kimi share. The agent, its sessions and its tools
+  take no part. A GitHub that hangs costs this line its answer for the tick
+  (`no answer within 25 s`) and nothing else: the check starts with the tick and runs beside
+  every other source, the gateway's event loop keeps running, the tick waits for it no longer
+  than that deadline, and a hung request is not started a second time.
+  `tests/test_hermes_version.py` pins each of these; a crash of the check is cached for the day
+  like a failed answer, so a bug cannot ask GitHub on every tick
 - **Once a day, failures too.** The attempt lives in the record under `release_cache` and
   survives a restart; a failed check (`GitHub rate limit`, `HTTP 503`,
   `request failed: URLError`, `answer shape: …`) is `no data` until the next attempt a day
@@ -645,11 +646,12 @@ The guards, and why:
   read: the plugin does not read the bot token itself, and a setting must not become a way to
   send it to a local port. The variable is read in `telegram_dashboard/external.py` and nowhere
   else
-- the tick waits for a source no longer than 25 s, the deadline Grok and Kimi have. The request
-  itself runs on in its worker with the source's own `timeout_seconds`, never two at once for one
-  source. On a miss the screen keeps the source's last line with that line's own stamp in the
-  details while it is younger than two ticks or two `limits_refresh_seconds`, whichever is
-  longer; the late answer is the next tick's line. A slow source never holds the tick back
+- the tick waits for a source no longer than 25 s, Grok's deadline (Kimi's is 15 s, for one
+  request). The request itself runs on in its worker with the source's own `timeout_seconds`,
+  never two at once for one source. On a miss the screen keeps the source's last line with that
+  line's own stamp in the details while it is younger than two ticks or two
+  `limits_refresh_seconds`, whichever is longer; the late answer is the next tick's line. A slow
+  source never holds the tick back
 - a source is asked once per `limits_refresh_seconds`, like Grok and Kimi, and is a source of
   its own on the coverage line (`Claude limits`): `ok` and `login_expired` are answers;
   `unavailable`, silence and a shape the contract does not allow are `unavailable`

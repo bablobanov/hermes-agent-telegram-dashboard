@@ -107,6 +107,15 @@ def test_the_usages_url_is_derived_from_the_engine_s_base_url_not_a_second_host(
     assert kimi.usages_url(base_url) == USAGES_URL
 
 
+def test_the_readme_gives_kimi_its_own_deadline() -> None:
+    """0.9.3: the README gave Kimi Grok's 25 s in two places; Kimi's worker waits for one
+    request, under its own constant."""
+    text = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8").split())
+
+    assert text.count(f"Kimi's is {kimi.TICK_TIMEOUT_SECONDS:.0f} s") == 2
+    assert "Grok and Kimi have" not in text
+
+
 # ----------------------------------------------------------------------------- parsing
 
 
