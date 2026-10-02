@@ -514,7 +514,12 @@ already holds for `xai-oauth`, obtained through the engine's own resolver
 (`hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials`, so the screen shows the quota
 of exactly the grant inference uses) and the client header the Grok CLI sends. The plan name
 comes from `…/v1/settings` (`subscription_tier_display`), optional, and shows in the details
-(`Plans: … Grok SuperGrok`). Probed on 2026-09-12: the
+(`Plans: … Grok SuperGrok`). The resolver is Hermes' own auth code and acts as it does for any
+Hermes request to xAI: a token close to expiry is refreshed at xAI's token endpoint and saved to
+`auth.json`, and a refresh xAI refuses for good clears the dead token there. The plugin's own
+code writes neither. Neither request follows a redirect: urllib would carry the token on to
+whatever host the redirect names, so a redirect is `no data` with its status (`HTTP 302`).
+Probed on 2026-09-12: the
 inference host `api.x.ai` answers 404 for this path, so the proxy host is required. Policy:
 one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "no data"
 with its reason until the next interval; a cached number older than the interval is not shown.
@@ -533,7 +538,13 @@ URL come from the engine's own resolver
 (`hermes_cli.auth.resolve_api_key_provider_credentials("kimi-coding")`: `.env` first, then the
 credential pool, then the key-prefix redirect), so the screen shows the quota of exactly the
 credential inference uses, and the request carries the client header the engine sends to that
-host. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
+host. Without a usable key in `.env` that resolver loads Hermes' credential pool, and loading
+saves the pool back to `auth.json` when it had something to settle: a placeholder key in `.env`
+(`changeme`, `***`), a row an older Hermes wrote with the secret in it, a hand-edited
+`auth_type`, a seeded row whose source is gone. Hermes makes the same save itself the first time
+it loads that pool (`hermes auth list`, an agent run on Kimi); a settled pool is not written,
+and the plugin's own code writes nothing there. The request follows no redirect, like Grok's.
+The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
 `managed-usage.ts`): `usages.limit_7d` (legacy plans) and `usages.limit_month_total` (new
 plans), each with `used_ratio` in 0..1 and a `reset_time`, every window on the line with its own
 reset (`Kimi 3% (29d)`). `usages.limit_5h` is not shown for now: on the pilot account it has read
