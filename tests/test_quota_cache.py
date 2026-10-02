@@ -28,6 +28,7 @@ class _Server:
     """A loopback server that answers every GET alike and records its path and bearer."""
 
     def __init__(self, status: int, location: str | None = None) -> None:
+        self.status = status
         self.seen: list[tuple[str, str | None]] = []
         seen = self.seen
 
@@ -46,7 +47,8 @@ class _Server:
                 self.wfile.write(body)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        # A short poll: ``shutdown`` waits for one, and every case starts two servers.
+        threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
 
     def url(self, path: str) -> str:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}{path}"
@@ -64,11 +66,12 @@ def _no_proxy_for_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("no_proxy", "*")
 
 
-@pytest.fixture
-def servers() -> Iterator[tuple[_Server, _Server]]:
-    """The second answers 200; the first redirects there, to another port: another host."""
+@pytest.fixture(params=[301, 302, 303, 307, 308])
+def servers(request: pytest.FixtureRequest) -> Iterator[tuple[_Server, _Server]]:
+    """The second answers 200; the first redirects there, to another port: another host. Every
+    status urllib would follow, so a handler that stops only some of them fails here."""
     second = _Server(200)
-    first = _Server(302, location=second.url("/v1/usages"))
+    first = _Server(request.param, location=second.url("/v1/usages"))
     yield first, second
     first.close()
     second.close()
@@ -96,18 +99,19 @@ def test_a_redirect_is_no_data_and_the_host_it_names_never_sees_the_token(
 
     assert second.seen == [], "the token must not travel on to the host the redirect names"
     assert first.seen == [("/v1/usages", f"Bearer {TOKEN}")]
-    assert item["status"] == "unavailable" and item["reason"] == "HTTP 302"
+    assert item["status"] == "unavailable" and item["reason"] == f"HTTP {first.status}"
     assert TOKEN not in json.dumps(item)
 
 
 @pytest.mark.parametrize("get", [grok.http_get, kimi.http_get], ids=["grok", "kimi"])
 def test_an_answer_without_a_redirect_is_read_as_before(
-    get: Callable[[str, dict[str, str]], tuple[int, str]], servers: tuple[_Server, _Server]
+    get: Callable[[str, dict[str, str]], tuple[int, str]],
 ) -> None:
-    _first, second = servers
+    server = _Server(200)
+    try:
+        answer = get(server.url("/v1/usages"), {"Authorization": f"Bearer {TOKEN}"})
+    finally:
+        server.close()
 
-    assert get(second.url("/v1/usages"), {"Authorization": f"Bearer {TOKEN}"}) == (
-        200,
-        BODY.decode(),
-    )
-    assert second.seen == [("/v1/usages", f"Bearer {TOKEN}")]
+    assert answer == (200, BODY.decode())
+    assert server.seen == [("/v1/usages", f"Bearer {TOKEN}")]

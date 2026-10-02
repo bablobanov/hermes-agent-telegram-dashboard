@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -152,11 +151,15 @@ def test_the_grok_and_kimi_rows_say_what_hermes_auth_code_may_write() -> None:
     and the README paragraphs say so, say that the plugin's own code writes none of it, and that
     the request follows no redirect (``tests/test_quota_cache.py``)."""
     sources = load_matrix()["sources"]
-    for name, start in (("grok_quota", "**Grok** ("), ("kimi_quota", "**Kimi** (")):
+    rows = (
+        ("grok_quota", "**Grok** (", "Neither request follows a redirect"),
+        ("kimi_quota", "**Kimi** (", "The request follows no redirect"),
+    )
+    for name, start, no_redirect in rows:
         row = sources[name]
         assert "auth.json" in row["caveat"] and "the plugin's own code writes" in row["caveat"]
-        assert "redirect (quota_cache.http_get, tests/test_quota_cache.py)" in row["caveat"]
+        assert f"{no_redirect} (quota_cache.http_get, tests/test_quota_cache.py)" in row["caveat"]
         assert {"0.21.3", "0.21.5"} <= set(row["verified"]), name
         paragraph = _readme_paragraph(start)
         assert "`auth.json`" in paragraph and "plugin's own code writes" in paragraph, name
-        assert re.search(r"follows (no|a) redirect", paragraph), name
+        assert no_redirect in paragraph, name
