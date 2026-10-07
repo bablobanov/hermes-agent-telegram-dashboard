@@ -892,7 +892,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins ten properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins eleven properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -900,7 +900,8 @@ query-only through one connection function (the only SQLite the plugin opens), n
 `HERMES_HOME/cron` is ever written and the cron and traffic modules import no network client,
 the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
 counters without calling anything on it, and the rules line writes nothing, imports no network
-client and logs no text.
+client and logs no text, and no file of the plugin folder carries an invisible character (the
+catalog validator warns on one).
 
 ## License
 
