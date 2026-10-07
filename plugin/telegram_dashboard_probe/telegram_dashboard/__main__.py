@@ -52,6 +52,8 @@ def _environment(config: dict[str, object]) -> Environment:
         if isinstance(backup_status, str) and backup_status
         else None,
         limits_sources=tuple(sources) if isinstance(sources, list) else (),
+        # The cron tick runs in a directory of its own: no gateway directory to look in.
+        context_files_enabled=bool(config.get("context_files", True)),
     )
 
 

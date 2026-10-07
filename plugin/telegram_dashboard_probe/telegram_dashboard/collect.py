@@ -28,6 +28,8 @@ from typing import Any, Protocol
 
 from .backup import BackupPart, collect_backup
 from .compat import Environment, ProbeResult
+from .context_files import SOURCE_NAME as RULES
+from .context_files import RulesPart, read_rules
 from .cron_jobs import SOURCE_NAME as CRON
 from .cron_jobs import CronPart, Scan, assemble_cron, scan_cron
 from .cron_runs import LOOKBACK_SECONDS as RUNS_LOOKBACK_SECONDS
@@ -69,6 +71,7 @@ from .schema import (
     PlatformState,
     QuotaMetric,
     QuotaWindow,
+    RulesSummary,
     SourceObservation,
     SourceState,
     TrafficSummary,
@@ -872,6 +875,7 @@ def build_snapshot(
     version: VersionSummary | None = None,
     cron: CronSummary | None = None,
     traffic: TrafficSummary | None = None,
+    rules: RulesSummary | None = None,
 ) -> DashboardSnapshot:
     ordered = tuple(sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))[:5])
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
@@ -890,6 +894,7 @@ def build_snapshot(
         version=version,
         cron=cron,
         traffic=traffic,
+        rules=rules,
     )
 
 
@@ -934,6 +939,7 @@ def collect_all(
     traffic, traffic_source, traffic_incidents = collect_traffic(
         env, traffic_probe, traffic_cache, now=now
     )
+    rules, rules_source, rules_incidents = read_rules(env, now=now)
     capacity, limits_source, probe = collect_limits(env, now=now, resolve=resolve_limits)
     if probe.status == "supported":
         grok, grok_source = collect_grok(
@@ -966,6 +972,7 @@ def collect_all(
         backup=backup,
         cron=cron,
         traffic=traffic,
+        rules=rules,
         capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
         sources=(
             gateway_source,
@@ -978,6 +985,7 @@ def collect_all(
             cron_source,
             runs_source,
             traffic_source,
+            *_present(rules_source),
         ),
         incidents=(
             *gateway_incidents,
@@ -986,6 +994,7 @@ def collect_all(
             *gemini_incidents,
             *cron_incidents,
             *traffic_incidents,
+            *rules_incidents,
             *(incident for part in externals for incident in part[2]),
         ),
     )
@@ -1106,6 +1115,7 @@ async def collect_all_async(
     traffic_probe: TrafficProbe | None = None,
     traffic_cache: dict[str, Any] | None = None,
     traffic_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    rules_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1125,7 +1135,8 @@ async def collect_all_async(
     (``jobs.json``, the ticker stamps) on the loop. ``traffic_probe`` is what the plugin read off
     the live adapter before the tick (``telegram_traffic.probe_adapter``; ``None`` on the cron
     path), ``traffic_cache`` the record of the channel; the send errors come from the engine's
-    log, read in a worker under ``traffic_timeout_seconds``.
+    log, read in a worker under ``traffic_timeout_seconds``. The rules line reads the engine's
+    ``state.db`` and the context files in a worker under ``rules_timeout_seconds``.
     """
     flights = flights or Flights()
     cron_store = cron_cache if cron_cache is not None else {}
@@ -1147,6 +1158,11 @@ async def collect_all_async(
             timeout_seconds=traffic_timeout_seconds,
             flights=flights,
         )
+    )
+    # The saved prompts and the context files are read in a worker beside every other source:
+    # a busy database or a hung disk holds back nothing but the rules line.
+    rules_task = asyncio.ensure_future(
+        _rules_guarded(env, now=now, timeout_seconds=rules_timeout_seconds, flights=flights)
     )
     # The upstream release check starts with the tick and runs beside every other source: a
     # GitHub that hangs holds back nothing but its own line.
@@ -1241,6 +1257,7 @@ async def collect_all_async(
         externals = await externals_task
         runs, runs_source = await runs_task
         traffic, traffic_source, traffic_incidents = await traffic_task
+        rules, rules_source, rules_incidents = await rules_task
         cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
         if gemini_task is None:
             gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
@@ -1255,6 +1272,7 @@ async def collect_all_async(
             version=version,
             cron=cron,
             traffic=traffic,
+            rules=rules,
             capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
             sources=(
                 gateway_source,
@@ -1267,6 +1285,7 @@ async def collect_all_async(
                 cron_source,
                 runs_source,
                 traffic_source,
+                *_present(rules_source),
             ),
             incidents=(
                 *gateway_incidents,
@@ -1278,6 +1297,7 @@ async def collect_all_async(
                 *gemini_incidents,
                 *cron_incidents,
                 *traffic_incidents,
+                *rules_incidents,
                 *version_incidents,
                 *(incident for part in externals for incident in part[2]),
             ),
@@ -1288,6 +1308,7 @@ async def collect_all_async(
         externals_task.cancel()
         runs_task.cancel()
         traffic_task.cancel()
+        rules_task.cancel()
         if gemini_task is not None:
             gemini_task.cancel()
 
@@ -1360,6 +1381,35 @@ async def _runs_guarded(
     if part[0] is not None:
         cache["runs_checked_at"] = now.isoformat()
     return part
+
+
+def _present(source: SourceObservation | None) -> tuple[SourceObservation, ...]:
+    """A source that is off by the dashboard's own setting is not counted at all."""
+    return () if source is None else (source,)
+
+
+async def _rules_guarded(
+    env: Environment, *, now: datetime, timeout_seconds: float, flights: Flights
+) -> RulesPart:
+    """``read_rules`` in its own worker under the tick's deadline, never on the loop: the
+    database and the files are the engine's, a deadline or a worker still reading is one
+    unavailable source with the reason."""
+    try:
+        return await flights.run(RULES, read_rules, env, now=now, timeout_seconds=timeout_seconds)
+    except TimeoutError:
+        return _rules_unavailable("state.db read timed out")
+    except StillRunning:
+        return _rules_unavailable("still reading state.db")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(RULES, "official", exc)
+        return RulesSummary("unknown", detail=source.detail), source, (incident,)
+
+
+def _rules_unavailable(detail: str) -> RulesPart:
+    source = SourceObservation(RULES, "official", "unavailable", detail=detail)
+    return RulesSummary("unknown", detail=detail), source, ()
 
 
 def _runs_unavailable(detail: str) -> SourceObservation:

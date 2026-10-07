@@ -25,6 +25,8 @@ from . import __version__
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
+from .context_files import WARNING_VERDICTS as RULES_WARNING_VERDICTS
+from .context_files import platform_label
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
@@ -35,9 +37,11 @@ from .schema import (
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
+    PlatformRules,
     QuotaMetric,
     QuotaWindow,
     Refusal,
+    RulesSummary,
     TrafficSummary,
     VersionSummary,
 )
@@ -119,6 +123,14 @@ _SOURCE_LABELS = {
     "cron": "cron",
     "cron_runs": "cron history",
     "telegram_traffic": "Telegram traffic",
+    "context_files": "agent rules",
+}
+# The word on the rules line for a platform whose agent does not see its rules as they are.
+_RULES_WORDS = {
+    "none": "not loaded",
+    "outdated": "outdated",
+    "truncated": "truncated",
+    "blocked": "blocked",
 }
 # The word on the Telegram line when the adapter is connected but the channel is deaf.
 _TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"}
@@ -199,6 +211,10 @@ def render_dashboard(
         lines.append(_drift_line(snapshot.drift, zone, details))
     if snapshot.cron is not None:
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
+    if snapshot.rules is not None:
+        rules_line = _rules_line(snapshot.rules, zone, details)
+        if rules_line:
+            lines.append(rules_line)
     lines.extend(_coverage_lines(snapshot, details))
     details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
@@ -394,6 +410,77 @@ def _streak_words(streak: int | None) -> str:
     if streak is None:
         return "streak unknown"
     return "1 run" if streak == 1 else f"{streak} in a row"
+
+
+def _rules_line(rules: RulesSummary, zone: tzinfo, details: _Details) -> str | None:
+    """``Rules ✓ AGENTS.md`` when every platform's agent sees its files as they are, the
+    platform and the word when one does not; ``None`` when the dashboard's setting turned the
+    line off (the details say so: off by choice is not the same as gone)."""
+    if rules.state == "off":
+        details.state.append("Rules: off in the dashboard settings")
+        return None
+    if rules.state in ("unsupported", "unknown"):
+        reason = sanitize_public_text(rules.detail or "not read", limit=60)
+        details.state.append(f"Rules: {reason}")
+        return "Rules: not observed" if rules.state == "unsupported" else "Rules: no data"
+    if not rules.platforms:
+        details.state.append("Rules: no platform session with a saved prompt yet")
+        return "Rules: no sessions yet"
+    details.state.extend(_rules_details(platform, zone) for platform in rules.platforms)
+    bad = [p for p in rules.platforms if p.verdict in RULES_WARNING_VERDICTS]
+    if len(bad) == 1:
+        word = _RULES_WORDS[bad[0].verdict]
+        return f"Rules {WARN_MARK} {platform_label(bad[0].platform)}: {word}"
+    if bad:
+        return f"Rules {WARN_MARK} {len(bad)} of {len(rules.platforms)} platforms"
+    loaded = [p for p in rules.platforms if p.verdict == "loaded"]
+    files = list(dict.fromkeys(name for p in loaded for name in p.files))
+    if files:
+        line = f"Rules {OK_MARK} {sanitize_public_text(', '.join(files), limit=40)}"
+        return line if len(line) <= _LINE_COLUMNS else f"Rules {OK_MARK} {len(files)} files"
+    if loaded:
+        return f"Rules {OK_MARK}"
+    if all(p.verdict == "off" for p in rules.platforms):
+        return "Rules: off in config"
+    return "Rules: no files"
+
+
+def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
+    """One platform in the details: the files, the size, the session, what to do."""
+    files = sanitize_public_text(", ".join(rules.files), limit=60) or "context file"
+    session = format_day_time(rules.session_started_at, zone) or "time unknown"
+    changed = format_day_time(rules.changed_at, zone)
+    verdict = rules.verdict
+    if verdict == "loaded":
+        size = f" · {rules.chars:,} chars" if rules.chars else ""
+        text = f"{files}{size} · session {session}"
+    elif verdict == "truncated":
+        kept = f"{rules.kept:,}" if rules.kept else "part"
+        total = f" of {rules.chars:,} chars" if rules.chars else ""
+        text = f"{files} cut, kept {kept}{total} · session {session}"
+    elif verdict == "outdated" and not rules.chars:
+        text = f"{files} gone or unreadable since session {session}"
+    elif verdict == "outdated":
+        text = f"{files} changed {changed or 'since'}, session {session}: /new"
+    elif verdict == "blocked":
+        text = f"{files} refused by the engine's injection scan · session {session}"
+    elif verdict == "none":
+        text = _rules_none_words(rules, files, changed, session)
+    elif verdict == "off":
+        text = "context files off for it in the engine's config"
+    else:
+        text = "no context file where the agent works"
+    return f"Rules {platform_label(rules.platform)}: {text}"
+
+
+def _rules_none_words(rules: PlatformRules, files: str, changed: str | None, session: str) -> str:
+    if rules.why == "after":
+        return f"{files} changed {changed or 'later'}, after session {session}: /new"
+    if rules.why == "gateway_dir":
+        return f"{files} only in the gateway's directory, the agent works in another"
+    if rules.why == "home":
+        return f"{files} only in HERMES_HOME, the agent works in another directory"
+    return f"{files} in the agent's directory, not in the prompt of session {session}"
 
 
 def _backup_line(

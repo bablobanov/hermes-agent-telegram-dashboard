@@ -8,7 +8,7 @@ a later change cannot undo one of them quietly:
 5. nothing outlives a disable: the one task is spawned through ``ctx.spawn_task``
 
 Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 below
-their tests.
+their tests; 6 widened and 10 added in 0.10.0 (the rules line reads ``state.db``).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -167,12 +167,19 @@ CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py", "telegram_traffic.py")
 
 
 def test_the_runs_database_is_opened_read_only_and_query_only() -> None:
-    """6. executions.db is the only SQLite the plugin opens: mode=ro in the URI, uri=True,
-    PRAGMA query_only right after; no write statement, no sqlite3 CLI, never state.db."""
+    """6. Two SQLite files are ever opened, executions.db (0.9.0) and state.db (0.10.0, the rules
+    line), both through the one ``sqlite3.connect`` in ``cron_runs.open_readonly``: mode=ro in
+    the URI, uri=True, PRAGMA query_only right after; no write statement, no sqlite3 CLI."""
     sources = _plugin_sources()
     assert any(path.name == "cron_runs.py" for path, _ in sources)
     for path, source in sources:
         code = _code_only(source)
+        if path.name == "context_files.py":
+            assert "sqlite3.connect" not in code and "open_readonly(" in code
+            assert not re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|DROP|VACUUM|ALTER)\b", code)
+            assert not re.search(r"journal_mode|\.commit\(|executescript|immutable", code)
+            assert "subprocess" not in code
+            continue
         if path.name != "cron_runs.py":
             assert "sqlite3" not in code, path.name
             continue
@@ -208,6 +215,21 @@ def test_the_cron_sources_never_write_under_the_engine_home_and_never_reach_the_
             code,
         ), name
         assert not re.search(rf"\b(import|from)\s+({clients})\b", code), name
+
+
+def test_the_rules_line_reads_and_never_writes_logs_text_or_reaches_the_network() -> None:
+    """10. The rules line (0.10.0) reads the engine's prompts and the agent's context files:
+    nothing is written, renamed or removed anywhere, no network client is imported, and the
+    one log call names an exception class, never a prompt, a file's text or a path."""
+    code = _code_only((PACKAGE / "context_files.py").read_text(encoding="utf-8"))
+    assert not re.search(
+        r"write_text|write_bytes|\.open\(|mkdir|unlink|rename\(|os\.replace|shutil|os\.remove",
+        code,
+    )
+    clients = r"urllib|http\.client|requests|aiohttp|httpx|socket"
+    assert not re.search(rf"\b(import|from)\s+({clients})\b", code)
+    log_calls = re.findall(r"logger\.\w+\((.*)\)", code)
+    assert log_calls == ['"rules: config.yaml not read (%s)", type(exc).__name__'], log_calls
 
 
 def test_the_plugin_registers_no_hook_tool_middleware_or_command() -> None:

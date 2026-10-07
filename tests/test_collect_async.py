@@ -150,6 +150,7 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
         "cron",
         "cron_runs",
         "telegram_traffic",
+        "context_files",
     }
     assert by_name[source_name].state == "unavailable"
     assert "KeyError" in (by_name[source_name].detail or "")
@@ -183,6 +184,7 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
         "cron",
         "cron_runs",
         "telegram_traffic",
+        "context_files",
     ]
     assert all(source.state == "unsupported" for source in snapshot.sources)
 

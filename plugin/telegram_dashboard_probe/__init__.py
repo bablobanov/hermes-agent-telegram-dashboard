@@ -79,6 +79,7 @@ ENV_LIMITS = "HERMES_DASHBOARD_PROBE_LIMITS"
 ENV_LIMITS_REFRESH = "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH"
 ENV_TZ = "HERMES_DASHBOARD_PROBE_TZ"
 ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
+ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
 # The Grok and Kimi quotas are asked at most once per this many seconds each, not every tick:
 # a weekly number does not move faster, and the surfaces are not documented ones. The caches
 # live in the record, one per provider (``limits_cache.grok``, ``limits_cache.kimi``).
@@ -159,6 +160,8 @@ class Settings:
     backup_status: Path | None
     # External limit sources as the config lists them; the package checks every entry.
     limits_sources: tuple[Any, ...] = ()
+    # The rules line (whether the agent sees its context files); on unless turned off.
+    context_files: bool = True
 
 
 @dataclass(frozen=True)
@@ -214,6 +217,7 @@ def read_settings(ctx: Any) -> Settings | None:
         display_timezone=_setting(ctx, "display_timezone", ENV_TZ) or "UTC",
         backup_status=Path(backup_status).expanduser() if backup_status else None,
         limits_sources=_entries(_raw_setting(ctx, "limits_sources")),
+        context_files=_setting(ctx, "context_files", ENV_CONTEXT_FILES).lower() not in _FALSE_WORDS,
     )
 
 
@@ -240,6 +244,15 @@ def _home(ctx: Any) -> Path:
         if len(parents) >= 3 and parents[1].name == "plugin-data":
             return parents[2]
     return Path(os.environ.get(ENV_HOME, "").strip() or DEFAULT_HERMES_HOME).expanduser()
+
+
+def _working_dir() -> Path | None:
+    """The gateway process's working directory (a service unit's ``WorkingDirectory``), where an
+    operator may have put the agent's rules; ``None`` when it is gone."""
+    try:
+        return Path.cwd()
+    except OSError:
+        return None
 
 
 def display_zone(settings: Settings) -> tzinfo:
@@ -663,6 +676,8 @@ class ProbeRuntime:
             limits_enabled=self.settings.limits_enabled,
             backup_status=self.settings.backup_status,
             limits_sources=self.settings.limits_sources,
+            context_files_enabled=self.settings.context_files,
+            gateway_dir=_working_dir(),
         )
         runner = dashboard.collect.SubprocessRunner()
         caches = self.quota_caches()

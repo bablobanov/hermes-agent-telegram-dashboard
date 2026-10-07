@@ -417,6 +417,7 @@ def test_collect_all_composes_without_any_source(tmp_path: Path) -> None:
         "cron": "unsupported",
         "cron_runs": "unsupported",
         "telegram_traffic": "unsupported",
+        "context_files": "unsupported",
     }
 
 

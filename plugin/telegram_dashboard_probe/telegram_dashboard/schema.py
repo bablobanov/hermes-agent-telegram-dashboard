@@ -28,6 +28,19 @@ CronFailureKind = Literal["run", "delivery", "blocked", "overdue"]
 TrafficState = Literal[
     "ok", "no_sends", "stalled", "quiet", "reconnecting", "unknown", "unsupported"
 ]
+# Whether the agent sees its rules (``context_files.py``), per platform, from the system prompt
+# of its latest session against the files on disk now: ``loaded`` as they are on disk,
+# ``truncated`` cut in the middle by the engine's budget, ``outdated`` an older text than the
+# file holds now, ``blocked`` refused by the engine's injection scan, ``none`` no file in the
+# prompt while one is there for it, ``no_files`` no file where the agent or the gateway looks,
+# ``off`` the platform skips context files in the engine's config.
+RulesVerdict = Literal["loaded", "truncated", "outdated", "blocked", "none", "no_files", "off"]
+# Why a ``none``: the file changed after the session started (``/new`` picks it up); it was
+# there and the prompt does not carry it; it lies only in the gateway's working directory or
+# only in ``HERMES_HOME``, where the agent does not look.
+RulesWhy = Literal["after", "not_loaded", "gateway_dir", "home"]
+# ``observed``: the verdicts stand; ``off``: the dashboard's own setting turned the line off.
+RulesState = Literal["observed", "unknown", "unsupported", "off"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +129,32 @@ class TrafficSummary:
     threshold_seconds: float | None = None
     # The longest gap between updates seen lately, what the threshold was made from.
     usual_gap_seconds: float | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformRules:
+    """One platform's latest session with a saved prompt, judged; never the text of either."""
+
+    platform: str
+    verdict: RulesVerdict
+    session_started_at: str | None = None
+    # The files as the prompt labels them (``AGENTS.md``, ``../AGENTS.md``) or, for ``none``,
+    # the names found on disk; never a path.
+    files: tuple[str, ...] = ()
+    # ``loaded``: the sections' length; ``truncated``: the full length the engine cut.
+    chars: int | None = None
+    # ``truncated``: what the engine kept of ``chars``.
+    kept: int | None = None
+    # ``outdated`` and ``none``: when the file (or a link to it) changed last.
+    changed_at: str | None = None
+    why: RulesWhy | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RulesSummary:
+    state: RulesState = "unknown"
+    platforms: tuple[PlatformRules, ...] = ()
     detail: str | None = None
 
 
@@ -244,3 +283,5 @@ class DashboardSnapshot:
     sources: tuple[SourceObservation, ...] = ()
     # Not a source: the line informs and never moves the status or the coverage.
     version: VersionSummary | None = None
+    # Whether the agent sees its rules; ``None`` when not collected (the demo states).
+    rules: RulesSummary | None = None
