@@ -599,7 +599,7 @@ def _read(path: Path) -> tuple[str | None, float | None] | None:
         text = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError, ValueError):
         return None
-    return (text[1:] if text.startswith("﻿") else text), changed
+    return (text[1:] if text.startswith("\ufeff") else text), changed
 
 
 def _is_file(path: Path) -> bool:
@@ -611,7 +611,7 @@ def _is_file(path: Path) -> bool:
 
 def _strip_frontmatter(content: str) -> str:
     """``_strip_yaml_frontmatter`` of the engine, byte for byte."""
-    content = content.lstrip("﻿")
+    content = content.lstrip("\ufeff")
     end = content.find("\n---", 3) if content.startswith("---") else -1
     return (content[end + 4 :].lstrip("\n") or content) if end != -1 else content
 

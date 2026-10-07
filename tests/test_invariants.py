@@ -257,3 +257,16 @@ def test_the_traffic_probe_reads_attributes_and_calls_no_adapter_method() -> Non
     for node in ast.walk(probe):
         if isinstance(node, ast.Call):
             assert ast.unparse(node.func) in allowed, ast.unparse(node)
+
+
+def test_the_plugin_folder_carries_no_invisible_character() -> None:
+    """11. The catalog's validator scans the plugin for invisible Unicode (a literal BOM, zero
+    width and bidirectional marks) and warns; 0.10.0 once shipped two literal U+FEFF where the
+    escape was meant. Every file of the plugin folder, escapes only."""
+    invisible = {0xFEFF, 0x200B, 0x200C, 0x200D, 0x2060, 0x00AD}
+    invisible |= set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+    for path in sorted(PLUGIN_DIR.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert not [c for c in text if ord(c) in invisible], path.name

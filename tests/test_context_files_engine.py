@@ -91,7 +91,7 @@ def test_a_file_the_engine_scan_refused_reads_back_as_blocked(
     ("relative", "content", "label"),
     [
         (".hermes.md", "---\ntitle: rules\n---\n\nUse the staging database.", ".hermes.md"),
-        ("CLAUDE.md", "﻿Use the staging database.", "CLAUDE.md"),
+        ("CLAUDE.md", "\ufeffUse the staging database.", "CLAUDE.md"),
         (".cursorrules", "Use the staging database.", ".cursorrules"),
     ],
 )
