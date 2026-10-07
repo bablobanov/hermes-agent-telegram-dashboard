@@ -51,6 +51,8 @@ Gateway ✓ · Telegram ✓              words when something is off: stopped, d
 Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
 Drift ✓ 0 of 481                    keys that differ from the approved baseline
 Cron ✓ 27 jobs                      active jobs; ⚠️ N of M failing, ticker silent, ticks failing
+Rules ✓ AGENTS.md                   the context files in the agent's latest saved prompt;
+                                    ⚠️ not loaded / outdated / truncated / blocked
 
 🧠 Limits used
 Claude · no data                    a line without a number never shows a zero
@@ -72,7 +74,8 @@ The dashboard is one pinned text message in the agent's private chat or in a top
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
 status line, and the message under it carries the rest: gateway and Telegram state (and whether
-the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs, the
+the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs,
+whether the agent sees its rules (the context files in its system prompt), the
 account limits of every provider with the time to each reset, the
 Hermes version the gateway runs next to the latest upstream release, and a collapsed details
 block with the reasons and the timestamps. Nothing to open, nothing to install
@@ -97,7 +100,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.9.3`) after a blank line, so the installed
+close with the dashboard's own version (`Dashboard 0.10.0`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
 
 ## Freshness is a load-bearing requirement
@@ -132,8 +135,8 @@ What "verified" means here, honestly:
 | 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
 | 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
-source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`) |
-| 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3 |
+source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
+| 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3; for 0.10.0 the saved prompt's context block and runtime line read in the source and built by the engine's own functions in `tests/test_context_files_engine.py`, as on 0.21.3 (row `context_files`) |
 | main (`485979ddf4`, 2026-09-28) | `edit_message` and `_edit_text` read in the engine source: same signatures, the public verb still without a parse mode |
 | main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
@@ -245,6 +248,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok, Kimi and the external sources are asked (not every tick) |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
+   | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules line off (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
    The drift reader takes numbers, never words: a `drift_command` prints a line
@@ -400,6 +404,66 @@ called on it). The plugin's catalog entry is to disclose the two on lines of the
 release, and a public
 snapshot of the polling state on the adapter is the upstream change that would turn the
 capability into a contract.
+
+### The rules line: does the agent see its context files
+
+An `AGENTS.md` the agent never sees looks exactly like one it follows: nothing fails, the
+answers are just worse. Hermes looks for its project context files (`.hermes.md`, `AGENTS.md`,
+`CLAUDE.md`, `.cursorrules`) in the agent's working directory, and for a gateway with
+`terminal.cwd: .` (or unset) and the local backend that directory is the service user's home,
+not the service's `WorkingDirectory` (`hermes gateway install` sets that to `HERMES_HOME`). A
+file put next to the service, or next to `SOUL.md`, is silently never loaded. The line shows
+it per platform of the gateway, from the system prompt of that platform's latest session:
+
+```
+Rules ✓ AGENTS.md                   the files in the prompt are the files on disk
+Rules ⚠️ Telegram: not loaded        no file in the prompt, while one is there for it
+Rules ⚠️ Telegram: outdated          the prompt carries an older text: /new rebuilds it
+Rules ⚠️ Telegram: truncated         over context_file_max_chars, the middle cut out
+Rules ⚠️ Telegram: blocked           the engine's injection scan refused the file
+Rules ⚠️ 2 of 3 platforms            more than one platform; each in the details
+Rules: no files                     no context file anywhere it looks: never an alarm
+Rules: no sessions yet / not observed / no data / off in config
+```
+
+The details carry one line per platform: the files, the length, the session's start, and for
+a `not loaded` where the file is (`AGENTS.md only in the gateway's directory, the agent works in
+another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's directory,
+not in the prompt of session …`). Every warning is also an event.
+
+- **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (the same
+  read-only connection as the cron history) in a worker under the tick's deadline. Per platform
+  of this profile (the keys of `gateway_state.json` `platforms`; Telegram when it cannot say), the
+  newest session whose system prompt is saved: its start and the prompt, which stays in the
+  worker's memory for the comparison. In the prompt: the `# Project Context` block, its
+  `## <file>` headings, the truncation marker, the scan's `[BLOCKED:` notice, and the
+  `Current working directory:` line of the runtime block (where the engine looked; `sessions.cwd`
+  stays empty for gateway sessions). On disk: the context files by the names the engine loads,
+  in the agent's directory, the gateway process's working directory and `HERMES_HOME`, their
+  text (to compare, up to 4 MB) and change time. In `config.yaml`: only
+  `gateway.platforms.<name>.skip_context_files`, a platform that skips context files on purpose
+  (`off`, not an alarm)
+- **what is never shown or logged**: the prompt and the files' text, session ids, paths. The
+  screen carries file names as the prompt labels them, lengths, times and verdicts; nothing of
+  the line is kept in the plugin's record (`tests/test_context_files.py` plants a phrase in every file and prompt and counts it in the
+  screen, the snapshot and the log: zero)
+- **what is never read**: messages, any other column of `sessions`, other sessions' prompts,
+  any other key of `config.yaml`, `.env`, `auth.json`. Nothing is written anywhere
+- **a snapshot, not the files this minute**: the engine builds the prompt on a session's first
+  turn and keeps it until a compression, a model switch or `/new`. An edit to `AGENTS.md`
+  shows as `outdated` until then, which is the truth: the agent works on the old text
+- **where the agent looks**: the prompt's own runtime line, so a profile, a project set as
+  `terminal.cwd` or a home far from ours all judge right; a sandbox backend without a host
+  directory falls back to the gateway's own directory, as the engine's discovery does. The Hermes
+  source tree is never taken for a place of rules (its contributor `AGENTS.md` is not loaded
+  for a messaging platform on purpose)
+- **off**: `context_files: false` hides the line and drops it from the coverage; the details
+  say `Rules: off in the dashboard settings`, so off by choice never looks like a line that
+  vanished
+
+`tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
+engine's own functions and reads them back (0.21.3 and 0.21.5); it skips where Hermes is not
+importable.
 
 ### The backup line
 
@@ -801,13 +865,15 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins nine properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins ten properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
-spawned through `ctx.spawn_task`, the run history is opened read-only and query-only (the only
-SQLite the plugin opens), nothing under `HERMES_HOME/cron` is ever written and the cron and
-traffic modules import no network client, the entry registers no hook, tool, middleware or
-command, and the traffic probe reads the adapter's counters without calling anything on it.
+spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
+query-only through one connection function (the only SQLite the plugin opens), nothing under
+`HERMES_HOME/cron` is ever written and the cron and traffic modules import no network client,
+the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
+counters without calling anything on it, and the rules line writes nothing, imports no network
+client and logs no text.
 
 ## License
 
