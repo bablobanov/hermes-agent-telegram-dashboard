@@ -451,8 +451,10 @@ compare), or the reason of a no data (the coverage line names that source on the
   file's time does not matter, a `touch` or a rebuild after an edit reads loaded. Without that
   proof a file changed after the session started is outdated until `/new`: a saved prompt cannot
   otherwise say where an older, longer text ended, so a rule removed from the end must not read
-  as loaded. The change time is the newest of the file's, its link's and, on POSIX, its inode's
-  (a copy that kept an old time still changed it); a time ahead of the clock is no time
+  as loaded. The change time is the newest of the file's and its link's modification times; a
+  time ahead of the clock is no time. One case slips through: a copy that keeps an old time
+  (`rsync -a`, `cp -p`), made after the session started, that removed a rule from the very end
+  of the file, with no known engine part after the text in the prompt
 - **where else rules may wait**: only `.hermes.md` and `AGENTS.md` count in the gateway
   process's working directory and in `HERMES_HOME`, where the agent does not look; a
   `CLAUDE.md` or `.cursorrules` there is taken to be another tool's (an `AGENTS.md` kept there

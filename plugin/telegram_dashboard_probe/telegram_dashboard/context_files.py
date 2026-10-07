@@ -674,17 +674,14 @@ def _cursor(cwd: Path, _root: Path | None) -> list[Found]:
 
 
 def _read(path: Path) -> Read | None:
-    """A context file as the engine reads it (UTF-8, stripped) and the newest change to it, a
-    link to it, or, on POSIX, its inode (a copy that kept an old time still changed it);
-    ``None`` when there is no such regular file or it cannot be opened."""
+    """A context file as the engine reads it (UTF-8, stripped) and the newest change to it or a
+    link to it (modification times only: an inode's ctime moves on a chmod too, and no test can
+    set it); ``None`` when there is no such regular file or it cannot be opened."""
     if not _is_file(path):
         return None
     try:
         stat, lstat = path.stat(), path.lstat()
-        times = [stat.st_mtime, lstat.st_mtime]
-        if os.name == "posix":
-            times.append(stat.st_ctime)
-        changed = max(times)
+        changed = max(stat.st_mtime, lstat.st_mtime)
         if stat.st_size > MAX_FILE_BYTES:
             return Read(None, None, changed, "big")
         data = path.read_bytes()
