@@ -13,18 +13,20 @@ the engine's own rules (``.hermes.md`` up to the git root, the ``AGENTS.md`` cha
 root down, ``CLAUDE.md``, the cursor rules; the first kind found wins), rendered the way the
 engine renders them, and compared with the prompt right after its ``# Project Context`` header.
 The same text there is ``loaded``; the engine's cut of it ``truncated``; the scan's notice
-``blocked``; anything else ``outdated``. A file changed after the session started is
-``outdated`` unless the prompt is provably its current text: a saved prompt cannot say where an
-older, longer text ended. No block while a file is there for it is ``none``; no file where the
-agent looks, nor an ``AGENTS.md`` or ``.hermes.md`` in the gateway's working directory or in
-``HERMES_HOME``, is ``no_files``, never an alarm. A platform that skips context files in the
-engine's ``config.yaml`` is ``off``.
+``blocked``; anything else ``outdated``. When the prompt holds the current text, the end of the
+block is proven by the engine's next part right after it (the skills index, the workspace
+snapshot, the memory block, the timestamp line, the runtime block); without that proof a file
+changed after the session started is ``outdated``, since a saved prompt cannot otherwise say
+where an older, longer text ended. No block while a file is there for it is ``none``; no file
+where the agent looks, nor an ``AGENTS.md`` or ``.hermes.md`` in the gateway's working directory
+or in ``HERMES_HOME``, is ``no_files``, never an alarm. A platform that skips context files in
+the engine's ``config.yaml`` is ``off``; a prompt whose directory cannot be known is ``unknown``.
 
 The database is the engine's and the gateway writes it: ``mode=ro`` with ``PRAGMA query_only``,
 two short statements per platform (the session row, then its one prompt), the connection closed
 before any file is read, all in a worker under the tick's deadline. The prompt and the files are
-compared in memory and dropped; the snapshot carries file names as found on disk, lengths, times
-and verdicts, never their text and never a path.
+compared in memory and dropped; the snapshot carries file names as the engine labels them,
+lengths, times and verdicts, never their text and never a path.
 """
 
 from __future__ import annotations
@@ -65,10 +67,13 @@ MAX_PLATFORMS = 12
 # A context file larger than this is not read for the comparison (the engine's budget tops out
 # at 500,000 characters, so such a file is always cut): the prompt's own marker then decides.
 MAX_FILE_BYTES = 4 * 1024 * 1024
+# A change time this far ahead of the clock is not a time (skew, an archive, a foreign disk).
+FUTURE_SLACK_SECONDS = 60.0
 HERMES_NAMES = (".hermes.md", "HERMES.md")
 AGENTS_NAMES = ("AGENTS.override.md", "AGENTS.md", "agents.md")
 CLAUDE_NAMES = ("CLAUDE.md", "claude.md")
 CURSOR_NAME = ".cursorrules"
+CONTEXT_NAMES = (*HERMES_NAMES, *AGENTS_NAMES, *CLAUDE_NAMES, CURSOR_NAME)
 # The names that mean "for this agent" where the agent does not look (the gateway's directory,
 # HERMES_HOME): a CLAUDE.md or .cursorrules there is most likely for another tool.
 MEANT_FOR_HERMES = (*HERMES_NAMES, *AGENTS_NAMES)
@@ -83,6 +88,17 @@ _RUNTIME_HEADING = "# Hermes runtime environment"
 _RUNTIME_END = "<!-- End Hermes runtime environment -->"
 _CWD_PREFIX = "Current working directory:"
 _HOME_PREFIX = "User home directory:"
+# The parts the engine puts right after the context block (``build_system_prompt_parts``, the
+# same on 0.21.1, 0.21.3, 0.21.5 and main): the skills index, the workspace snapshot, the
+# memory block, the timestamp line, the runtime block. One of them after the current text
+# proves the block ended there.
+_NEXT_PARTS = (
+    "## Skills\nBefore replying, scan the skills below",
+    "Workspace (snapshot at session start",
+    "═" * 46 + "\n",
+    "Conversation started: ",
+    f"{_RUNTIME_HEADING}\n\n",
+)
 _MARKER_RE = re.compile(
     r"\n\n\[\.\.\.truncated ([^:\n]{1,200}): kept (\d{1,9})\+(\d{1,9}) of (\d{1,9}) chars"
 )
@@ -90,6 +106,19 @@ _CHAIN_WARN_NAME = "AGENTS.md (directory chain)"
 
 RulesPart = tuple[RulesSummary, SourceObservation | None, tuple[Incident, ...]]
 Kind = Literal["hermes", "agents", "claude", "cursor"]
+ReadStatus = Literal["ok", "empty", "big", "undecodable"]
+
+
+@dataclass(frozen=True, slots=True)
+class Read:
+    """A context file as the engine reads it: ``raw`` stripped (a BOM kept, as ``strip`` keeps
+    it), ``text`` what the prompt carries (a leading BOM dropped, as the scan drops it);
+    ``empty`` and ``undecodable`` files the engine skips, ``big`` ones it cuts."""
+
+    raw: str | None
+    text: str | None
+    changed: float | None
+    status: ReadStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +152,15 @@ class Session:
     prompt: str
 
 
+@dataclass(frozen=True, slots=True)
+class Match:
+    verdict: RulesVerdict
+    chars: int | None = None
+    kept: int | None = None
+    # The engine's next part follows the text: the block provably ends there.
+    proven: bool = False
+
+
 def read_rules(env: Environment, *, now: datetime) -> RulesPart:
     """The whole answer with its source; ``None`` as the source when the line is off. Never
     raises: a failure is one unavailable source with the exception's class, nothing logged."""
@@ -136,7 +174,9 @@ def read_rules(env: Environment, *, now: datetime) -> RulesPart:
         if sessions is None:
             return _not_here("state.db has no saved system prompts")
         skipped = skipping_platforms(env.hermes_home)
-        judged = tuple(judge(s, env, skipped=s.platform in skipped) for s in sessions)
+        judged = tuple(
+            judge(s, env, skipped=s.platform in skipped, now=now.timestamp()) for s in sessions
+        )
     except sqlite3.Error as exc:
         return _unavailable(f"state.db: {type(exc).__name__}")
     except Exception as exc:  # a file, a path, a parser: the class only, a message may carry a path
@@ -226,7 +266,8 @@ def gateway_platforms(home: Path) -> tuple[str, ...]:
     """The platforms of this profile the running gateway has written (``gateway_state.json``:
     the ``platforms`` entries whose writer is the record's own pid and start, the way the
     engine's status tells live from preserved; ``<profile>:`` keys belong to another profile's
-    database). Without writer stamps every key counts; without a record, Telegram."""
+    database). Right after a start, with none written yet, Telegram; without writer stamps
+    (an older engine) every key; without a record, Telegram."""
     try:
         payload = json.loads((home / GATEWAY_STATE_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -236,13 +277,15 @@ def gateway_platforms(home: Path) -> tuple[str, ...]:
         return DEFAULT_PLATFORMS
     keys = [k for k in platforms if isinstance(k, str) and k.strip() and ":" not in k]
     writer = (payload.get("pid"), payload.get("start_time"))
-    live = [
-        key
-        for key in keys
-        if isinstance(entry := platforms[key], dict)
-        and (entry.get("writer_pid"), entry.get("writer_start_time")) == writer
-    ]
-    names = sorted(live if live and None not in writer else keys)
+    if None in writer:
+        names = sorted(keys)
+    else:
+        names = sorted(
+            key
+            for key in keys
+            if isinstance(entry := platforms[key], dict)
+            and (entry.get("writer_pid"), entry.get("writer_start_time")) == writer
+        )
     names.sort(key=lambda name: name != "telegram")
     return tuple(names[:MAX_PLATFORMS]) or DEFAULT_PLATFORMS
 
@@ -277,26 +320,26 @@ def skipping_platforms(home: Path) -> frozenset[str]:
 # ------------------------------------------------------------------ the verdict
 
 
-def judge(session: Session, env: Environment, *, skipped: bool) -> PlatformRules:
+def judge(session: Session, env: Environment, *, skipped: bool, now: float) -> PlatformRules:
     """The verdict on one platform's latest saved prompt."""
     prompt, started_at = session.prompt, _iso(session.started)
     # Where discovery ran: the prompt's own line; for a sandbox backend the engine's TERMINAL_CWD
     # when it exists on the host, else the process's directory (``resolve_context_cwd``).
     where = agent_dir(prompt) or _usable(env.terminal_cwd) or env.gateway_dir
-    expected = discover(where) if where is not None else None
     start = prompt.find(_HEADER)
     if start < 0:
         if skipped:
             return PlatformRules(session.platform, "off", started_at)
-        if where is not None and looks_like_hermes_tree(where):
-            expected = None  # the source tree's own rules are never loaded for a platform
-        return _absent(session, started_at, expected, where, env)
+        return _absent(session, started_at, where, env)
     region = prompt[start + len(_HEADER) :]
+    if where is None:  # rules in the prompt, and no directory to compare them with
+        return PlatformRules(session.platform, "unknown", started_at)
+    expected = discover(where)
     if expected is None:  # rules in the prompt, none on disk now
         label = _first_label(region)
         files = (label,) if label else ()
         return PlatformRules(session.platform, "outdated", started_at, files, why="gone")
-    return _compare(session, started_at, region, expected)
+    return _compare(session, started_at, region, expected, now)
 
 
 def _usable(path: Path | None) -> Path | None:
@@ -331,38 +374,45 @@ def _first_label(region: str) -> str | None:
     first = region.split("\n", 1)[0]
     label = first[3:].strip() if first.startswith("## ") else ""
     name = label.replace("\\", "/").rsplit("/", 1)[-1]
-    known = name in (*HERMES_NAMES, *AGENTS_NAMES, *CLAUDE_NAMES, CURSOR_NAME)
-    return label if label and len(label) <= 80 and (known or name.endswith(".mdc")) else None
+    known = name in CONTEXT_NAMES or name.endswith(".mdc")
+    return label if label and len(label) <= 80 and known else None
 
 
-def _compare(session: Session, started_at: str, region: str, expected: Expected) -> PlatformRules:
-    verdict, chars, kept = _match(region, expected)
+def _compare(
+    session: Session, started_at: str, region: str, expected: Expected, now: float
+) -> PlatformRules:
+    match = _match(region, expected)
+    verdict, kept = match.verdict, match.kept
     changed = expected.changed
-    certain = changed is not None and changed <= session.started
-    if verdict in ("loaded", "truncated") and not certain:
-        # Changed after the session started: the prompt may hold an older, longer text whose
-        # end cannot be told from the text after it.
+    after = changed is not None and session.started < changed <= now + FUTURE_SLACK_SECONDS
+    if verdict in ("loaded", "truncated") and after and not match.proven:
+        # Changed after the session started, and nothing after the text proves the block
+        # ended there: the prompt may hold an older, longer text.
         verdict, kept = "outdated", None
-    changed_at = _iso(changed) if verdict == "outdated" and changed is not None else None
+    changed_at = _iso(changed) if verdict == "outdated" and after and changed else None
     return PlatformRules(
-        session.platform, verdict, started_at, expected.labels, chars, kept, changed_at
+        session.platform, verdict, started_at, expected.labels, match.chars, kept, changed_at
     )
 
 
-def _match(region: str, expected: Expected) -> tuple[RulesVerdict, int | None, int | None]:
-    """The prompt's block against the files as the engine renders them: verdict, characters,
-    characters kept."""
+def _match(region: str, expected: Expected) -> Match:
+    """The prompt's block against the files as the engine renders them."""
     if any(_blocked(region, label) for label in expected.labels):
-        return "blocked", None, None
+        return Match("blocked")
     if any(found.text is None for found in expected.files):
         return _by_marker(region, expected)
     full = render(expected)
     if region.startswith(full):
-        return "loaded", len(full), None
+        return Match("loaded", len(full), proven=_ends_here(region, len(full)))
     cut = _marker_at(region, expected)
     if cut is not None:
-        return "truncated", cut[0], cut[1]
-    return "outdated", len(full), None
+        return cut
+    return Match("outdated", len(full))
+
+
+def _ends_here(region: str, end: int) -> bool:
+    rest = region[end:]
+    return rest == "" or (rest.startswith("\n\n") and rest[2:].startswith(_NEXT_PARTS))
 
 
 def _blocked(region: str, label: str) -> bool:
@@ -370,33 +420,45 @@ def _blocked(region: str, label: str) -> bool:
     return region.startswith(notice) or f"\n{notice}" in region[:200_000]
 
 
-def _by_marker(region: str, expected: Expected) -> tuple[RulesVerdict, int | None, int | None]:
+def _by_marker(region: str, expected: Expected) -> Match:
     """A file too big to read here: the engine always cut it, its marker says by how much."""
     first = expected.labels[0]
-    match = _MARKER_RE.search(region, 0, 600_000)
-    if region.startswith(f"## {first}\n\n") and match:
-        total, kept = int(match.group(4)), int(match.group(2)) + int(match.group(3))
-        return "truncated", total, kept
-    return "outdated", None, None
+    marker = _MARKER_RE.search(region, 0, 600_000)
+    if region.startswith(f"## {first}\n\n") and marker:
+        total, kept = int(marker.group(4)), int(marker.group(2)) + int(marker.group(3))
+        # Its text unread, the end of the block is unproven: a change after the start is outdated.
+        return Match("truncated", total, kept)
+    return Match("outdated")
 
 
 def render(expected: Expected) -> str:
     """The block's body as the engine writes it before any cut (``_context_section``,
     ``_load_agents_md``, ``_load_cursorrules``), trailing whitespace stripped as the tier is."""
-    sections = [f"## {f.label}\n\n{f.text}" for f in expected.files]
-    if expected.kind == "cursor":
-        return "".join(f"{section}\n\n" for section in sections).rstrip()
-    return "\n\n".join(sections)
+    return _bundle(expected).rstrip() if expected.kind == "cursor" else _joined(expected)
 
 
-def _marker_at(region: str, expected: Expected) -> tuple[int, int] | None:
+def _joined(expected: Expected) -> str:
+    return "\n\n".join(_section_body(found) for found in expected.files)
+
+
+def _bundle(expected: Expected) -> str:
+    """The cursor rules as the engine cuts them: every section with its blank line after it."""
+    return "".join(f"{_section_body(found)}\n\n" for found in expected.files)
+
+
+def _section_body(found: Found) -> str:
+    return f"## {found.label}\n\n{found.text}"
+
+
+def _marker_at(region: str, expected: Expected) -> Match | None:
     """The engine's cut of this very text: the head it kept, the marker with this text's own
-    length, the tail it kept. Total and kept; ``None`` when the prompt is not that cut."""
-    if expected.kind == "cursor" or len(expected.files) == 1:
-        body = render(expected) if expected.kind == "cursor" else _section_body(expected.files[0])
-        return _cut(region, body, _warn_name(expected))
+    length, the tail it kept; ``None`` when the prompt is not that cut."""
+    if expected.kind == "cursor":
+        return _cut(region, _bundle(expected), CURSOR_NAME)
+    if len(expected.files) == 1:
+        return _cut(region, _section_body(expected.files[0]), _warn_name(expected))
     # An AGENTS.md chain: cut as a whole, or each section on its own and every other one whole.
-    whole = _cut(region, render(expected), _CHAIN_WARN_NAME)
+    whole = _cut(region, _joined(expected), _CHAIN_WARN_NAME)
     if whole is not None:
         return whole
     total = kept = 0
@@ -404,32 +466,47 @@ def _marker_at(region: str, expected: Expected) -> tuple[int, int] | None:
         body = _section_body(found)
         cut = _cut(region, body, found.label)
         if cut is None and body not in region:
-            return None
-        total += cut[0] if cut else len(body)
-        kept += cut[1] if cut else len(body)
-    return (total, kept) if total != kept else None
+            return _chain_cut_twice(region, expected)
+        if cut is None:
+            total, kept = total + len(body), kept + len(body)
+        else:
+            total, kept = total + (cut.chars or 0), kept + (cut.kept or 0)
+    return Match("truncated", total, kept) if total != kept else None
 
 
-def _cut(region: str, body: str, warn: str) -> tuple[int, int] | None:
-    for match in _MARKER_RE.finditer(region):
-        head, tail, total = int(match.group(2)), int(match.group(3)), int(match.group(4))
-        if match.group(1) != warn or total != len(body):
+def _chain_cut_twice(region: str, expected: Expected) -> Match | None:
+    """A chain whose sections were cut and then the whole again: the first file's start and the
+    chain's own marker are what can be checked."""
+    chain = next((m for m in _MARKER_RE.finditer(region) if m.group(1) == _CHAIN_WARN_NAME), None)
+    first = _section_body(expected.files[0])
+    if chain is None or not region.startswith(first[: min(len(first), 1000)]):
+        return None
+    return Match("truncated", int(chain.group(4)), int(chain.group(2)) + int(chain.group(3)))
+
+
+def _cut(region: str, body: str, warn: str) -> Match | None:
+    for marker in _MARKER_RE.finditer(region):
+        head, tail, total = int(marker.group(2)), int(marker.group(3)), int(marker.group(4))
+        if marker.group(1) != warn or total != len(body):
             continue
-        if _cut_fits(region, body, match.start(), head, tail):
-            return total, head + tail
+        end = _cut_end(region, body, marker.start(), head, tail)
+        if end is not None:
+            return Match("truncated", total, head + tail, proven=_ends_here(region, end))
     return None
 
 
-def _section_body(found: Found) -> str:
-    return f"## {found.label}\n\n{found.text}"
-
-
-def _cut_fits(region: str, body: str, at: int, head: int, tail: int) -> bool:
-    """``body[:head]`` right before the marker, ``body[-tail:]`` right after its closing ``]``."""
+def _cut_end(region: str, body: str, at: int, head: int, tail: int) -> int | None:
+    """Where the cut ends in the region: ``body[:head]`` right before the marker,
+    ``body[-tail:]`` right after its closing ``]`` (its trailing blank line stripped by the
+    tier when it closes the block); ``None`` when the prompt is not this cut."""
     if region[max(0, at - head) : at] != body[:head]:
-        return False
+        return None
     close = region.find("]\n\n", at)
-    return close >= 0 and region[close + 3 : close + 3 + tail] == body[len(body) - tail :]
+    kept_tail = body[len(body) - tail :].rstrip()
+    start = close + 3
+    if close < 0 or region[start : start + len(kept_tail)] != kept_tail:
+        return None
+    return start + len(kept_tail)
 
 
 def _warn_name(expected: Expected) -> str:
@@ -438,32 +515,29 @@ def _warn_name(expected: Expected) -> str:
         return ".hermes.md"
     if expected.kind == "claude":
         return "CLAUDE.md"
-    if expected.kind == "cursor":
-        return CURSOR_NAME
     return expected.files[0].label
 
 
 def _absent(
-    session: Session,
-    started_at: str,
-    expected: Expected | None,
-    where: Path | None,
-    env: Environment,
+    session: Session, started_at: str, where: Path | None, env: Environment
 ) -> PlatformRules:
     """No block in the prompt: is a file there for it, and where."""
-    if expected is not None:
-        changed = expected.changed
-        why: RulesWhy = (
-            "after" if changed is not None and changed > session.started else "not_loaded"
-        )
-        return PlatformRules(
-            session.platform,
-            "none",
-            started_at,
-            expected.labels,
-            changed_at=_iso(changed) if changed is not None else None,
-            why=why,
-        )
+    if where is not None and not looks_like_hermes_tree(where):
+        expected = discover(where)
+        if expected is not None:
+            changed = expected.changed
+            after = changed is not None and changed > session.started
+            return PlatformRules(
+                session.platform,
+                "none",
+                started_at,
+                expected.labels,
+                changed_at=_iso(changed) if changed is not None else None,
+                why="after" if after else "not_loaded",
+            )
+        unreadable = _undecodable(where, CONTEXT_NAMES)
+        if unreadable:
+            return PlatformRules(session.platform, "none", started_at, unreadable, why="not_utf8")
     elsewhere: tuple[tuple[RulesWhy, Path | None], ...] = (
         ("gateway_dir", env.gateway_dir),
         ("home", env.hermes_home),
@@ -478,12 +552,22 @@ def _absent(
 
 
 def meant_for_hermes(directory: Path) -> tuple[str, ...]:
-    """The non-empty ``.hermes.md`` and ``AGENTS.md`` files in a directory the agent does not
+    """The ``.hermes.md`` and ``AGENTS.md`` files with content in a directory the agent does not
     look in, one name per file on a case-insensitive disk."""
     seen: dict[str, str] = {}
     for name in MEANT_FOR_HERMES:
         found = _read(directory / name)
-        if found is not None and found[0] != "":
+        if found is not None and found.status != "empty":
+            seen.setdefault(name.casefold(), name)
+    return tuple(seen.values())
+
+
+def _undecodable(directory: Path, names: Iterable[str]) -> tuple[str, ...]:
+    """Context files the engine skips in silence because they are not UTF-8."""
+    seen: dict[str, str] = {}
+    for name in names:
+        found = _read(directory / name)
+        if found is not None and found.status == "undecodable":
             seen.setdefault(name.casefold(), name)
     return tuple(seen.values())
 
@@ -522,24 +606,28 @@ def _git_root(cwd: Path) -> Path | None:
     return None
 
 
+def _loadable(found: Read | None) -> bool:
+    return found is not None and found.status in ("ok", "big")
+
+
 def _hermes(cwd: Path, root: Path | None) -> list[Found]:
     """The nearest ``.hermes.md`` / ``HERMES.md`` from the directory up to the git root (the
-    directory only without one), frontmatter dropped; labelled relative to the directory."""
+    directory only without one), frontmatter dropped; labelled by its name."""
     for directory in [cwd, *cwd.parents] if root else [cwd]:
         path = next((directory / n for n in HERMES_NAMES if _is_file(directory / n)), None)
         if path is not None:
             found = _read(path)
-            if found is None or found[0] == "":
+            if found is None or not _loadable(found):
                 return []
-            text, changed = found  # the label is the name, here or above (``_load_hermes_md``)
-            return [Found(path.name, None if text is None else _strip_frontmatter(text), changed)]
+            text = None if found.text is None else _strip_frontmatter(found.text)
+            return [Found(path.name, text, found.changed)]
         if directory == root:
             return []
     return []
 
 
 def _agents(cwd: Path, root: Path | None) -> list[Found]:
-    """The ``AGENTS.md`` chain from the git root down to the directory, the first non-empty of
+    """The ``AGENTS.md`` chain from the git root down to the directory, the first loadable of
     ``AGENTS.override.md`` / ``AGENTS.md`` / ``agents.md`` per directory, a repeated text once."""
     chain = [cwd]
     if root is not None and root != cwd and cwd.is_relative_to(root):
@@ -550,14 +638,13 @@ def _agents(cwd: Path, root: Path | None) -> list[Found]:
     for directory in chain:
         for name in AGENTS_NAMES:
             found = _read(directory / name)
-            if found is None or found[0] == "":
+            if found is None or not _loadable(found):
                 continue
-            text, changed = found
-            if text is None or text not in seen:
-                if text is not None:
-                    seen.add(text)
+            if found.raw is None or found.raw not in seen:
+                if found.raw is not None:
+                    seen.add(found.raw)
                 label = name if directory == cwd else os.path.relpath(directory / name, cwd)
-                files.append(Found(label, text, changed))
+                files.append(Found(label, found.text, found.changed))
             break
     return files
 
@@ -565,8 +652,8 @@ def _agents(cwd: Path, root: Path | None) -> list[Found]:
 def _claude(cwd: Path, _root: Path | None) -> list[Found]:
     for name in CLAUDE_NAMES:
         found = _read(cwd / name)
-        if found is not None and found[0] != "":
-            return [Found(name, found[0], found[1])]
+        if found is not None and _loadable(found):
+            return [Found(name, found.text, found.changed)]
     return []
 
 
@@ -581,25 +668,35 @@ def _cursor(cwd: Path, _root: Path | None) -> list[Found]:
     files = []
     for path, label in candidates:
         found = _read(path)
-        if found is not None and found[0] != "":
-            files.append(Found(label, found[0], found[1]))
+        if found is not None and _loadable(found):
+            files.append(Found(label, found.text, found.changed))
     return files
 
 
-def _read(path: Path) -> tuple[str | None, float | None] | None:
-    """The text as the engine puts it in the prompt (UTF-8, stripped, a leading BOM dropped) and
-    the newest change; ``None`` when there is no such regular file or the engine could not read
-    it either; ``(None, changed)`` when it is too big to read here."""
+def _read(path: Path) -> Read | None:
+    """A context file as the engine reads it (UTF-8, stripped) and the newest change to it, a
+    link to it, or, on POSIX, its inode (a copy that kept an old time still changed it);
+    ``None`` when there is no such regular file or it cannot be opened."""
     if not _is_file(path):
         return None
     try:
-        changed = max(path.stat().st_mtime, path.lstat().st_mtime)
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return None, changed
-        text = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError, ValueError):
+        stat, lstat = path.stat(), path.lstat()
+        times = [stat.st_mtime, lstat.st_mtime]
+        if os.name == "posix":
+            times.append(stat.st_ctime)
+        changed = max(times)
+        if stat.st_size > MAX_FILE_BYTES:
+            return Read(None, None, changed, "big")
+        data = path.read_bytes()
+    except (OSError, ValueError):
         return None
-    return (text[1:] if text.startswith("\ufeff") else text), changed
+    try:
+        raw = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+    except UnicodeDecodeError:
+        return Read(None, None, changed, "undecodable" if data.strip() else "empty")
+    if not raw:
+        return Read(raw, raw, changed, "empty")
+    return Read(raw, raw[1:] if raw.startswith("\ufeff") else raw, changed, "ok")
 
 
 def _is_file(path: Path) -> bool:
@@ -643,12 +740,15 @@ def _iso(epoch: float) -> str:
 
 # ------------------------------------------------------------------ events and words
 
+# Short enough for "- <label>: <words>" to keep 32 columns with a label of up to 12; the
+# details carry the /new.
 _INCIDENT_WORDS: dict[str, str] = {
     "none": "rules not loaded",
-    "outdated": "rules outdated, /new",
+    "outdated": "rules outdated",
     "truncated": "rules truncated",
     "blocked": "rules blocked",
 }
+PLATFORM_LABEL_LIMIT = 12
 
 
 def incidents_for(judged: Iterable[PlatformRules]) -> tuple[Incident, ...]:
@@ -677,8 +777,16 @@ _PLATFORM_LABELS = {
     "sms": "SMS",
     "api_server": "API",
     "homeassistant": "HomeAssist",
+    "bluebubbles": "BlueBubbles",
+    "msgraph_webhook": "MS Graph",
+    "wecom_callback": "WeCom",
+    "wecom": "WeCom",
+    "weixin": "Weixin",
+    "dingtalk": "DingTalk",
+    "feishu": "Feishu",
 }
 
 
 def platform_label(platform: str) -> str:
-    return _PLATFORM_LABELS.get(platform, platform[:1].upper() + platform[1:12])
+    label = _PLATFORM_LABELS.get(platform) or platform[:1].upper() + platform[1:]
+    return label[:PLATFORM_LABEL_LIMIT]

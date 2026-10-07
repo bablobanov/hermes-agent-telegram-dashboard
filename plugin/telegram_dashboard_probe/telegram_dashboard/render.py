@@ -461,6 +461,8 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
         text = _rules_none_words(rules, files, changed, session)
     elif verdict == "off":
         text = "context files off for it in the engine's config"
+    elif verdict == "unknown":
+        text = f"rules in the prompt, the agent's directory not known here · session {session}"
     else:
         text = "no context file where the agent works"
     return f"Rules {platform_label(rules.platform)}: {text}"
@@ -469,6 +471,8 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
 def _rules_none_words(rules: PlatformRules, files: str, changed: str | None, session: str) -> str:
     if rules.why == "after":
         return f"{files} changed {changed or 'later'}, after session {session}: /new"
+    if rules.why == "not_utf8":
+        return f"{files} not UTF-8, the engine skips it in silence: save it as UTF-8"
     if rules.why == "gateway_dir":
         return f"{files} only in the gateway's directory, the agent works in another"
     if rules.why == "home":

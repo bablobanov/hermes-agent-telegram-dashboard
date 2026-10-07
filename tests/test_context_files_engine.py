@@ -34,6 +34,7 @@ def _engine_prompt(agent: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("TERMINAL_CWD", str(agent))
     monkeypatch.setenv("TERMINAL_ENV", "local")
     block = pb.build_context_files_prompt(cwd=str(agent), skip_soul=True, context_length=None)
+    block = block.strip()  # ``_join_tier`` strips every part
     runtime = (
         f"{pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{pb.build_environment_hints()}\n\n"
         f"{pb.RUNTIME_ENVIRONMENT_END}"
@@ -188,3 +189,34 @@ def test_a_working_directory_reached_through_a_link_reads_back_as_loaded(
     rules = _judge(tmp_path, monkeypatch, link)
 
     assert rules.verdict == "loaded" and len(rules.files) == 2
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {".cursorrules": "c" * 25_000},
+        {".cursor/rules/a.mdc": "a" * 15_000, ".cursor/rules/b.mdc": "b" * 15_000},
+    ],
+)
+def test_a_cursor_bundle_the_engine_cut_reads_back_as_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]
+) -> None:
+    """Verification item 1: the engine cuts the bundle with its trailing blank line."""
+    agent = tmp_path / "agent"
+    for name, text in files.items():
+        put(agent / name, text, at=BEFORE_SESSION)
+
+    rules = _judge(tmp_path, monkeypatch, agent)
+
+    assert rules.verdict == "truncated" and rules.kept == 18_000
+
+
+def test_a_chain_cut_twice_reads_back_as_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verification item 4: the root file cut on its own, the chain cut again as a whole."""
+    _repo_dir, sub = _repo(tmp_path, rules_text("r" * 25_000), rules_text("s" * 10_000))
+
+    rules = _judge(tmp_path, monkeypatch, sub)
+
+    assert rules.verdict == "truncated"

@@ -24,7 +24,7 @@ SECRET_RULE = "Never push to master without the word aubergine-7f3a"
 NOW = datetime(2026, 10, 7, 12, 40, tzinfo=UTC)
 SESSION_AT = datetime(2026, 10, 7, 12, 32, 34, tzinfo=UTC).timestamp()
 BEFORE_SESSION = SESSION_AT - 3600
-AFTER_SESSION = SESSION_AT + 600
+AFTER_SESSION = SESSION_AT + 240  # 12:36:34, before NOW
 
 SCHEMA = """
 CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT NOT NULL);
@@ -55,7 +55,12 @@ BLOCK_HEADER = (
     "# Project Context\n\nThe following project context files have been loaded and should be "
     "followed:\n\n"
 )
-SKILLS = "## Skills\nNo skills are installed."
+# ``_render_skills_index``: the engine's own opening of the skills index, the part that follows
+# the context block in a gateway session without a workspace.
+SKILLS = (
+    "## Skills\nBefore replying, scan the skills below. If a skill matches or is even partially "
+    "relevant to your task, you MUST load it with skill_view(name) and follow its instructions."
+)
 RUNTIME_HEADING = "# Hermes runtime environment"
 RUNTIME_END = "<!-- End Hermes runtime environment -->"
 # ``agent/prompt_builder.py``: CONTEXT_TRUNCATE_HEAD_RATIO, CONTEXT_TRUNCATE_TAIL_RATIO.
@@ -102,13 +107,15 @@ def blocked(label: str) -> str:
     )
 
 
-def prompt(sections: Sequence[str], cwd: Path | str | None) -> str:
+def prompt(sections: Sequence[str], cwd: Path | str | None, next_part: str = SKILLS) -> str:
     """A whole system prompt: stable tier, the context block when there are sections, the
-    volatile tier with the runtime block last (none for a remote backend: ``cwd`` None)."""
+    volatile tier (``next_part`` first: the skills index unless a test says otherwise) with the
+    runtime block last (none for a remote backend: ``cwd`` None)."""
     tiers = [STABLE]
     if sections:
-        tiers.append(BLOCK_HEADER + "\n".join(sections))
-    volatile = [SKILLS, "Conversation started: Tuesday, October 07, 2026"]
+        # ``_join_tier`` strips every part: a cursor bundle's trailing blank line goes.
+        tiers.append((BLOCK_HEADER + "\n".join(sections)).strip())
+    volatile = [next_part, "Conversation started: Tuesday, October 07, 2026"]
     if cwd is not None:
         hints = (
             f"Host: Linux (6.1.0)\nUser home directory: /home/op\nCurrent working directory: {cwd}"

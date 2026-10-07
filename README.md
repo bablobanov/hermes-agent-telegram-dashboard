@@ -429,10 +429,11 @@ Every warning is also an event. The details always carry one line per platform:
 `Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Oct 7 14:32` when the agent sees them,
 otherwise the files and what to do (`AGENTS.md only in the gateway's directory, the agent works
 in another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's
-directory, not in the prompt of session …`, `in the prompt, no such file now`), and also
-`no context file where the agent works` (never an alarm), `context files off for it in the
-engine's config`, or the reason of a no data (the coverage line names that source on the
-screen).
+directory, not in the prompt of session …`, `not UTF-8, the engine skips it in silence`, `in
+the prompt, no such file now`, `differ from the prompt of session …`), and also `no context
+file where the agent works` (never an alarm), `context files off for it in the engine's
+config`, `the agent's directory not known here` (a sandbox prompt with no host directory to
+compare), or the reason of a no data (the coverage line names that source on the screen).
 
 - **how it judges**: the files are found on disk by the engine's own rules, never by headings
   read out of the prompt: in the agent's directory, `.hermes.md` up to the git root, else the
@@ -444,23 +445,32 @@ screen).
   file's heading is blocked, anything else outdated. The agent's directory is the one the
   prompt's runtime block names, read back the way the engine reads it to check a stored prompt
 - **a snapshot, not the files this minute**: the engine builds the prompt on a session's first
-  turn and keeps it until a compression, a model switch or `/new`. A file changed after the
-  session started is outdated until `/new`, even when a compression has already rebuilt the
-  prompt: a saved prompt cannot say where an older, longer text ended, so a rule removed from
-  the end must not read as loaded
+  turn and keeps it until a compression, a model switch or `/new`. When the prompt holds the
+  current text, its end is proven by the engine's next part right after it (the skills index,
+  the workspace snapshot, the memory block, the timestamp line or the runtime block): then the
+  file's time does not matter, a `touch` or a rebuild after an edit reads loaded. Without that
+  proof a file changed after the session started is outdated until `/new`: a saved prompt cannot
+  otherwise say where an older, longer text ended, so a rule removed from the end must not read
+  as loaded. The change time is the newest of the file's, its link's and, on POSIX, its inode's
+  (a copy that kept an old time still changed it); a time ahead of the clock is no time
 - **where else rules may wait**: only `.hermes.md` and `AGENTS.md` count in the gateway
   process's working directory and in `HERMES_HOME`, where the agent does not look; a
-  `CLAUDE.md` or `.cursorrules` there is taken to be another tool's. A file of whitespace is no
-  file, as for the engine. The Hermes source tree is never taken for a place of rules (its
-  contributor `AGENTS.md` is not loaded for a messaging platform on purpose)
+  `CLAUDE.md` or `.cursorrules` there is taken to be another tool's (an `AGENTS.md` kept there
+  for another tool raises the alarm too; turn the line off for such a gateway). A file of
+  whitespace is no file, as for the engine; a file that is not UTF-8 (a Windows editor's ANSI or
+  "Unicode") the engine skips in silence, and the line says so. The Hermes source tree is never
+  taken for a place of rules (its contributor `AGENTS.md` is not loaded for a messaging platform
+  on purpose)
 - **which platforms**: the entries of `gateway_state.json` that the running gateway wrote
   (their writer stamps are the record's own pid and start, the way the engine's status tells
   live from preserved), so a platform switched off long ago is not judged forever; another
-  profile's entries belong to its own `state.db`; Telegram when there is no record. A platform
+  profile's entries belong to its own `state.db`; Telegram right after a start and when there is
+  no record. A platform
   whose `gateway.platforms.<name>.skip_context_files` is set is off, not an alarm
 - **a sandbox backend** (docker and the like) names no host directory in the prompt; discovery
   then ran in the engine's `TERMINAL_CWD` when that exists on the host, else in the process's
-  own directory, and so does the verdict
+  own directory, and so does the verdict; with neither (the cron tick without `gateway_dir`)
+  rules in the prompt are `unknown`, never an alarm
 - **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (the same
   read-only connection as the cron history), two short statements per platform: the newest
   session row with a saved prompt (its start and the prompt's hash, by the source index), then
@@ -471,7 +481,7 @@ screen).
   and change time. In `config.yaml`: only `gateway.platforms.<name>.skip_context_files`. In the
   gateway process: the engine's `TERMINAL_CWD`. All in a worker under the tick's deadline
 - **what is never shown or logged**: the prompt and the files' text, session ids, paths. The
-  screen carries file names as found on disk, lengths, times and verdicts; nothing of the line
+  screen carries file names as the engine labels them, lengths, times and verdicts; nothing of the line
   is kept in the plugin's record; a failure is the exception's class only
   (`tests/test_context_files.py` plants a phrase in every file and prompt and counts it in the
   screen, the snapshot and the log: zero)
@@ -485,8 +495,8 @@ screen).
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
 engine's own functions and reads them back (0.21.3 and 0.21.5: every kind of file, a chain in
-a repository, a chain with a cut file, an override file, a directory reached through a link);
-it skips where Hermes is not importable.
+a repository, a chain with a cut file, a chain cut twice, a cut cursor bundle, an override file,
+a directory reached through a link); it skips where Hermes is not importable.
 
 ### The backup line
 

@@ -589,9 +589,7 @@ def _rules_states() -> tuple[State, ...]:
             _showcase_snapshot(
                 "warning",
                 incidents=(
-                    Incident(
-                        "rules:telegram:outdated", "warning", "Telegram: rules outdated, /new"
-                    ),
+                    Incident("rules:telegram:outdated", "warning", "Telegram: rules outdated"),
                 ),
                 rules=RulesSummary(
                     "observed",

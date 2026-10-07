@@ -172,9 +172,9 @@ def test_4a_a_session_older_than_an_edited_file_is_outdated_until_new(tmp_path: 
     lines = _screen(env)
     assert "Rules ⚠️ Telegram: outdated" in lines
     assert (
-        "> Rules Telegram: AGENTS.md changed Oct 7 12:42 after session Oct 7 12:32: /new" in lines
+        "> Rules Telegram: AGENTS.md changed Oct 7 12:36 after session Oct 7 12:32: /new" in lines
     )
-    assert "- Telegram: rules outdated, /new" in lines
+    assert "- Telegram: rules outdated" in lines
 
 
 def test_4b_a_file_that_appeared_after_the_session_says_new(tmp_path: Path) -> None:
@@ -198,7 +198,7 @@ def test_4b_a_file_that_appeared_after_the_session_says_new(tmp_path: Path) -> N
     assert (rules.verdict, rules.why) == ("none", "after")
     lines = _screen(env)
     assert "Rules ⚠️ Telegram: not loaded" in lines
-    after = "AGENTS.md changed Oct 7 12:42, after session Oct 7 12:32: /new"
+    after = "AGENTS.md changed Oct 7 12:36, after session Oct 7 12:32: /new"
     assert f"> Rules Telegram: {after}" in lines
 
 
@@ -238,17 +238,132 @@ def test_4e_a_file_emptied_after_the_session_is_rules_no_file_has_now(tmp_path: 
     assert f"> Rules Telegram: {gone}" in _screen(env)
 
 
-def test_4f_an_edit_after_the_session_shows_outdated_even_when_the_text_matches(
+def test_4f_a_touch_or_a_rebuild_after_the_session_is_loaded_when_the_end_is_proven(
     tmp_path: Path,
 ) -> None:
-    """The conservative side, pinned: a compression may already have rebuilt the prompt with
-    the new text, and the line still says outdated until /new (README: "a snapshot")."""
+    """Verification item 2: ``touch``, ``ln -sf`` to the same file, or a compression that
+    rebuilt the prompt after an edit: the current text sits right before the engine's next part
+    (the skills index here), so the block provably ends there and the time does not matter."""
     home, agent, service = _layout(tmp_path)
     text = rules_text()
     write_file(agent / "AGENTS.md", text, at=AFTER_SESSION)
     _db(home, agent, section("AGENTS.md", text))
 
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+def test_4g_without_a_proven_end_a_change_after_the_session_is_outdated(tmp_path: Path) -> None:
+    """The conservative side, pinned: a part the reader does not know follows the text (a
+    plugin's section, say), the file changed after the start: outdated until /new."""
+    home, agent, service = _layout(tmp_path)
+    text = rules_text()
+    write_file(agent / "AGENTS.md", text, at=AFTER_SESSION)
+    full = prompt([section("AGENTS.md", text)], agent, next_part="## Notes from a plugin\nx")
+    make_state_db(home, [Session("telegram", SESSION_AT, full)])
+
     assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "outdated"
+
+
+def test_4h_a_change_time_in_the_future_is_no_time(tmp_path: Path) -> None:
+    """Verification item 2: clock skew, an archive, a foreign disk; the content decides."""
+    home, agent, service = _layout(tmp_path)
+    text = rules_text()
+    write_file(agent / "AGENTS.md", text, at=NOW.timestamp() + 7200)
+    full = prompt([section("AGENTS.md", text)], agent, next_part="## Notes from a plugin\nx")
+    make_state_db(home, [Session("telegram", SESSION_AT, full)])
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+def test_4i_a_mismatch_with_a_file_older_than_the_session_says_differ(tmp_path: Path) -> None:
+    """Verification item 8: never "changed … after" for a change before the session."""
+    home, agent, service = _layout(tmp_path)
+    write_file(agent / "AGENTS.md", "Rules as they are.", at=BEFORE_SESSION)
+    _db(home, agent, section("AGENTS.md", "Rules as they were."))
+    env = Environment(hermes_home=home, gateway_dir=service)
+
+    rules = _one(env)
+
+    assert (rules.verdict, rules.changed_at) == ("outdated", None)
+    differ = "AGENTS.md differ from the prompt of session Oct 7 12:32: /new"
+    assert f"> Rules Telegram: {differ}" in _screen(env)
+
+
+def test_4j_a_file_not_in_utf8_is_not_loaded_and_says_why(tmp_path: Path) -> None:
+    """Verification item 3: Notepad's ANSI or "Unicode": the engine skips it in silence."""
+    home, agent, service = _layout(tmp_path)
+    (agent / "AGENTS.md").write_bytes("Правила агента: не отправлять без «да»".encode("cp1251"))
+    _db(home, agent)
+    env = Environment(hermes_home=home, gateway_dir=service)
+
+    rules = _one(env)
+
+    assert (rules.verdict, rules.why, rules.files) == ("none", "not_utf8", ("AGENTS.md",))
+    lines = _screen(env)
+    assert "Rules ⚠️ Telegram: not loaded" in lines
+    utf8 = "AGENTS.md not UTF-8, the engine skips it in silence: save it as UTF-8"
+    assert f"> Rules Telegram: {utf8}" in lines
+
+
+def test_4k_a_bom_only_file_is_an_empty_section_as_the_engine_loads_it(tmp_path: Path) -> None:
+    """Verification item 6: ``strip`` keeps a BOM, so the engine loads an empty section."""
+    home, agent, service = _layout(tmp_path)
+    write_file(agent / "AGENTS.md", "\ufeff\n", at=BEFORE_SESSION)
+    _db(home, agent, "## AGENTS.md\n\n")
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+def test_4l_a_cursor_bundle_the_engine_cut_is_truncated(tmp_path: Path) -> None:
+    """Verification item 1: the engine cuts the bundle with its trailing blank line, the tier
+    strips that line; the marker's total is the bundle's own length."""
+    home, agent, service = _layout(tmp_path)
+    a, b = "a" * 15_000, "b" * 15_000
+    write_file(agent / ".cursor" / "rules" / "a.mdc", a, at=BEFORE_SESSION)
+    write_file(agent / ".cursor" / "rules" / "b.mdc", b, at=BEFORE_SESSION)
+    bundle = f"## .cursor/rules/a.mdc\n\n{a}\n\n## .cursor/rules/b.mdc\n\n{b}\n\n"
+    head, tail = 14_000, 4_000
+    marker = (
+        f"\n\n[...truncated .cursorrules: kept {head}+{tail} of {len(bundle)} chars. The middle "
+        "is omitted — if you need the full instructions, read the complete file with the "
+        "read_file tool: /srv/agent/.cursorrules]\n\n"
+    )
+    _db(home, agent, bundle[:head] + marker + bundle[-tail:])
+
+    rules = _one(Environment(hermes_home=home, gateway_dir=service))
+
+    assert (rules.verdict, rules.chars, rules.kept) == ("truncated", len(bundle), 18_000)
+
+
+def test_4m_rules_in_a_prompt_with_no_directory_to_compare_are_unknown(tmp_path: Path) -> None:
+    """Verification item 5: a sandbox prompt, no TERMINAL_CWD on the host, the cron path."""
+    home, _agent, _service = _layout(tmp_path)
+    _db(home, None, section("AGENTS.md", "Rules."))
+    env = Environment(hermes_home=home)
+
+    summary, _source, incidents = read_rules(env, now=NOW)
+
+    assert [p.verdict for p in summary.platforms] == ["unknown"] and incidents == ()
+    unknown = "rules in the prompt, the agent's directory not known here · session Oct 7 12:32"
+    assert f"> Rules Telegram: {unknown}" in _screen(env)
+
+
+def test_4n_a_link_made_before_the_session_to_an_older_file_is_loaded(tmp_path: Path) -> None:
+    """Our production after 07.10 14:29: ``/var/lib/hermes/AGENTS.md`` → ``/opt/ailya``."""
+    if os.utime not in os.supports_follow_symlinks:
+        pytest.skip("a link's own time cannot be set on this platform")
+    home, agent, service = _layout(tmp_path)
+    text = rules_text()
+    target = write_file(service / "AGENTS.md", text, at=BEFORE_SESSION - 86_400)
+    link = agent / "AGENTS.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks not permitted here")
+    os.utime(link, (BEFORE_SESSION, BEFORE_SESSION), follow_symlinks=False)
+    _db(home, agent, section("AGENTS.md", text))
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
 
 
 def test_5_no_file_anywhere_is_no_files_in_the_details_and_never_an_alarm(tmp_path: Path) -> None:
@@ -523,6 +638,10 @@ def test_a_platform_a_previous_process_wrote_is_not_judged(tmp_path: Path) -> No
     writer is not the record's own pid and start is preserved, not live (``/api/status``)."""
     gateway_state(tmp_path, "telegram", "discord", stale=("discord",))
     assert gateway_platforms(tmp_path) == ("telegram",)
+    # Verification item 13: right after a start no entry is this process's yet; Telegram only,
+    # never every key.
+    gateway_state(tmp_path, "telegram", "discord", stale=("telegram", "discord"))
+    assert gateway_platforms(tmp_path) == ("telegram",)
 
 
 def test_two_platforms_in_trouble_are_counted_on_the_line(tmp_path: Path) -> None:
@@ -685,12 +804,16 @@ def test_the_line_off_in_the_settings_is_named_in_the_details_and_counted_nowher
 
 
 def test_every_event_and_line_of_the_rules_fits_the_phone_width() -> None:
-    """Review item 14: the 32 columns the cron events keep."""
-    verdicts = ("none", "outdated", "truncated", "blocked")
-    events = incidents_for(PlatformRules("telegram", v) for v in verdicts)  # type: ignore[arg-type]
+    """Review item 14, verification item 9: the 32 columns the cron events keep, for every
+    platform the engine knows and an unknown one with a long name."""
+    from telegram_dashboard.context_files import _PLATFORM_LABELS
 
-    assert len(events) == 4
-    assert all(len(f"- {event.title}") <= 32 for event in events), events
+    verdicts = ("none", "outdated", "truncated", "blocked")
+    for platform in (*_PLATFORM_LABELS, "wecom_callback", "a_plugin_platform_with_a_long_name"):
+        judged = [PlatformRules(platform, v) for v in verdicts]  # type: ignore[arg-type]
+        events = incidents_for(judged)
+        assert len(events) == 4
+        assert all(len(f"- {event.title}") <= 32 for event in events), events
     assert len("Rules ⚠️ Telegram: not loaded") <= 32
 
 
@@ -772,3 +895,27 @@ def test_the_async_tick_reads_the_rules_in_a_worker_under_its_deadline(
     assert by_name["context_files"].state == "unavailable"
     assert by_name["context_files"].detail == "state.db read timed out"
     assert snapshot.rules is not None and snapshot.rules.state == "unknown"
+
+
+def test_a_wal_writer_in_the_middle_of_a_transaction_neither_blocks_nor_is_blocked(
+    tmp_path: Path,
+) -> None:
+    """Verification item 11: the reader runs while the gateway's write transaction is open, and
+    the writer commits right after with a short busy timeout."""
+    home, agent, service = _layout(tmp_path)
+    text = rules_text()
+    write_file(agent / "AGENTS.md", text, at=BEFORE_SESSION)
+    path = make_state_db(
+        home, [Session("telegram", SESSION_AT, prompt([section("AGENTS.md", text)], agent))]
+    )
+    writer = sqlite3.connect(path, timeout=0.5, isolation_level=None)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO sessions (id, source, started_at) VALUES ('w', 'cron', 1)")
+        rules = _one(Environment(hermes_home=home, gateway_dir=service))
+        writer.execute("COMMIT")
+    finally:
+        writer.close()
+
+    assert rules.verdict == "loaded"
