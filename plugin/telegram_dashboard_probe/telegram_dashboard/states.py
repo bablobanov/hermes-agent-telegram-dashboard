@@ -1,8 +1,8 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
 for the pinned message itself, one for the Hermes version line, three showcase states for the
 catalog screenshots, two for an external limits source, two for Gemini's 429 from the
-engine's log, and three for the cron line and the deaf channel. No real Hermes is touched:
-every state is a snapshot literal.
+engine's log, three for the cron line and the deaf channel, one for the narrow phone, and two
+for the rules line. No real Hermes is touched: every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -24,9 +24,11 @@ from .schema import (
     DriftSummary,
     GatewaySummary,
     Incident,
+    PlatformRules,
     QuotaMetric,
     QuotaWindow,
     Refusal,
+    RulesSummary,
     Severity,
     SourceObservation,
     SourceState,
@@ -204,7 +206,13 @@ def _showcase_snapshot(
     extra_sources: tuple[SourceObservation, ...] = (),
     cron: CronSummary | None = None,
     traffic: TrafficSummary | None = None,
+    rules: RulesSummary | None = None,
 ) -> DashboardSnapshot:
+    rules_source = (
+        (SourceObservation("context_files", "official", "fresh", observed_at=_S),)
+        if rules is not None
+        else ()
+    )
     return DashboardSnapshot(
         overall=overall,
         observed_at=_S,
@@ -223,6 +231,7 @@ def _showcase_snapshot(
             SourceObservation("cron", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("cron_runs", "official", "fresh", observed_at=_S),
             SourceObservation("telegram_traffic", "local", "fresh", observed_at=_S),
+            *rules_source,
             *extra_sources,
         ),
         version=VersionSummary(
@@ -238,6 +247,7 @@ def _showcase_snapshot(
         or CronSummary("ok", active=27, paused=3, ticker_at=_S_MINUS_2M, ticker_ok_at=_S_MINUS_2M),
         traffic=traffic
         or TrafficSummary("ok", last_update_seen_at=_S_LAST_UPDATE, polling_at=_S_MINUS_2M),
+        rules=rules,
     )
 
 
@@ -537,6 +547,73 @@ def _phone_states() -> tuple[State, ...]:
     )
 
 
+# The rules states (25, 26; 0.10.0): the showcase installation whose agent does not see its
+# rules. 25 is the production case of 07.10, ``AGENTS.md`` in the service's WorkingDirectory and
+# the agent in the hermes user's home; 26 an edited file under a session that started before
+# the edit. The events are literals; ``test_states`` holds them to what
+# ``context_files.incidents_for`` builds.
+_S_SESSION = "2026-09-26T19:32:34+00:00"
+_S_EDITED = "2026-09-26T20:12:00+00:00"
+
+
+def _rules_states() -> tuple[State, ...]:
+    return (
+        State(
+            25,
+            "Rules: the agent's rules are only in the gateway's directory",
+            _showcase_snapshot(
+                "warning",
+                incidents=(
+                    Incident("rules:telegram:none", "warning", "Telegram: agent rules not loaded"),
+                ),
+                rules=RulesSummary(
+                    "observed",
+                    (
+                        PlatformRules(
+                            "telegram",
+                            "none",
+                            _S_SESSION,
+                            ("AGENTS.md",),
+                            why="gateway_dir",
+                        ),
+                    ),
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+        State(
+            26,
+            "Rules: the file changed after the session started",
+            _showcase_snapshot(
+                "warning",
+                incidents=(
+                    Incident(
+                        "rules:telegram:outdated", "warning", "Telegram: agent rules outdated, /new"
+                    ),
+                ),
+                rules=RulesSummary(
+                    "observed",
+                    (
+                        PlatformRules(
+                            "telegram",
+                            "outdated",
+                            _S_SESSION,
+                            ("AGENTS.md",),
+                            chars=11_162,
+                            changed_at=_S_EDITED,
+                        ),
+                    ),
+                ),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -716,4 +793,5 @@ def all_states() -> tuple[State, ...]:
         *_gemini_states(),
         *_cron_states(),
         *_phone_states(),
+        *_rules_states(),
     )

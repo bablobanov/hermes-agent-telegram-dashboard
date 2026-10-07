@@ -47,8 +47,8 @@ def _held_to_width(main: list[str]) -> list[str]:
     return main[:start] + main[end:]
 
 
-def test_twenty_four_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 25))
+def test_twenty_six_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 27))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -586,3 +586,33 @@ def test_the_cron_states_carry_what_the_collector_builds() -> None:
     for state in (STATES[2], STATES[20], STATES[21], STATES[23]):
         assert state.snapshot.cron is not None
         assert incidents_for(state.snapshot.cron, now=state.now) == state.snapshot.incidents
+
+
+def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_place() -> None:
+    lines = _render(STATES[24]).splitlines()
+
+    assert lines[0].startswith("🟡 Warning")
+    assert "Rules ⚠️ Telegram: not loaded" in lines
+    assert "- Telegram: agent rules not loaded" in lines
+    assert (
+        "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
+        in lines
+    )
+    assert "> Profiles 1/1 · sources 11/11" in lines
+
+
+def test_state_26_an_edited_file_says_new() -> None:
+    lines = _render(STATES[25]).splitlines()
+
+    assert "Rules ⚠️ Telegram: outdated" in lines
+    assert "> Rules Telegram: AGENTS.md changed Sep 26 20:12, session Sep 26 19:32: /new" in lines
+
+
+def test_the_rules_states_carry_what_the_collector_builds() -> None:
+    """The demo events of states 25 and 26 are literals; they must stay what
+    ``context_files.incidents_for`` says for the same verdicts."""
+    from telegram_dashboard.context_files import incidents_for
+
+    for state in (STATES[24], STATES[25]):
+        assert state.snapshot.rules is not None
+        assert incidents_for(state.snapshot.rules.platforms) == state.snapshot.incidents
