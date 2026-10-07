@@ -51,8 +51,8 @@ Gateway ✓ · Telegram ✓              words when something is off: stopped, d
 Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
 Drift ✓ 0 of 481                    keys that differ from the approved baseline
 Cron ✓ 27 jobs                      active jobs; ⚠️ N of M failing, ticker silent, ticks failing
-Rules ✓ AGENTS.md                   the context files in the agent's latest saved prompt;
-                                    ⚠️ not loaded / outdated / truncated / blocked
+Rules ⚠️ Telegram: not loaded        only when an agent does not see its rules: not loaded,
+                                    outdated, truncated, blocked; loaded is ✓ in the details
 
 🧠 Limits used
 Claude · no data                    a line without a number never shows a zero
@@ -412,58 +412,81 @@ answers are just worse. Hermes looks for its project context files (`.hermes.md`
 `CLAUDE.md`, `.cursorrules`) in the agent's working directory, and for a gateway with
 `terminal.cwd: .` (or unset) and the local backend that directory is the service user's home,
 not the service's `WorkingDirectory` (`hermes gateway install` sets that to `HERMES_HOME`). A
-file put next to the service, or next to `SOUL.md`, is silently never loaded. The line shows
-it per platform of the gateway, from the system prompt of that platform's latest session:
+file put next to the service, or next to `SOUL.md`, is silently never loaded. The dashboard
+judges it per platform of the gateway, from the system prompt the engine saved for that
+platform's latest session, and comes up to the screen only when an agent does not see its rules
+(the healthy screen keeps its fifteen lines):
 
 ```
-Rules ✓ AGENTS.md                   the files in the prompt are the files on disk
 Rules ⚠️ Telegram: not loaded        no file in the prompt, while one is there for it
-Rules ⚠️ Telegram: outdated          the prompt carries an older text: /new rebuilds it
+Rules ⚠️ Telegram: outdated          the prompt holds another text than the file: /new
 Rules ⚠️ Telegram: truncated         over context_file_max_chars, the middle cut out
 Rules ⚠️ Telegram: blocked           the engine's injection scan refused the file
 Rules ⚠️ 2 of 3 platforms            more than one platform; each in the details
-Rules: no files                     no context file anywhere it looks: never an alarm
-Rules: no sessions yet / not observed / no data / off in config
 ```
 
-The details carry one line per platform: the files, the length, the session's start, and for
-a `not loaded` where the file is (`AGENTS.md only in the gateway's directory, the agent works in
-another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's directory,
-not in the prompt of session …`). Every warning is also an event.
+Every warning is also an event. The details always carry one line per platform:
+`Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Oct 7 14:32` when the agent sees them,
+otherwise the files and what to do (`AGENTS.md only in the gateway's directory, the agent works
+in another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's
+directory, not in the prompt of session …`, `in the prompt, no such file now`), and also
+`no context file where the agent works` (never an alarm), `context files off for it in the
+engine's config`, or the reason of a no data (the coverage line names that source on the
+screen).
 
+- **how it judges**: the files are found on disk by the engine's own rules, never by headings
+  read out of the prompt: in the agent's directory, `.hermes.md` up to the git root, else the
+  `AGENTS.md` chain from the git root down (`AGENTS.override.md` first in each directory),
+  else `CLAUDE.md`, else the cursor rules; the first kind found wins. They are rendered the way
+  the engine renders them and compared with the prompt right after its `# Project Context`
+  header: the same text is loaded, the engine's own cut of that text (its marker with this
+  text's length, the head and the tail it kept) is truncated, the scan's notice under the
+  file's heading is blocked, anything else outdated. The agent's directory is the one the
+  prompt's runtime block names, read back the way the engine reads it to check a stored prompt
+- **a snapshot, not the files this minute**: the engine builds the prompt on a session's first
+  turn and keeps it until a compression, a model switch or `/new`. A file changed after the
+  session started is outdated until `/new`, even when a compression has already rebuilt the
+  prompt: a saved prompt cannot say where an older, longer text ended, so a rule removed from
+  the end must not read as loaded
+- **where else rules may wait**: only `.hermes.md` and `AGENTS.md` count in the gateway
+  process's working directory and in `HERMES_HOME`, where the agent does not look; a
+  `CLAUDE.md` or `.cursorrules` there is taken to be another tool's. A file of whitespace is no
+  file, as for the engine. The Hermes source tree is never taken for a place of rules (its
+  contributor `AGENTS.md` is not loaded for a messaging platform on purpose)
+- **which platforms**: the entries of `gateway_state.json` that the running gateway wrote
+  (their writer stamps are the record's own pid and start, the way the engine's status tells
+  live from preserved), so a platform switched off long ago is not judged forever; another
+  profile's entries belong to its own `state.db`; Telegram when there is no record. A platform
+  whose `gateway.platforms.<name>.skip_context_files` is set is off, not an alarm
+- **a sandbox backend** (docker and the like) names no host directory in the prompt; discovery
+  then ran in the engine's `TERMINAL_CWD` when that exists on the host, else in the process's
+  own directory, and so does the verdict
 - **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (the same
-  read-only connection as the cron history) in a worker under the tick's deadline. Per platform
-  of this profile (the keys of `gateway_state.json` `platforms`; Telegram when it cannot say), the
-  newest session whose system prompt is saved: its start and the prompt, which stays in the
-  worker's memory for the comparison. In the prompt: the `# Project Context` block, its
-  `## <file>` headings, the truncation marker, the scan's `[BLOCKED:` notice, and the
-  `Current working directory:` line of the runtime block (where the engine looked; `sessions.cwd`
-  stays empty for gateway sessions). On disk: the context files by the names the engine loads,
-  in the agent's directory, the gateway process's working directory and `HERMES_HOME`, their
-  text (to compare, up to 4 MB) and change time. In `config.yaml`: only
-  `gateway.platforms.<name>.skip_context_files`, a platform that skips context files on purpose
-  (`off`, not an alarm)
+  read-only connection as the cron history), two short statements per platform: the newest
+  session row with a saved prompt (its start and the prompt's hash, by the source index), then
+  that one prompt. No other session's prompt is read, and the connection is closed before any
+  file is, so a database in rollback-journal mode holds its writer back for milliseconds. In
+  the prompt: the header, the block right after it and the runtime block's working directory.
+  On disk: the context files by the names the engine loads, their text (up to 4 MB, to compare)
+  and change time. In `config.yaml`: only `gateway.platforms.<name>.skip_context_files`. In the
+  gateway process: the engine's `TERMINAL_CWD`. All in a worker under the tick's deadline
 - **what is never shown or logged**: the prompt and the files' text, session ids, paths. The
-  screen carries file names as the prompt labels them, lengths, times and verdicts; nothing of
-  the line is kept in the plugin's record (`tests/test_context_files.py` plants a phrase in every file and prompt and counts it in the
+  screen carries file names as found on disk, lengths, times and verdicts; nothing of the line
+  is kept in the plugin's record; a failure is the exception's class only
+  (`tests/test_context_files.py` plants a phrase in every file and prompt and counts it in the
   screen, the snapshot and the log: zero)
 - **what is never read**: messages, any other column of `sessions`, other sessions' prompts,
   any other key of `config.yaml`, `.env`, `auth.json`. Nothing is written anywhere
-- **a snapshot, not the files this minute**: the engine builds the prompt on a session's first
-  turn and keeps it until a compression, a model switch or `/new`. An edit to `AGENTS.md`
-  shows as `outdated` until then, which is the truth: the agent works on the old text
-- **where the agent looks**: the prompt's own runtime line, so a profile, a project set as
-  `terminal.cwd` or a home far from ours all judge right; a sandbox backend without a host
-  directory falls back to the gateway's own directory, as the engine's discovery does. The Hermes
-  source tree is never taken for a place of rules (its contributor `AGENTS.md` is not loaded
-  for a messaging platform on purpose)
+- **only the latest session per platform**: after an edit and `/new` in one chat the line is
+  calm while another chat of the same platform still runs on the old text
 - **off**: `context_files: false` hides the line and drops it from the coverage; the details
   say `Rules: off in the dashboard settings`, so off by choice never looks like a line that
   vanished
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
-engine's own functions and reads them back (0.21.3 and 0.21.5); it skips where Hermes is not
-importable.
+engine's own functions and reads them back (0.21.3 and 0.21.5: every kind of file, a chain in
+a repository, a chain with a cut file, an override file, a directory reached through a link);
+it skips where Hermes is not importable.
 
 ### The backup line
 
@@ -840,12 +863,16 @@ lives there, not in code:
   "backup_status": "/path/to/daily-status.json",
   "display_timezone": "UTC",
   "limits_enabled": true,
+  "context_files": true,
+  "gateway_dir": "/path/the/gateway/runs/in",
   "recreate_on_loss": true
 }
 ```
 
 Limits are only available when the tick runs in an interpreter that can import the engine (the
-gateway's own); elsewhere they degrade to `unsupported`.
+gateway's own); elsewhere they degrade to `unsupported`. The cron tick runs in a directory of its
+own, so the rules line looks for rules left beside the gateway only in the `gateway_dir` it is
+given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off.
 
 ## Tests
 

@@ -44,8 +44,11 @@ class Environment:
     # The rules line (``context_files.py``); off by the dashboard's own setting only.
     context_files_enabled: bool = True
     # The gateway process's working directory, where an operator may expect the agent's rules;
-    # ``None`` outside the gateway (the fallback cron tick runs in a directory of its own).
+    # ``None`` outside the gateway unless the cron tick's config names it.
     gateway_dir: Path | None = None
+    # The engine's ``TERMINAL_CWD`` as the gateway process holds it (the plugin path only):
+    # where a sandbox backend's discovery runs when the prompt names no host directory.
+    terminal_cwd: Path | None = None
 
 
 def probe_gateway_state(env: Environment) -> ProbeResult:

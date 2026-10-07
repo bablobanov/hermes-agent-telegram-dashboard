@@ -593,7 +593,7 @@ def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_pl
 
     assert lines[0].startswith("🟡 Warning")
     assert "Rules ⚠️ Telegram: not loaded" in lines
-    assert "- Telegram: agent rules not loaded" in lines
+    assert "- Telegram: rules not loaded" in lines
     assert (
         "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
         in lines
@@ -605,7 +605,9 @@ def test_state_26_an_edited_file_says_new() -> None:
     lines = _render(STATES[25]).splitlines()
 
     assert "Rules ⚠️ Telegram: outdated" in lines
-    assert "> Rules Telegram: AGENTS.md changed Sep 26 20:12, session Sep 26 19:32: /new" in lines
+    assert (
+        "> Rules Telegram: AGENTS.md changed Sep 26 20:12 after session Sep 26 19:32: /new" in lines
+    )
 
 
 def test_the_rules_states_carry_what_the_collector_builds() -> None:
@@ -616,3 +618,30 @@ def test_the_rules_states_carry_what_the_collector_builds() -> None:
     for state in (STATES[24], STATES[25]):
         assert state.snapshot.rules is not None
         assert incidents_for(state.snapshot.rules.platforms) == state.snapshot.incidents
+
+
+def test_the_healthy_showcase_with_its_rules_loaded_keeps_its_fifteen_lines() -> None:
+    """Review item 14: the rules line comes up to the screen only when an agent does not see
+    its rules; loaded, the confirmation is a details line and the phone screen stays 15."""
+    from dataclasses import replace
+
+    from telegram_dashboard.schema import PlatformRules, RulesSummary, SourceObservation
+
+    state = STATES[13]
+    rules = RulesSummary(
+        "observed",
+        (PlatformRules("telegram", "loaded", "2026-09-26T19:32:34+00:00", ("AGENTS.md",), 11_162),),
+    )
+    source = SourceObservation(
+        "context_files", "official", "fresh", observed_at=state.snapshot.observed_at
+    )
+    snapshot = replace(state.snapshot, rules=rules, sources=(*state.snapshot.sources, source))
+    text = render_dashboard(
+        snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
+    )
+
+    assert _main_part(text) == _main_part(_render(state))
+    assert len(_main_part(text)) <= PHONE_LINES
+    assert (
+        "> Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Sep 26 19:32" in text.splitlines()
+    )

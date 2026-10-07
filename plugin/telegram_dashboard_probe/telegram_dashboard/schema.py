@@ -37,8 +37,9 @@ TrafficState = Literal[
 RulesVerdict = Literal["loaded", "truncated", "outdated", "blocked", "none", "no_files", "off"]
 # Why a ``none``: the file changed after the session started (``/new`` picks it up); it was
 # there and the prompt does not carry it; it lies only in the gateway's working directory or
-# only in ``HERMES_HOME``, where the agent does not look.
-RulesWhy = Literal["after", "not_loaded", "gateway_dir", "home"]
+# only in ``HERMES_HOME``, where the agent does not look. Why an ``outdated``: ``gone``, the
+# prompt carries rules no file on disk has now.
+RulesWhy = Literal["after", "not_loaded", "gateway_dir", "home", "gone"]
 # ``observed``: the verdicts stand; ``off``: the dashboard's own setting turned the line off.
 RulesState = Literal["observed", "unknown", "unsupported", "off"]
 

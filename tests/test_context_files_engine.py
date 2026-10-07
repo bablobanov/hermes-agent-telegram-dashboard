@@ -128,3 +128,63 @@ def test_the_runtime_block_names_the_directory_the_engine_searched(
     agent.mkdir()
 
     assert agent_dir(_engine_prompt(agent, monkeypatch)) == agent
+
+
+def _repo(tmp_path: Path, root_text: str, sub_text: str) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    sub = repo / "services" / "api"
+    (repo / ".git").mkdir(parents=True)
+    put(repo / "AGENTS.md", root_text, at=BEFORE_SESSION)
+    put(sub / "AGENTS.md", sub_text, at=BEFORE_SESSION)
+    return repo, sub
+
+
+def test_an_agents_md_chain_in_a_repository_reads_back_as_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo_dir, sub = _repo(tmp_path, "Root rules for every service.", "API rules.")
+
+    rules = _judge(tmp_path, monkeypatch, sub)
+
+    assert rules.verdict == "loaded" and len(rules.files) == 2
+
+
+def test_a_chain_whose_root_file_the_engine_cut_reads_back_as_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review item 8: a section cut on its own inside a chain is truncated, not outdated."""
+    _repo_dir, sub = _repo(tmp_path, rules_text("z" * 25_000), "API rules.")
+
+    rules = _judge(tmp_path, monkeypatch, sub)
+
+    assert rules.verdict == "truncated" and rules.kept is not None and rules.chars is not None
+    assert rules.kept < rules.chars
+
+
+def test_an_override_file_wins_over_agents_md_as_the_engine_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = tmp_path / "agent"
+    put(agent / "AGENTS.md", "Committed rules.", at=BEFORE_SESSION)
+    put(agent / "AGENTS.override.md", "My own rules.", at=BEFORE_SESSION)
+
+    rules = _judge(tmp_path, monkeypatch, agent)
+
+    assert (rules.verdict, rules.files) == ("loaded", ("AGENTS.override.md",))
+
+
+def test_a_working_directory_reached_through_a_link_reads_back_as_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review item 9: the prompt names the link, the engine's labels are relative to the
+    resolved directory; the reader resolves as the engine does."""
+    _repo_dir, sub = _repo(tmp_path, "Root rules.", "API rules.")
+    link = tmp_path / "work-link"
+    try:
+        link.symlink_to(sub, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory links not permitted here")
+
+    rules = _judge(tmp_path, monkeypatch, link)
+
+    assert rules.verdict == "loaded" and len(rules.files) == 2

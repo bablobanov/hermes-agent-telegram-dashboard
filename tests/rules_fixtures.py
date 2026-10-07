@@ -160,14 +160,23 @@ def write_file(path: Path, text: str, *, at: float) -> Path:
     return path
 
 
-def gateway_state(home: Path, *platforms: str) -> None:
+def gateway_state(home: Path, *platforms: str, stale: Sequence[str] = ()) -> None:
+    """``gateway_state.json`` as ``gateway/status.py`` writes it: the record's own pid and start,
+    each platform entry stamped by its writer; a ``stale`` platform by an earlier process."""
     import json
 
     home.mkdir(parents=True, exist_ok=True)
+    pid, start = 4242, 1_790_000_000.0
+
+    def entry(name: str) -> dict[str, object]:
+        writer = (77, 1_780_000_000.0) if name in stale else (pid, start)
+        return {"state": "connected", "writer_pid": writer[0], "writer_start_time": writer[1]}
+
     payload = {
-        "pid": 1,
+        "pid": pid,
+        "start_time": start,
         "gateway_state": "running",
         "updated_at": NOW.isoformat(),
-        "platforms": {name: {"state": "connected"} for name in platforms},
+        "platforms": {name: entry(name) for name in platforms},
     }
     (home / "gateway_state.json").write_text(json.dumps(payload), encoding="utf-8")

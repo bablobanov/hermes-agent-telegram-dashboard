@@ -52,9 +52,11 @@ def _code_only(source: str) -> str:
 def test_plugin_mode_never_reads_the_bot_token() -> None:
     entry = _code_only(ENTRY.read_text(encoding="utf-8"))
     assert not re.search(r"token", entry, re.IGNORECASE)
-    # The only environment the entry reads: its own settings and the engine home.
+    # The only environment the entry reads: its own settings, the engine home and the engine's
+    # TERMINAL_CWD (a path, for the rules line's sandbox case, 0.10.0).
     env_names = re.findall(r"os\.environ\.get\((\w+)", entry)
-    assert env_names and set(env_names) <= {"ENV_HOME", "env_name"}, env_names
+    allowed = {"ENV_HOME", "ENV_TERMINAL_CWD", "env_name"}
+    assert env_names and set(env_names) <= allowed, env_names
     assert not re.search(r"\.env\b|dotenv", entry)
     # Delivery is the adapter's job: no Bot API client of its own in the entry ...
     assert not re.search(r"\b(import telegram|urllib|http\.client|requests|aiohttp|httpx)\b", entry)

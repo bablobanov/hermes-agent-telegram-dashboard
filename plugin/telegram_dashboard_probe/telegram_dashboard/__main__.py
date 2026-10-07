@@ -39,6 +39,7 @@ def _environment(config: dict[str, object]) -> Environment:
     drift_report = config.get("drift_report")
     backup_status = config.get("backup_status")
     sources = config.get("limits_sources")
+    gateway_dir = config.get("gateway_dir")
     return Environment(
         hermes_home=Path(str(home)).expanduser(),
         drift_command=tuple(str(part) for part in drift_command)
@@ -52,9 +53,19 @@ def _environment(config: dict[str, object]) -> Environment:
         if isinstance(backup_status, str) and backup_status
         else None,
         limits_sources=tuple(sources) if isinstance(sources, list) else (),
-        # The cron tick runs in a directory of its own: no gateway directory to look in.
-        context_files_enabled=bool(config.get("context_files", True)),
+        context_files_enabled=_enabled(config.get("context_files", True)),
+        # The cron tick runs in a directory of its own: the gateway's comes from the config.
+        gateway_dir=Path(str(gateway_dir)).expanduser()
+        if isinstance(gateway_dir, str) and gateway_dir
+        else None,
     )
+
+
+def _enabled(value: object) -> bool:
+    """``false``, ``0``, ``no``, ``off`` (any case) or a false value turn a line off."""
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 def _zone(config: dict[str, object]) -> tzinfo:

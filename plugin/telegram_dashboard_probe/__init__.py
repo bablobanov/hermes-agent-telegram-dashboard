@@ -80,6 +80,7 @@ ENV_LIMITS_REFRESH = "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH"
 ENV_TZ = "HERMES_DASHBOARD_PROBE_TZ"
 ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
 ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
+ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rules line
 # The Grok and Kimi quotas are asked at most once per this many seconds each, not every tick:
 # a weekly number does not move faster, and the surfaces are not documented ones. The caches
 # live in the record, one per provider (``limits_cache.grok``, ``limits_cache.kimi``).
@@ -110,7 +111,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
     # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
-    # (0.9.0): a copy without them would reject the tick's arguments every time.
+    # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0): a copy without them
+    # would reject the tick's arguments every time.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -121,6 +123,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "GEMINI_LOG",
         "CRON_RUNS",
         "TRAFFIC",
+        "RULES",
     ),
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
@@ -253,6 +256,13 @@ def _working_dir() -> Path | None:
         return Path.cwd()
     except OSError:
         return None
+
+
+def _terminal_cwd() -> Path | None:
+    """The engine's own ``TERMINAL_CWD`` in this process (a path, never a secret): where a
+    sandbox backend's context-file discovery runs when the prompt names no host directory."""
+    value = os.environ.get(ENV_TERMINAL_CWD, "").strip()
+    return Path(value).expanduser() if value else None
 
 
 def display_zone(settings: Settings) -> tzinfo:
@@ -678,6 +688,7 @@ class ProbeRuntime:
             limits_sources=self.settings.limits_sources,
             context_files_enabled=self.settings.context_files,
             gateway_dir=_working_dir(),
+            terminal_cwd=_terminal_cwd(),
         )
         runner = dashboard.collect.SubprocessRunner()
         caches = self.quota_caches()

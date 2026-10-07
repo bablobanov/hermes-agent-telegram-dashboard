@@ -413,19 +413,20 @@ def _streak_words(streak: int | None) -> str:
 
 
 def _rules_line(rules: RulesSummary, zone: tzinfo, details: _Details) -> str | None:
-    """``Rules ✓ AGENTS.md`` when every platform's agent sees its files as they are, the
-    platform and the word when one does not; ``None`` when the dashboard's setting turned the
-    line off (the details say so: off by choice is not the same as gone)."""
+    """On the screen only when an agent does not see its rules as they are: the platform and
+    the word, or the count. Everything else is a line in the details: the files loaded, no
+    files, off, the reason of a no data (whose source the coverage line already names). The
+    healthy screen keeps its fifteen lines (decision of 01.10)."""
     if rules.state == "off":
         details.state.append("Rules: off in the dashboard settings")
         return None
     if rules.state in ("unsupported", "unknown"):
         reason = sanitize_public_text(rules.detail or "not read", limit=60)
         details.state.append(f"Rules: {reason}")
-        return "Rules: not observed" if rules.state == "unsupported" else "Rules: no data"
+        return None
     if not rules.platforms:
         details.state.append("Rules: no platform session with a saved prompt yet")
-        return "Rules: no sessions yet"
+        return None
     details.state.extend(_rules_details(platform, zone) for platform in rules.platforms)
     bad = [p for p in rules.platforms if p.verdict in RULES_WARNING_VERDICTS]
     if len(bad) == 1:
@@ -433,16 +434,7 @@ def _rules_line(rules: RulesSummary, zone: tzinfo, details: _Details) -> str | N
         return f"Rules {WARN_MARK} {platform_label(bad[0].platform)}: {word}"
     if bad:
         return f"Rules {WARN_MARK} {len(bad)} of {len(rules.platforms)} platforms"
-    loaded = [p for p in rules.platforms if p.verdict == "loaded"]
-    files = list(dict.fromkeys(name for p in loaded for name in p.files))
-    if files:
-        line = f"Rules {OK_MARK} {sanitize_public_text(', '.join(files), limit=40)}"
-        return line if len(line) <= _LINE_COLUMNS else f"Rules {OK_MARK} {len(files)} files"
-    if loaded:
-        return f"Rules {OK_MARK}"
-    if all(p.verdict == "off" for p in rules.platforms):
-        return "Rules: off in config"
-    return "Rules: no files"
+    return None
 
 
 def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
@@ -453,15 +445,16 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
     verdict = rules.verdict
     if verdict == "loaded":
         size = f" · {rules.chars:,} chars" if rules.chars else ""
-        text = f"{files}{size} · session {session}"
+        text = f"{OK_MARK} {files}{size} · session {session}"
     elif verdict == "truncated":
         kept = f"{rules.kept:,}" if rules.kept else "part"
         total = f" of {rules.chars:,} chars" if rules.chars else ""
         text = f"{files} cut, kept {kept}{total} · session {session}"
-    elif verdict == "outdated" and not rules.chars:
-        text = f"{files} gone or unreadable since session {session}"
+    elif verdict == "outdated" and rules.why == "gone":
+        text = f"{files} in the prompt, no such file now · session {session}: /new"
     elif verdict == "outdated":
-        text = f"{files} changed {changed or 'since'}, session {session}: /new"
+        when = f"changed {changed} after" if changed else "differ from the prompt of"
+        text = f"{files} {when} session {session}: /new"
     elif verdict == "blocked":
         text = f"{files} refused by the engine's injection scan · session {session}"
     elif verdict == "none":
