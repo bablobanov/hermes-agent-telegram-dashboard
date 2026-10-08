@@ -14,6 +14,8 @@ import hashlib
 import logging
 import os
 import sqlite3
+import sys
+import types
 from datetime import UTC
 from pathlib import Path
 
@@ -525,18 +527,112 @@ def test_a_loaded_file_that_quotes_the_scan_notice_is_loaded_not_blocked(tmp_pat
     assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
 
 
-def test_a_platform_that_skips_context_files_in_config_is_off(tmp_path: Path) -> None:
-    pytest.importorskip("yaml", reason="the engine's YAML parser is not in this interpreter")
+_SKIPS = {"gateway": {"platforms": {"telegram": {"skip_context_files": True}}}}
+
+
+class _Parser:
+    """A stand-in for the engine's YAML parser: the document a test means, or its refusal."""
+
+    def __init__(self, document: object = None, error: Exception | None = None) -> None:
+        self.document, self.error = document, error
+
+    def safe_load(self, text: str) -> object:
+        if self.error is not None:
+            raise self.error
+        return self.document
+
+
+def _skipping(tmp_path: Path, *sections: str) -> Environment:
+    """A Telegram platform that skips context files in config.yaml (a byte-order mark first, as
+    an editor may save it), a file in the agent's directory, a prompt with the given sections."""
     home, agent, service = _layout(tmp_path)
     write_file(agent / "AGENTS.md", rules_text(), at=BEFORE_SESSION)
     (home / "config.yaml").write_text(
-        "gateway:\n  platforms:\n    telegram:\n      skip_context_files: true\n", encoding="utf-8"
+        "\ufeffgateway:\n  platforms:\n    telegram:\n      skip_context_files: true\n",
+        encoding="utf-8",
     )
-    _db(home, agent)
-    env = Environment(hermes_home=home, gateway_dir=service)
+    _db(home, agent, *sections)
+    return Environment(hermes_home=home, gateway_dir=service)
+
+
+def test_a_platform_that_skips_context_files_in_config_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(context_files, "yaml_parser", lambda: _Parser(_SKIPS))
+    env = _skipping(tmp_path)
 
     assert _one(env).verdict == "off"
     assert "> Rules Telegram: context files off for it in the engine's config" in _screen(env)
+
+
+def test_the_skip_is_read_by_the_yaml_parser_this_interpreter_has(tmp_path: Path) -> None:
+    """The real parser on the real file: hermes_yaml on Hermes 0.21.6, PyYAML on 0.21.1-0.21.5."""
+    if context_files.yaml_parser() is None:
+        pytest.skip("no YAML parser in this interpreter")
+    assert _one(_skipping(tmp_path)).verdict == "off"
+
+
+def test_on_an_engine_with_its_own_yaml_parser_that_parser_reads_the_config() -> None:
+    engine = pytest.importorskip(
+        "hermes_yaml", reason="the engine's own parser (0.21.6+) is not here"
+    )
+    assert context_files.yaml_parser() is engine
+
+
+def test_the_engine_s_parser_comes_before_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine, pyyaml = types.ModuleType("hermes_yaml"), types.ModuleType("yaml")
+    engine.safe_load = pyyaml.safe_load = dict  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "hermes_yaml", engine)
+    monkeypatch.setitem(sys.modules, "yaml", pyyaml)
+    assert context_files.yaml_parser() is engine
+    monkeypatch.setitem(sys.modules, "hermes_yaml", None)  # None in sys.modules: the import fails
+    assert context_files.yaml_parser() is pyyaml
+    monkeypatch.setitem(sys.modules, "yaml", types.ModuleType("yaml"))  # no safe_load: no parser
+    assert context_files.yaml_parser() is None
+
+
+@pytest.mark.parametrize(
+    "parser",
+    [None, _Parser(error=ValueError("refused"))],
+    ids=["no yaml parser", "the parser refuses the file"],
+)
+def test_an_unread_config_makes_a_missing_block_unknown_never_not_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parser: _Parser | None
+) -> None:
+    """0.10.1 on Hermes 0.21.6 (no PyYAML): "nothing skips", and a platform that skips on purpose
+    read "rules not loaded" with a warning. Not knowing the config is not knowing the verdict."""
+    monkeypatch.setattr(context_files, "yaml_parser", lambda: parser)
+    env = _skipping(tmp_path)
+
+    rules = _one(env)
+    assert (rules.verdict, rules.why, rules.files) == ("unknown", "config", ("AGENTS.md",))
+    assert read_rules(env, now=NOW)[2] == ()
+    lines = _screen(env)
+    assert [line for line in lines if line.startswith("> Rules Telegram:")] == [
+        "> Rules Telegram: AGENTS.md not in the prompt, config.yaml not read: skip unknown · "
+        "session Oct 7 12:32"
+    ]
+    assert not [line for line in _main(lines) if "rules" in line.lower()]
+
+
+def test_without_a_config_file_nothing_skips_even_without_a_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(context_files, "yaml_parser", lambda: None)
+    home, agent, service = _layout(tmp_path)
+    write_file(agent / "AGENTS.md", rules_text(), at=BEFORE_SESSION)
+    _db(home, agent)
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "none"
+
+
+def test_rules_in_the_prompt_are_judged_whatever_the_config_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(context_files, "yaml_parser", lambda: None)
+    env = _skipping(tmp_path, section("AGENTS.md", rules_text()))
+
+    assert _one(env).verdict == "loaded"
 
 
 @pytest.mark.parametrize(

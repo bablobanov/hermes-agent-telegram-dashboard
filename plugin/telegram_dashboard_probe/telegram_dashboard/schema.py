@@ -34,15 +34,17 @@ TrafficState = Literal[
 # file holds now, ``blocked`` refused by the engine's injection scan, ``none`` no file in the
 # prompt while one is there for it, ``no_files`` no file where the agent or the gateway looks,
 # ``off`` the platform skips context files in the engine's config, ``unknown`` the prompt has
-# rules and names no directory to compare them with.
+# rules and names no directory to compare them with, or has none while a file is there and the
+# engine's config, which may switch them off, could not be read (``why`` ``config``).
 RulesVerdict = Literal[
     "loaded", "truncated", "outdated", "blocked", "none", "no_files", "off", "unknown"
 ]
 # Why a ``none``: the file changed after the session started (``/new`` picks it up); it was
 # there and the prompt does not carry it; it is not UTF-8, which the engine skips in silence;
 # it lies only in the gateway's working directory or only in ``HERMES_HOME``, where the agent
-# does not look. Why an ``outdated``: ``gone``, the prompt carries rules no file has now.
-RulesWhy = Literal["after", "not_loaded", "not_utf8", "gateway_dir", "home", "gone"]
+# does not look. Why an ``outdated``: ``gone``, the prompt carries rules no file has now. Why an
+# ``unknown``: ``config``, the engine's config.yaml was not read (no parser, or refused).
+RulesWhy = Literal["after", "not_loaded", "not_utf8", "gateway_dir", "home", "gone", "config"]
 # ``observed``: the verdicts stand; ``off``: the dashboard's own setting turned the line off.
 RulesState = Literal["observed", "unknown", "unsupported", "off"]
 

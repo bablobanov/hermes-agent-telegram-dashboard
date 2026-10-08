@@ -445,6 +445,8 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
         text = _rules_none_words(rules, files, changed, session)
     elif verdict == "off":
         text = "context files off for it in the engine's config"
+    elif verdict == "unknown" and rules.why == "config":
+        text = f"{files} not in the prompt, config.yaml not read: skip unknown · session {session}"
     elif verdict == "unknown":
         text = f"rules in the prompt, the agent's directory not known here · session {session}"
     else:

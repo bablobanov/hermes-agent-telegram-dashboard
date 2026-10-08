@@ -20,7 +20,10 @@ changed after the session started is ``outdated``, since a saved prompt cannot o
 where an older, longer text ended. No block while a file is there for it is ``none``; no file
 where the agent looks, nor an ``AGENTS.md`` or ``.hermes.md`` in the gateway's working directory
 or in ``HERMES_HOME``, is ``no_files``, never an alarm. A platform that skips context files in
-the engine's ``config.yaml`` is ``off``; a prompt whose directory cannot be known is ``unknown``.
+the engine's ``config.yaml`` is ``off``. When that file is there and cannot be read (no YAML
+parser in this interpreter, or the parser refuses it), a missing block is ``unknown``, never
+``none``: the platform may skip the files on purpose. A prompt whose directory cannot be known is
+``unknown`` too.
 
 The database is the engine's and the gateway writes it: ``mode=ro`` with ``PRAGMA query_only``,
 two short statements per platform (the session row, then its one prompt), the connection closed
@@ -38,7 +41,7 @@ import os
 import re
 import sqlite3
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -61,6 +64,9 @@ SOURCE_NAME = "context_files"
 STATE_FILE = "state.db"
 GATEWAY_STATE_FILE = "gateway_state.json"
 CONFIG_FILE = "config.yaml"
+# The engine's own YAML parser first: from 0.21.6 the engine reads config.yaml with ``hermes_yaml``
+# (ruamel) and no longer depends on PyYAML; 0.21.1-0.21.5 read it with PyYAML.
+YAML_PARSERS = ("hermes_yaml", "yaml")
 # Without a readable platform map the dashboard's own platform is the one judged.
 DEFAULT_PLATFORMS = ("telegram",)
 MAX_PLATFORMS = 12
@@ -173,9 +179,10 @@ def read_rules(env: Environment, *, now: datetime) -> RulesPart:
         sessions = latest_sessions(path, gateway_platforms(env.hermes_home))
         if sessions is None:
             return _not_here("state.db has no saved system prompts")
-        skipped = skipping_platforms(env.hermes_home)
+        skipping = skipping_platforms(env.hermes_home)
         judged = tuple(
-            judge(s, env, skipped=s.platform in skipped, now=now.timestamp()) for s in sessions
+            judge(s, env, skipped=_skips(skipping, s.platform), now=now.timestamp())
+            for s in sessions
         )
     except sqlite3.Error as exc:
         return _unavailable(f"state.db: {type(exc).__name__}")
@@ -290,22 +297,24 @@ def gateway_platforms(home: Path) -> tuple[str, ...]:
     return tuple(names[:MAX_PLATFORMS]) or DEFAULT_PLATFORMS
 
 
-def skipping_platforms(home: Path) -> frozenset[str]:
+def skipping_platforms(home: Path) -> frozenset[str] | None:
     """``gateway.platforms.<name>.skip_context_files`` from the engine's ``config.yaml``, the one
-    key read there, with the engine's own YAML parser when the interpreter has it; empty when it
-    cannot be read (no platform is then taken as skipping)."""
+    key read there, with the engine's own YAML parser. Empty without the file (nothing skips);
+    ``None`` when the file is there and cannot be read: no parser in this interpreter, or the
+    parser refuses it. Nobody then knows which platform skips, and "nothing skips" would turn a
+    platform that skips on purpose into a false "not loaded"."""
     path = home / CONFIG_FILE
     if not path.is_file():
         return frozenset()
+    parser = yaml_parser()
+    if parser is None:
+        return None
     try:
-        yaml: Any = importlib.import_module("yaml")
-    except ImportError:
-        return frozenset()
-    try:
-        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # As the engine reads it: a byte-order mark is not part of the document.
+        config = parser.safe_load(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:  # OSError, a decode error, the parser's own errors
         logger.debug("rules: config.yaml not read (%s)", type(exc).__name__)
-        return frozenset()
+        return None
     gateway = config.get("gateway") if isinstance(config, dict) else None
     platforms = gateway.get("platforms") if isinstance(gateway, dict) else None
     if not isinstance(platforms, dict):
@@ -317,11 +326,29 @@ def skipping_platforms(home: Path) -> frozenset[str]:
     )
 
 
+def yaml_parser() -> Any | None:
+    """The first of ``YAML_PARSERS`` this interpreter can import with a ``safe_load``, else
+    ``None``. Inside the gateway the engine's parser is already imported; this only finds it."""
+    for name in YAML_PARSERS:
+        try:
+            module = importlib.import_module(name)
+        except Exception:  # absent, or present and broken: either way not a parser here
+            continue
+        if callable(getattr(module, "safe_load", None)):
+            return module
+    return None
+
+
+def _skips(skipping: frozenset[str] | None, platform: str) -> bool | None:
+    return None if skipping is None else platform in skipping
+
+
 # ------------------------------------------------------------------ the verdict
 
 
-def judge(session: Session, env: Environment, *, skipped: bool, now: float) -> PlatformRules:
-    """The verdict on one platform's latest saved prompt."""
+def judge(session: Session, env: Environment, *, skipped: bool | None, now: float) -> PlatformRules:
+    """The verdict on one platform's latest saved prompt; ``skipped`` is ``None`` when the
+    engine's config could not be read."""
     prompt, started_at = session.prompt, _iso(session.started)
     # Where discovery ran: the prompt's own line; for a sandbox backend the engine's TERMINAL_CWD
     # when it exists on the host, else the process's directory (``resolve_context_cwd``).
@@ -330,7 +357,10 @@ def judge(session: Session, env: Environment, *, skipped: bool, now: float) -> P
     if start < 0:
         if skipped:
             return PlatformRules(session.platform, "off", started_at)
-        return _absent(session, started_at, where, env)
+        absent = _absent(session, started_at, where, env)
+        if skipped is None and absent.verdict == "none":
+            return replace(absent, verdict="unknown", why="config")
+        return absent
     region = prompt[start + len(_HEADER) :]
     if where is None:  # rules in the prompt, and no directory to compare them with
         return PlatformRules(session.platform, "unknown", started_at)
