@@ -623,9 +623,9 @@ def _rules_states() -> tuple[State, ...]:
     )
 
 
-# The memory state (27): the showcase installation whose approval queue has stood since early
-# September with nothing applied, its USER.md nearly full, and the adds waiting there far larger
-# than the room left. Every number is made up.
+# The memory state (27): the showcase installation whose approval queues have stood since early
+# September, its USER.md nearly full (the engine's ordinary state, no event of its own) and the
+# adds waiting there far larger than the room left. Every number is made up.
 _M_QUEUED = "2026-09-02T09:14:00+00:00"
 _M_NEWEST = "2026-09-26T18:40:00+00:00"
 _M_LANDED = "2026-08-30T16:05:00+00:00"
@@ -649,12 +649,11 @@ def _memory_states() -> tuple[State, ...]:
     return (
         State(
             27,
-            "Memory: the approval queue stands, USER.md nearly full",
+            "Memory: the approval queues stand, the adds do not fit USER.md",
             _showcase_snapshot(
                 "warning",
                 incidents=(
                     Incident("memory:memory:stuck", "warning", "Memory: 58 writes stuck 24d"),
-                    Incident("memory:USER.md:full", "warning", "Memory: USER.md 94% full"),
                     Incident("memory:skills:stuck", "warning", "Skills: 12 writes stuck 16d"),
                 ),
                 memory=memory,

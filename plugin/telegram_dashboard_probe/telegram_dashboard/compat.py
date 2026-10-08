@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
@@ -51,6 +52,9 @@ class Environment:
     # The engine's ``TERMINAL_CWD`` as the gateway process holds it (the plugin path only):
     # where a sandbox backend's discovery runs when the prompt names no host directory.
     terminal_cwd: Path | None = None
+    # When the plugin came up in the gateway process (the plugin path only): the engine says
+    # some things once per process, and they stand until the next start (``memory.py``).
+    process_started_at: datetime | None = None
 
 
 def probe_gateway_state(env: Environment) -> ProbeResult:

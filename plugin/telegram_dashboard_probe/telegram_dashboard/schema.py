@@ -174,7 +174,8 @@ MemoryState = Literal["observed", "unknown", "unsupported", "off"]
 class MemoryNotebook:
     """One notebook (``MEMORY.md``, ``USER.md``) counted the engine's way; never its text.
     ``enabled`` and ``limit`` are ``None`` when the engine's config could not be read, ``chars``
-    when there is no file yet."""
+    when there is no file yet or the engine cannot decode it (``readable`` False: it loads
+    nothing and refuses every write). ``limit`` is ``0`` when no add can pass it."""
 
     name: str
     enabled: bool | None = None
@@ -183,6 +184,7 @@ class MemoryNotebook:
     entries: int = 0
     largest: int = 0
     changed_at: str | None = None
+    readable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,12 +205,15 @@ class MemoryQueue:
 
 @dataclass(frozen=True, slots=True)
 class MemoryProvider:
-    """A configured provider and the engine's warnings about it over the last day."""
+    """A configured provider: the engine's warnings about it over the last day, the time of the
+    last one whatever its age, and when the engine said in this gateway process that the
+    provider reports unavailable (0.21.6 says so once per process)."""
 
     name: str
     errors: int = 0
     last_error_at: str | None = None
     log_read: bool = True
+    unavailable_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

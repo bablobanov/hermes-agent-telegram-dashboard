@@ -9,25 +9,29 @@ with the three-character delimiter. With ``memory.write_approval`` (``skills.wri
 on, a write from the gateway, a cron job or the background review waits as one JSON file in
 ``HERMES_HOME/pending/memory`` (``pending/skills``) until ``/memory approve``; nothing tells the
 operator, and the queue can grow for weeks while the agent believes it remembered. A background
-review's replace or remove waits there even with the gate off. Approval applies the write and
-deletes the file, and no journal is kept: the time a write last landed is the notebooks' own
-modification time (a hand edit moves it too; for skills, the curator's ledger), and a pending
-file's modification time is when it was queued (nothing rewrites one). A provider
+review's replace or remove waits there even with the gate off. Approval and rejection both
+delete the file, and no journal is kept: a pending file's modification time is when it was
+queued (nothing rewrites one), and the time a write last landed is the notebooks' own
+modification time (a hand edit moves it too; for skills, the curator's ledger). A provider
 (``memory.provider``) leaves no status, only the engine's warnings in ``logs/errors.log``.
 
 Read: ``config.yaml`` (the ``memory`` limits, switches, gate and provider name, and
-``skills.write_approval``) through the engine's own YAML parser; the two notebooks (up to 4 MB
-each); the pending files' names and times, and for memory writes their ``action``,
-``payload.target`` and the length of what an add would write (up to 2,000 files of 1 MB); the
-tail of errors.log for the engine's memory-provider warnings (their time only). The same on
-Hermes 0.21.3 and 0.21.6. Never shown, logged or kept: the text of a notebook, an entry, a
-pending write or its summary, a log line, a path. Numbers, dates and flags leave; a failure is
-the exception's class.
+``skills.write_approval``) through the engine's own YAML parser, each value as the engine takes
+it (the managed overlay and ``${VAR}`` references are not applied); the two notebooks (up to
+4 MB each), decoded as strictly as the engine decodes them; the pending files' names and times,
+and for memory writes their ``action``, ``payload.target`` and the length of what an add would
+write (up to 2,000 files of 256 KB); the tail of errors.log for the engine's memory-provider
+warnings (their time, and whether one says the provider is unavailable). The same on Hermes
+0.21.3 and 0.21.6. Never shown, logged or kept: the text of a notebook, an entry, a pending
+write or its summary, a log line, a path. Numbers, dates and flags leave; a failure is the
+exception's class.
 """
 
 from __future__ import annotations
 
+import codecs
 import json
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -63,17 +67,22 @@ NOTEBOOKS = (
 SUBSYSTEMS = ("memory", "skills")
 MAX_NOTEBOOK_BYTES = 4 * 1024 * 1024
 MAX_PENDING_FILES = 2000
-MAX_PENDING_BYTES = 1024 * 1024
+# A pending memory write is a few entries of a notebook's size; a larger file adds nothing.
+MAX_PENDING_BYTES = 256 * 1024
 LOG_TAIL_BYTES = 256 * 1024
-# The gate's words (``tools/write_approval.py``) and the values that mean "no provider" (0.21.6
-# ``agent/memory_provider.py``; 0.21.3 took any non-empty name as a provider).
+# The gate's words (``tools/write_approval.py``), the switches' words (``utils.TRUTHY_STRINGS``)
+# and the values that mean "no provider" (0.21.6 ``agent/memory_provider.py``; 0.21.3 took any
+# non-empty name as a provider). The same in 0.21.3 and 0.21.6.
 GATE_WORDS = frozenset({"true", "on", "yes", "1", "approve", "enabled"})
+TRUTHY_WORDS = frozenset({"1", "true", "yes", "on"})
 NO_PROVIDER = frozenset({"", "default", "builtin", "built-in", "none"})
-# A queue older than this with nothing applied since it began is stuck; a notebook this full
-# refuses the next add of an ordinary entry; provider warnings this recent are its state.
+# What 0.21.6 logs once per gateway process when a configured provider is not usable.
+UNAVAILABLE_WORDS = "reports unavailable"
+# A pending write older than this is stuck; provider warnings this recent are its errors.
 STUCK_SECONDS = 3 * 86400
-FULL_PERCENT = 90
 PROVIDER_WINDOW_SECONDS = 86400
+# An event is a line of the screen less its "- ".
+EVENT_COLUMNS = 30
 
 MemoryPart = tuple[MemorySummary, SourceObservation | None, tuple[Incident, ...]]
 
@@ -91,6 +100,14 @@ def read_memory(env: Environment, *, now: datetime) -> MemoryPart:
     raises: a failure is one unavailable source with the exception's class, nothing logged."""
     if not env.memory_enabled:
         return MemorySummary("off"), None, ()
+    try:
+        return _observed(env, now)
+    except Exception as exc:  # a file, a path, a parser: the class only, a message may carry text
+        failed = f"memory: {type(exc).__name__}"
+        return MemorySummary("unknown", detail=failed), _source("unavailable", detail=failed), ()
+
+
+def _observed(env: Environment, now: datetime) -> MemoryPart:
     home = env.hermes_home
     if not any((home / name).exists() for name in (CONFIG_FILE, MEMORY_DIR, PENDING_DIR)):
         detail = "no Hermes memory here"
@@ -99,17 +116,13 @@ def read_memory(env: Environment, *, now: datetime) -> MemoryPart:
             _source("unsupported", detail=detail),
             (),
         )
-    try:
-        config = read_config(home)
-        notebooks = tuple(read_notebook(home, spec, config) for spec in NOTEBOOKS)
-        queues = (
-            read_queue(home, "memory", config, notebooks),
-            read_queue(home, "skills", config, notebooks),
-        )
-        provider = read_provider(home, config, now)
-    except Exception as exc:  # a file, a path, a parser: the class only, a message may carry text
-        failed = f"memory: {type(exc).__name__}"
-        return MemorySummary("unknown", detail=failed), _source("unavailable", detail=failed), ()
+    config = read_config(home)
+    notebooks = tuple(read_notebook(home, spec, config) for spec in NOTEBOOKS)
+    queues = (
+        read_queue(home, "memory", config, notebooks),
+        read_queue(home, "skills", config, notebooks),
+    )
+    provider = read_provider(home, config, now, started=env.process_started_at)
     unread = None if config is not None else "config.yaml not read"
     summary = MemorySummary("observed", notebooks, queues, provider, unread)
     return summary, _source("fresh", observed_at=now.isoformat()), incidents_for(summary, now)
@@ -142,7 +155,10 @@ def read_config(home: Path) -> _Config | None:
         limits={
             target: _limit(memory.get(key), default) for _, target, key, default, _ in NOTEBOOKS
         },
-        enabled={target: memory.get(switch) is not False for _, target, _, _, switch in NOTEBOOKS},
+        enabled={
+            target: _truthy(memory.get(switch), default=True)
+            for _, target, _, _, switch in NOTEBOOKS
+        },
         gates={"memory": _gate(memory), "skills": _gate(_section(document, "skills"))},
         provider=_provider(memory.get("provider")),
     )
@@ -154,24 +170,35 @@ def _section(document: object, name: str) -> Mapping[str, Any]:
 
 
 def _limit(value: object, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int | str):
+    """The limit the engine holds a notebook to: the value as configured, never converted
+    (``agent_init`` hands it to ``MemoryStore`` as it is). ``0`` when no add can pass it: zero
+    or below, or not a number (a quoted ``"5000"`` fails the engine's own comparison)."""
+    if value is None:
         return default
-    try:
-        number = int(value)
-    except ValueError:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    return max(int(value), 0)
+
+
+def _truthy(value: object, *, default: bool) -> bool:
+    """``utils.is_truthy_value``: a notebook's switch is on unless set to something else."""
+    if value is None:
         return default
-    return number if number > 0 else default
+    if isinstance(value, str):
+        return value.strip().lower() in TRUTHY_WORDS
+    return bool(value)
 
 
 def _gate(section: Mapping[str, Any]) -> bool:
-    """``write_approval`` as the engine reads it; configs before v29 said
-    ``write_mode: approve``."""
+    """``write_approval`` as ``tools/write_approval.py`` reads it: a bool, or one of its words.
+    Anything else is off, ``write_mode`` of configs before v29 too: only the config migration
+    rewrites it, nothing reads it at run time."""
     value = section.get("write_approval")
     if isinstance(value, bool):
         return value
-    if isinstance(value, str):
-        return value.strip().lower() in GATE_WORDS
-    return value is None and str(section.get("write_mode", "")).strip().lower() == "approve"
+    return isinstance(value, str) and value.strip().lower() in GATE_WORDS
 
 
 def _provider(value: object) -> str | None:
@@ -186,7 +213,8 @@ def _provider(value: object) -> str | None:
 def read_notebook(
     home: Path, spec: tuple[str, str, str, int, str], config: _Config | None
 ) -> MemoryNotebook:
-    """One notebook counted the engine's way; ``chars`` is ``None`` when there is no file."""
+    """One notebook counted the engine's way; ``chars`` is ``None`` when there is no file, or
+    when the engine cannot decode it (``readable`` False)."""
     name, target = spec[0], spec[1]
     enabled = config.enabled[target] if config is not None else None
     limit = config.limits[target] if config is not None else None
@@ -195,7 +223,10 @@ def read_notebook(
         changed = path.stat().st_mtime
     except FileNotFoundError:
         return MemoryNotebook(name, enabled, None, limit)
-    entries = notebook_entries(_read(path, MAX_NOTEBOOK_BYTES))
+    data = _read(path, MAX_NOTEBOOK_BYTES)
+    entries = notebook_entries(data, whole=len(data) < MAX_NOTEBOOK_BYTES)
+    if entries is None:
+        return MemoryNotebook(name, enabled, None, limit, changed_at=_iso(changed), readable=False)
     lengths = [len(entry) for entry in entries]
     chars = sum(lengths) + len(DELIMITER) * max(len(entries) - 1, 0)
     return MemoryNotebook(
@@ -203,11 +234,16 @@ def read_notebook(
     )
 
 
-def notebook_entries(data: bytes) -> list[str]:
+def notebook_entries(data: bytes, *, whole: bool = True) -> list[str] | None:
     """The entries the engine loads: split on the delimiter, stripped, empty and repeated ones
-    dropped (``MemoryStore``)."""
+    dropped (``MemoryStore``). ``None`` when the engine cannot decode the file: it reads it as
+    strict UTF-8 and then loads nothing and refuses every write to it. ``whole`` is False when
+    ``data`` is the file's head only: a character cut at its end is no error."""
+    try:
+        text = codecs.getincrementaldecoder("utf-8-sig")().decode(data, final=whole)
+    except UnicodeDecodeError:
+        return None
     # The engine reads a notebook in text mode: a Windows or old-Mac line end is a newline.
-    text = data.decode("utf-8-sig", errors="replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     stripped = (entry.strip() for entry in text.split(DELIMITER))
     return list(dict.fromkeys(entry for entry in stripped if entry))
@@ -267,8 +303,10 @@ def _applied(home: Path, subsystem: str, notebooks: tuple[MemoryNotebook, ...]) 
 def _needs(
     paths: list[Path], notebooks: tuple[MemoryNotebook, ...]
 ) -> tuple[tuple[str, int, int], ...]:
-    """Per notebook the characters the waiting adds would write (each with its delimiter) and
-    the room left; only notebooks an add waits for. A file that cannot be read adds nothing."""
+    """Per notebook the characters the waiting adds would write (each with its delimiter, but
+    for the first entry of an empty notebook) and the room left; only notebooks the engine
+    writes to and an add waits for. At most: an add the engine finds already there writes
+    nothing. A file that cannot be read adds nothing."""
     wanted = {"memory": 0, "user": 0}
     for path in paths[:MAX_PENDING_FILES]:
         for target, length in _adds(path):
@@ -277,9 +315,15 @@ def _needs(
     needs: list[tuple[str, int, int]] = []
     for spec, notebook in zip(NOTEBOOKS, notebooks, strict=True):
         name, target, room = spec[0], spec[1], _room(notebook)
-        if wanted[target] and room is not None:
-            needs.append((name, wanted[target], room))
+        if not wanted[target] or room is None or not _writable(notebook):
+            continue
+        first = len(DELIMITER) if not notebook.entries else 0
+        needs.append((name, wanted[target] - first, room))
     return tuple(needs)
+
+
+def _writable(notebook: MemoryNotebook) -> bool:
+    return notebook.enabled is not False and notebook.readable
 
 
 def _room(notebook: MemoryNotebook) -> int | None:
@@ -307,47 +351,72 @@ def _adds(path: Path) -> Iterable[tuple[str, int]]:
         operations = payload.get("operations")
     if not isinstance(operations, list):
         return ()
-    return [
-        (target, len(op["content"].strip()))
-        for op in operations
-        if isinstance(op, dict) and op.get("action") == "add" and isinstance(op.get("content"), str)
-    ]
+    texts = (_add_text(op) for op in operations)
+    return [(target, len(text.strip())) for text in texts if text is not None]
+
+
+def _add_text(op: object) -> str | None:
+    """What one operation adds: a batch takes ``content``, else ``new_text`` (``MemoryStore``)."""
+    if not isinstance(op, dict) or op.get("action") != "add":
+        return None
+    text = op.get("content") or op.get("new_text")
+    return text if isinstance(text, str) else None
 
 
 # ------------------------------------------------------------------ the provider
 
 
-def read_provider(home: Path, config: _Config | None, now: datetime) -> MemoryProvider | None:
-    """A configured provider and the engine's warnings about it in the errors log over the last
-    day; ``None`` without one. No warning is not proof it works: on 0.21.3 a provider that is
-    not installed is logged at DEBUG only."""
+def read_provider(
+    home: Path, config: _Config | None, now: datetime, *, started: datetime | None = None
+) -> MemoryProvider | None:
+    """A configured provider, the engine's warnings about it in the errors log over the last
+    day and the time of the last one, and whether the engine said since ``started`` (when the
+    plugin came up in this gateway process) that the provider reports unavailable: 0.21.6 says
+    so once per process, so that one warning stands until the next start. ``None`` without a
+    provider. No warning is not proof it works: on 0.21.3 a provider that is not installed is
+    logged at DEBUG only."""
     if config is None or config.provider is None:
         return None
     try:
         text = read_tail(home / ERRORS_LOG, size=LOG_TAIL_BYTES)
     except (OSError, UnicodeDecodeError):
         return MemoryProvider(config.provider, log_read=False)
-    times = [
-        entry.at
+    warnings = [
+        (entry.at, UNAVAILABLE_WORDS in entry.head)
         for entry in split_entries(text)
         if entry.level in ("WARNING", "ERROR", "CRITICAL")
-        and "Memory provider" in entry.head
         and entry.at is not None
-        and 0 <= (now - entry.at).total_seconds() < PROVIDER_WINDOW_SECONDS
+        and "memory provider" in entry.head.lower()
     ]
-    last = max(times).isoformat() if times else None
-    return MemoryProvider(config.provider, len(times), last)
+    window = PROVIDER_WINDOW_SECONDS
+    recent = [at for at, _ in warnings if 0 <= (now - at).total_seconds() < window]
+    down = [at for at, said in warnings if said and started is not None and at >= started]
+    last = max((at for at, _ in warnings), default=None)
+    return MemoryProvider(
+        config.provider,
+        len(recent),
+        last.isoformat() if last else None,
+        unavailable_at=max(down).isoformat() if down else None,
+    )
 
 
 # ------------------------------------------------------------------ events
 
 
 def incidents_for(summary: MemorySummary, now: datetime) -> tuple[Incident, ...]:
-    """A queue stuck, a notebook nearly full, a provider that warns: one event each."""
+    """A queue stuck, a notebook the engine cannot write to, a provider down or warning: one
+    event each."""
     events = [_stuck(queue, now) for queue in summary.queues if is_stuck(queue, now)]
-    events.extend(_full(notebook) for notebook in summary.notebooks if is_full(notebook))
+    for notebook in summary.notebooks:
+        trouble = notebook_trouble(notebook)
+        if trouble is not None:
+            events.append(_trouble(notebook, trouble))
     provider = summary.provider
-    if provider is not None and provider.errors:
+    if provider is not None and provider.unavailable_at:
+        events.append(
+            Incident("memory:provider:unavailable", "warning", "Memory provider: unavailable")
+        )
+    elif provider is not None and provider.errors:
         events.append(
             Incident(
                 "memory:provider:errors",
@@ -359,44 +428,46 @@ def incidents_for(summary: MemorySummary, now: datetime) -> tuple[Incident, ...]
 
 
 def is_stuck(queue: MemoryQueue, now: datetime) -> bool:
-    """Writes wait longer than ``STUCK_SECONDS`` and none landed since the oldest was queued."""
+    """A write waits longer than ``STUCK_SECONDS``. Approval and rejection both delete its
+    file, so a write that old has had neither, whatever landed meanwhile (the agent's own adds,
+    another write approved)."""
     oldest = _moment(queue.oldest_at)
     if not queue.count or oldest is None:
         return False
-    if (now - oldest).total_seconds() < STUCK_SECONDS:
-        return False
-    applied = _moment(queue.applied_at)
-    return applied is None or applied < oldest
+    return (now - oldest).total_seconds() >= STUCK_SECONDS
 
 
-def fill_percent(notebook: MemoryNotebook) -> int | None:
-    if notebook.chars is None or not notebook.limit:
+def notebook_trouble(notebook: MemoryNotebook) -> str | None:
+    """What keeps the engine from writing to a notebook it has on: a file it cannot decode, a
+    limit no add can pass, or more text than the limit (the engine's own warning on load:
+    every add refused until the agent frees room). A notebook near its limit is the engine's
+    ordinary state, no trouble: a refused add asks the model to consolidate in the same turn."""
+    if notebook.enabled is False:
         return None
-    return int(notebook.chars * 100 // notebook.limit)
-
-
-def is_full(notebook: MemoryNotebook) -> bool:
-    """At ``FULL_PERCENT`` of its limit or past it; a notebook the engine switched off is not
-    written to, so it is never full."""
-    percent = fill_percent(notebook)
-    return notebook.enabled is not False and percent is not None and percent >= FULL_PERCENT
+    if not notebook.readable:
+        return "not UTF-8"
+    if notebook.limit == 0:
+        return "bad limit"
+    over = notebook.limit is not None and (notebook.chars or 0) > notebook.limit
+    return "over limit" if over else None
 
 
 def _stuck(queue: MemoryQueue, now: datetime) -> Incident:
     oldest = _moment(queue.oldest_at)
     days = int((now - oldest).total_seconds() // 86400) if oldest is not None else 0
     label = "Memory" if queue.subsystem == "memory" else "Skills"
+    writes = "write" if queue.count == 1 else "writes"
+    title = f"{label}: {queue.count:,} {writes} stuck {days}d"
+    if len(title) > EVENT_COLUMNS:
+        title = f"{label}: {queue.count:,} stuck {days}d"
+    return Incident(f"memory:{queue.subsystem}:stuck", "warning", title)
+
+
+def _trouble(notebook: MemoryNotebook, trouble: str) -> Incident:
+    kind = trouble.replace(" ", "_").replace("-", "").lower()
     return Incident(
-        f"memory:{queue.subsystem}:stuck",
-        "warning",
-        f"{label}: {queue.count:,} writes stuck {days}d",
+        f"memory:{notebook.name}:{kind}", "warning", f"Memory: {notebook.name} {trouble}"
     )
-
-
-def _full(notebook: MemoryNotebook) -> Incident:
-    percent = fill_percent(notebook) or 0
-    words = "over limit" if percent > 100 else f"{percent}% full"
-    return Incident(f"memory:{notebook.name}:full", "warning", f"Memory: {notebook.name} {words}")
 
 
 def _moment(value: str | None) -> datetime | None:

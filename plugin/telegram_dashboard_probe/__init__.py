@@ -426,6 +426,9 @@ class ProbeRuntime:
         self.settings = settings
         self.dashboard = dashboard
         self.zone = display_zone(settings)
+        # register() runs as the gateway starts: what the engine says once per process is said
+        # after this moment (``Environment.process_started_at``).
+        self.started_at = datetime.now(UTC)
         self.collector: Collector = self._collect
         # One worker per source across ticks: a source abandoned by its deadline is not
         # started again until it returns (collect.Flights).
@@ -694,6 +697,7 @@ class ProbeRuntime:
             memory_enabled=self.settings.memory,
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
+            process_started_at=self.started_at,
         )
         runner = dashboard.collect.SubprocessRunner()
         caches = self.quota_caches()

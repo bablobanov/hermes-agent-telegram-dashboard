@@ -468,8 +468,9 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
 
 def _memory_in_details(memory: MemorySummary, zone: tzinfo, details: _Details) -> None:
     """The memory has no line of its own on the screen, like the rules: a queue stuck, a
-    notebook nearly full or a provider that warns is an event under "Needs attention"
-    (``memory.incidents_for``); the numbers are in the details. Never a word of the text."""
+    notebook the engine cannot write to or a provider down or warning is an event under "Needs
+    attention" (``memory.incidents_for``); the numbers are in the details. Never a word of the
+    text."""
     if memory.state == "off":
         details.state.append("Memory: off in the dashboard settings")
         return
@@ -492,6 +493,10 @@ def _notebook_words(notebook: MemoryNotebook) -> str:
     name = notebook.name
     if notebook.enabled is False:
         return f"{name} off"
+    if not notebook.readable:
+        return f"{name} not UTF-8: the engine loads none of it and refuses every write"
+    if notebook.limit == 0:
+        return f"{name} no usable limit in config.yaml: every add refused"
     if notebook.chars is None:
         return f"{name} none yet"
     if not notebook.limit:
@@ -528,8 +533,14 @@ def _provider_words(provider: MemoryProvider, zone: tzinfo) -> str:
     name = sanitize_public_text(provider.name, limit=24)
     if not provider.log_read:
         return f"Memory provider {name}: errors.log not read"
+    if provider.unavailable_at:
+        warned = format_day_time(provider.unavailable_at, zone) or "time unknown"
+        return f"Memory provider {name}: reports unavailable (said {warned}, once per start)"
     if not provider.errors:
-        return f"Memory provider {name}: no errors logged in 24 h"
+        before = format_day_time(provider.last_error_at, zone) if provider.last_error_at else None
+        return f"Memory provider {name}: no errors logged in 24 h" + (
+            f", last {before}" if before else ""
+        )
     last = format_day_time(provider.last_error_at, zone) or "time unknown"
     errors = _plural(provider.errors, "error", "errors")
     return f"Memory provider {name}: {errors} in 24 h, last {last}"

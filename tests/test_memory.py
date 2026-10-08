@@ -133,7 +133,7 @@ def test_an_empty_queue_with_the_gate_on_is_no_event_and_one_line_of_details(
     assert not [line for line in _main(lines) if "Memory" in line or "Skills" in line]
 
 
-def test_a_queue_stuck_longer_than_three_days_with_nothing_applied_is_an_event(
+def test_a_write_waiting_longer_than_three_days_is_an_event(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = _home(tmp_path)
@@ -153,23 +153,46 @@ def test_a_queue_stuck_longer_than_three_days_with_nothing_applied_is_an_event(
     assert len("- Memory: 3 writes stuck 10d") <= 32
 
 
-@pytest.mark.parametrize(
-    ("oldest_days", "landed_days"),
-    [(10, 2), (2, 40)],
-    ids=["a write landed after the oldest was queued", "the oldest is younger than 3 days"],
-)
-def test_a_queue_that_moves_or_is_young_is_no_event(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oldest_days: int, landed_days: int
-) -> None:
+def test_a_young_queue_is_no_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = _home(tmp_path)
     _config(monkeypatch, home, {"write_approval": True})
-    _notebook(home, "USER.md", ["likes tea"], NOW - timedelta(days=landed_days))
-    _pending(home, "memory", 1, NOW - timedelta(days=oldest_days))
+    _notebook(home, "USER.md", ["likes tea"], NOW - timedelta(days=40))
+    _pending(home, "memory", 1, NOW - timedelta(days=2, hours=23))
 
     assert _read(home)[2] == ()
 
 
-def test_a_skills_queue_is_stuck_against_the_curator_s_ledger(
+def test_a_write_left_waiting_is_stuck_whatever_lands_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate off, the default: the agent's own adds land every day and move the notebook,
+    while the background review's replace waits for an approval nobody is asked for."""
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {})
+    _notebook(home, "MEMORY.md", ["notes one"], NOW - timedelta(days=1))
+    replace = {"action": "replace", "payload": {"target": "memory", "old_text": "x"}}
+    _pending(home, "memory", 1, NOW - timedelta(days=40), replace)
+
+    titles = [incident.title for incident in _read(home)[2]]
+
+    assert titles == ["Memory: 1 write stuck 40d"]
+
+
+def test_a_long_stuck_title_keeps_to_a_phone_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {}, {"write_approval": True})
+    for number in range(1000):
+        _pending(home, "skills", number, NOW - timedelta(days=100), {"action": "create"})
+
+    titles = [incident.title for incident in _read(home)[2]]
+
+    assert titles == ["Skills: 1,000 stuck 100d"]
+    assert "- Skills: 1,000 stuck 100d" in _screen(home)
+
+
+def test_a_skills_queue_is_stuck_whatever_the_curator_s_ledger_says(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = _home(tmp_path)
@@ -177,7 +200,7 @@ def test_a_skills_queue_is_stuck_against_the_curator_s_ledger(
     ledger = home / "skills" / ".curator_ledger.jsonl"
     ledger.parent.mkdir(parents=True)
     ledger.write_text('{"id": "x"}\n', encoding="utf-8")
-    _at(ledger, NOW - timedelta(days=30))
+    _at(ledger, NOW - timedelta(days=1))
     for number in range(4):
         _pending(home, "skills", number, NOW - timedelta(days=29), {"action": "create"})
 
@@ -188,9 +211,10 @@ def test_a_skills_queue_is_stuck_against_the_curator_s_ledger(
 
 @pytest.mark.parametrize(
     ("chars", "title"),
-    [(1306, "Memory: USER.md 94% full"), (1400, "Memory: USER.md over limit"), (1200, None)],
+    [(1376, "Memory: USER.md over limit"), (1375, None), (1306, None)],
+    ids=["past the limit", "at it", "94%, the engine's ordinary state"],
 )
-def test_a_notebook_past_ninety_percent_of_its_limit_is_an_event(
+def test_a_notebook_past_its_limit_is_an_event(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chars: int, title: str | None
 ) -> None:
     home = _home(tmp_path)
@@ -307,7 +331,7 @@ def test_a_profile_home_with_its_own_limits_gets_its_own_numbers(
     _config(
         monkeypatch,
         home,
-        {"memory_char_limit": "5000", "user_char_limit": 600, "write_approval": "yes"},
+        {"memory_char_limit": 5000, "user_char_limit": 600, "write_approval": "yes"},
     )
     _notebook(home, "MEMORY.md", ["a" * 1000, "b" * 3000], NOW - timedelta(days=1))
     _notebook(home, "USER.md", ["c" * 500], NOW - timedelta(days=1))
@@ -397,8 +421,9 @@ def test_the_count_is_the_engine_s_own_memory_store_count(
         ({"write_approval": "enabled"}, True),
         ({"write_approval": "off"}, False),
         ({"write_approval": False}, False),
-        ({"write_mode": "approve"}, True),
-        ({"write_mode": "on"}, False),
+        ({"write_approval": 1}, False),
+        ({"write_approval": "no"}, False),
+        ({"write_mode": "approve"}, False),
         ({}, False),
     ],
 )
@@ -453,6 +478,178 @@ def test_the_real_yaml_parser_reads_the_engine_s_config(tmp_path: Path) -> None:
     assert summary.provider is not None and summary.provider.name == "honcho"
 
 
+def test_a_notebook_the_engine_cannot_decode_is_an_event_never_a_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand edit saved in cp1251: the engine loads none of it and refuses every write."""
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {})
+    path = home / "memories" / "MEMORY.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(("заметка " * 260).encode("cp1251"))
+    _at(path, NOW - timedelta(days=1))
+    _pending(home, "memory", 1, NOW - timedelta(hours=1), _batch({"action": "add", "content": "a"}))
+
+    summary, _source, incidents = _read(home)
+
+    book = summary.notebooks[0]
+    assert (book.readable, book.chars, book.limit) == (False, None, 2200)
+    assert summary.queues[0].needs == ()
+    assert [incident.title for incident in incidents] == ["Memory: MEMORY.md not UTF-8"]
+    assert (
+        "> Memory: MEMORY.md not UTF-8: the engine loads none of it and refuses every write"
+        " · USER.md none yet"
+    ) in _screen(home)
+
+
+def test_the_engine_refuses_the_notebook_we_call_not_utf8(tmp_path: Path) -> None:
+    store_module = pytest.importorskip("tools.memory_tool_store", reason="Hermes is not here")
+    path = tmp_path / "MEMORY.md"
+    path.write_bytes(("заметка " * 260).encode("cp1251"))
+
+    _raw, read_ok = store_module.MemoryStore._read_raw_checked(path)
+
+    assert read_ok is False
+    assert notebook_entries(path.read_bytes()) is None
+
+
+def test_a_character_cut_at_the_end_of_the_read_is_no_error() -> None:
+    data = ("я" * 10).encode()[:-1]
+
+    assert notebook_entries(data, whole=False) == ["я" * 9]
+    assert notebook_entries(data) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled"),
+    [
+        (None, True),
+        (True, True),
+        ("yes", True),
+        (" On ", True),
+        (False, False),
+        ("no", False),
+        ("enabled", False),
+        (0, False),
+    ],
+)
+def test_a_notebook_s_switch_reads_like_the_engine_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: object, enabled: bool
+) -> None:
+    home = _home(tmp_path)
+    section = {} if value is None else {"memory_enabled": value}
+    _config(monkeypatch, home, section)
+
+    assert _read(home)[0].notebooks[0].enabled is enabled
+    try:
+        from tools.memory_tool import get_builtin_memory_store_flags
+    except ImportError:
+        return
+    assert get_builtin_memory_store_flags({"memory": section})[0] is enabled
+
+
+@pytest.mark.parametrize("value", [0, -5, "5000", True, [5000]])
+def test_a_limit_no_add_can_pass_is_an_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    """The engine takes the limit as it is: zero or below refuses every add, and a string
+    fails its comparison."""
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {"user_char_limit": value})
+
+    summary, _source, incidents = _read(home)
+
+    assert summary.notebooks[1].limit == 0
+    assert [incident.title for incident in incidents] == ["Memory: USER.md bad limit"]
+    assert (
+        "> Memory: MEMORY.md none yet · USER.md no usable limit in config.yaml: every add refused"
+        in _screen(home)
+    )
+
+
+def _batch(*operations: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action": "batch",
+        "payload": {"target": "memory", "operations": list(operations)},
+    }
+
+
+def test_waiting_adds_count_what_the_engine_would_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch add may carry its text as ``new_text``; the first entry of an empty notebook goes
+    in without a delimiter; a notebook switched off takes nothing."""
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {"user_profile_enabled": False})
+    batch = _batch({"action": "add", "new_text": "a" * 40}, {"action": "add", "content": "b" * 20})
+    _pending(home, "memory", 1, NOW - timedelta(hours=2), batch)
+    _pending(home, "memory", 2, NOW - timedelta(hours=1))  # an add to USER.md
+
+    queue = _read(home)[0].queues[0]
+
+    assert queue.needs == (("MEMORY.md", 40 + 3 + 20, 2200),)
+
+
+def test_a_home_that_cannot_be_looked_at_is_its_class_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+
+    def denied(self: Path) -> bool:
+        raise PermissionError(f"[Errno 13] Permission denied: '{home}/{SECRET}'")
+
+    monkeypatch.setattr(Path, "exists", denied)
+
+    summary, source, incidents = _read(home)
+
+    assert (summary.state, summary.detail) == ("unknown", "memory: PermissionError")
+    assert (source.state, incidents) == ("unavailable", ())
+
+
+def _unavailable(moment: datetime) -> str:
+    """0.21.6 ``agent_init._warn_memory_provider_unavailable``, once per gateway process."""
+    return (
+        f"{_stamp(moment)} WARNING agent.agent_init: ⚠ Memory provider 'honcho' is selected but"
+        f" reports unavailable — external memory is disabled for this session. {SECRET}"
+    )
+
+
+def test_a_provider_found_unavailable_since_this_start_stays_an_event_past_a_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {"provider": "honcho"})
+    started = NOW - timedelta(days=5)
+    _errors_log(home, [_unavailable(started + timedelta(minutes=2))])
+    env = Environment(hermes_home=home, process_started_at=started)
+
+    summary, _source, incidents = read_memory(env, now=NOW)
+
+    assert summary.provider is not None and summary.provider.errors == 0
+    assert [incident.title for incident in incidents] == ["Memory provider: unavailable"]
+    snapshot = collect_all(env, _Runner(), now=NOW, resolve_limits=lambda: None)
+    lines = render_dashboard(snapshot, now=NOW, zone=UTC).splitlines()
+    assert "> Memory provider honcho: reports unavailable (said Oct 3 12:02, once per start)" in (
+        lines
+    )
+
+
+def test_an_unavailable_provider_before_this_start_is_only_the_last_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _config(monkeypatch, home, {"provider": "honcho"})
+    _errors_log(home, [_unavailable(NOW - timedelta(days=5))])
+    env = Environment(hermes_home=home, process_started_at=NOW - timedelta(days=1))
+
+    _summary, _source, incidents = read_memory(env, now=NOW)
+
+    assert incidents == ()
+    snapshot = collect_all(env, _Runner(), now=NOW, resolve_limits=lambda: None)
+    lines = render_dashboard(snapshot, now=NOW, zone=UTC).splitlines()
+    assert "> Memory provider honcho: no errors logged in 24 h, last Oct 3 12:00" in lines
+
+
 # ------------------------------------------------------------------ no text leaves
 
 
@@ -461,7 +658,7 @@ def test_no_text_of_a_notebook_a_pending_write_or_a_log_line_leaves(
 ) -> None:
     home = _home(tmp_path)
     _config(monkeypatch, home, {"write_approval": True, "provider": "honcho"})
-    _notebook(home, "MEMORY.md", [f"{SECRET} note", "x" * 2100], NOW - timedelta(days=20))
+    _notebook(home, "MEMORY.md", [f"{SECRET} note", "x" * 2200], NOW - timedelta(days=20))
     _notebook(home, "USER.md", [f"{SECRET} user"], NOW - timedelta(days=20))
     for number in range(3):
         _pending(home, "memory", number, NOW - timedelta(days=5 + number))
