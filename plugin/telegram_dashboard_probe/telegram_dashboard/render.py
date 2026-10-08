@@ -19,6 +19,7 @@ from __future__ import annotations
 import html
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 
@@ -892,14 +893,16 @@ def _version_words(behind: int | None, running: str, latest: str, mark: str = ""
         return _fit(running, f" {OK_MARK}{mark}")
     if behind is not None and behind > 0:
         return _fit(running, f" → {latest}{mark}", f"{VERSION_MARK} Hermes → {latest}{mark}")
-    # Newer than Latest, or not on the list at all: no arrow, it would point the wrong way.
+    # Newer than Latest, or not on the list at all: no arrow, it would point the wrong way. The
+    # mark is Latest's: a form without Latest goes without it, or it would date ours.
     shorter = f"{VERSION_MARK} Hermes {running}" + (" · newer" if behind is not None else "")
-    return _fit(running, f" · latest {latest}{mark}", f"{shorter}{mark}", shorter)
+    return _fit(running, f" · latest {latest}{mark}", shorter)
 
 
 def _width(line: str) -> int:
-    """Columns on a phone: the new-release mark takes two."""
-    return len(line) + line.count(NEW_MARK)
+    """Columns on a phone: an emoji (the version and new-release marks) takes two, the text
+    check mark and the arrow one."""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in line)
 
 
 def _fit(running: str, after: str, *shorter: str) -> str:
@@ -909,9 +912,9 @@ def _fit(running: str, after: str, *shorter: str) -> str:
     for line in (f"{head}{running}{after}", *shorter):
         if _width(line) <= _LINE_COLUMNS:
             return line
-    room = _LINE_COLUMNS - len(head) - _width(after) - 1
+    room = _LINE_COLUMNS - _width(head) - _width(after) - 1
     if room < 1:
-        return f"{head}{running}"[: _LINE_COLUMNS - 1] + "…"
+        return f"{head}{running[: _LINE_COLUMNS - _width(head) - 1]}…"
     return f"{head}{running[:room]}…{after}"
 
 

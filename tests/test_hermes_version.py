@@ -149,6 +149,26 @@ def test_on_0_21_6_the_identity_of_the_running_process_wins_over_the_stamp_on_di
     assert reads == []
 
 
+def test_on_0_21_6_a_git_identity_of_another_tree_is_not_ours(tmp_path: Path) -> None:
+    """No stamp and no .git of its own: 0.21.6 asks git in the process home's hermes-agent
+    clone, whatever that holds; the line says what the stamp says, never the clone's version."""
+    tree = tmp_path / "hermes-agent"
+    (tree / "hermes_cli").mkdir(parents=True)
+    module_file = tree / "hermes_cli" / "version_info.py"
+    module_file.write_text("", encoding="utf-8")
+    modules, reads = _lazy_gateway("0.0.0")
+    info = types.SimpleNamespace(base_version="0.21.3", source="git")
+    modules["hermes_cli.version_info"] = types.SimpleNamespace(
+        _cached_version_info=info, __file__=str(module_file)
+    )
+
+    assert hv.running_version(modules) == (None, hv.UNSTAMPED)
+    assert reads == ["__version__"]
+
+    (tree / ".git").mkdir()  # a checkout of its own: git speaks for the code that runs
+    assert hv.running_version(modules) == ("0.21.3", None)
+
+
 @pytest.mark.parametrize("stamp", ["0.0.0", "unknown", " UNKNOWN "])
 def test_a_placeholder_is_no_version_stamp_never_a_version(stamp: str) -> None:
     """No install stamp: 0.21.6 says 0.0.0 (a manual clone, a local docker build, a Nix build,
@@ -411,14 +431,18 @@ def test_one_check_per_interval_the_cache_serves_the_ticks_between() -> None:
     hv.tick(cache, now=NOW, interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
     hv.tick(
         cache,
-        now=NOW + timedelta(minutes=14, seconds=59),
+        now=NOW + timedelta(minutes=14, seconds=54),
         interval_seconds=hv.INTERVAL_SECONDS,
         fetch=fetch,
     )
     assert fetch.calls == 1
 
+    # A tick of a 15-minute period that wakes a moment early still checks.
     hv.tick(
-        cache, now=NOW + timedelta(minutes=15), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
+        cache,
+        now=NOW + timedelta(minutes=14, seconds=57),
+        interval_seconds=hv.INTERVAL_SECONDS,
+        fetch=fetch,
     )
     assert fetch.calls == 2
     assert fetch.previous[0] is None
@@ -890,6 +914,20 @@ def test_an_answer_cached_by_0_10_without_an_etag_is_built_on_without_reading_th
     assert "If-None-Match" not in http.calls[0][1]
     assert [url for url, _ in http.calls] == [hv.LATEST_URL]
     assert item["latest"] == old["latest"]
+
+
+@pytest.mark.parametrize("etag", ['"e1"\r\nX-Other: 1', '"тег"', "e1", ""])
+def test_a_stored_etag_http_cannot_carry_is_never_sent(etag: str) -> None:
+    """A hand-edited or damaged cache: an entity tag a header cannot carry would fail every
+    check after it, before any request."""
+    old = hv.fetch_item(now=NOW, get=_http())
+    old["etag"] = etag
+    http = _http()
+
+    item = hv.fetch_item(now=LATER, get=http, previous=old)
+
+    assert "If-None-Match" not in http.calls[0][1]
+    assert item["status"] == "available"
 
 
 @pytest.mark.parametrize(

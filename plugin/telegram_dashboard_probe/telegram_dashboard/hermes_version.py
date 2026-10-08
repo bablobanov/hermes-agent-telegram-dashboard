@@ -41,6 +41,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .policy import sanitize_public_text
@@ -64,6 +65,9 @@ HEADERS = {
 # 2026-10-08: three 304s, remaining 35 -> 32): the cadence keeps the budget, the ETag saves
 # the body.
 INTERVAL_SECONDS = 900.0
+# A tick can wake a little before the period's end (the loop's clock against the wall clock): a
+# check this close to its interval is due, so a period of 15 minutes checks on every tick.
+DUE_TOLERANCE_SECONDS = 5.0
 # Fewer requests than this left in GitHub's window: wait for its reset, leave the rest to others.
 RATE_RESERVE = 10
 # A reset or a Retry-After further away than this is not believed.
@@ -88,6 +92,9 @@ _NAME_VERSION = re.compile(r"Hermes Agent v(\d+(?:\.\d+){1,3})(?=\s|$)")
 # A tag in the release scheme (``v0.21.6``), never a date (``v2026.9.24``): a major of 999 at most.
 _TAG_VERSION = re.compile(r"v((?:0|[1-9]\d{0,2})(?:\.\d+){2})")
 _VERSION = re.compile(r"\d+(?:\.\d+){1,3}")
+# An entity tag as HTTP has it (RFC 9110): one that is not cannot go into a request header, and
+# would fail every check after it.
+_ETAG = re.compile(r'(?:W/)?"[\x21\x23-\x7e]*"')
 
 HttpGet = Callable[[str, dict[str, str]], tuple[int, str, Mapping[str, str]]]
 Fetch = Callable[..., dict[str, Any]]
@@ -144,12 +151,24 @@ def _constant(module: object) -> object:
 
 
 def _started_identity(modules: Mapping[str, object]) -> object:
-    """The version the gateway resolved at start-up (0.21.6), ``None`` before it did."""
+    """The version the gateway resolved at start-up (0.21.6), ``None`` before it did, and
+    ``None`` when it is another tree's: with no stamp and no ``.git`` of its own, 0.21.6 asks
+    git in the process home's ``hermes-agent`` clone (``_resolve_repo_dir``), whatever that
+    clone holds."""
     try:
-        info = getattr(modules.get("hermes_cli.version_info"), "_cached_version_info", None)
+        module = modules.get("hermes_cli.version_info")
+        info = getattr(module, "_cached_version_info", None)
+        if getattr(info, "source", None) == "git" and not _own_checkout(module):
+            return None
         return getattr(info, "base_version", None)
-    except Exception:  # a property that raises is no identity
+    except Exception:  # a property that raises, a path that cannot be read: no identity
         return None
+
+
+def _own_checkout(module: object) -> bool:
+    """Whether the engine's code runs from a git checkout: ``version_info``'s own first test."""
+    file = getattr(module, "__file__", None)
+    return isinstance(file, str) and (Path(file).resolve().parent.parent / ".git").exists()
 
 
 # ----------------------------------------------------------------------------- one check
@@ -339,7 +358,7 @@ def known_answer(item: object) -> dict[str, Any] | None:
         "checked_at": item.get("checked_at"),
         "latest": latest,
         "releases": releases,
-        "etag": etag if isinstance(etag, str) and etag else None,
+        "etag": etag if isinstance(etag, str) and _ETAG.fullmatch(etag) else None,
     }
 
 
@@ -380,7 +399,8 @@ def tick(
     attempted = parse_timestamp(cache.get("attempted_at"))
     if attempted is not None and isinstance(item, dict):
         age = age_seconds(attempted, now)
-        wait = max(interval_seconds, _wait_after(item.get("retry_after"), attempted))
+        due = interval_seconds - DUE_TOLERANCE_SECONDS
+        wait = max(due, _wait_after(item.get("retry_after"), attempted))
         if age is not None and 0 <= age < wait:
             return item
     new = fetch(now=now, previous=item)

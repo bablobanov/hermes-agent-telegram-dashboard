@@ -1,3 +1,4 @@
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -610,7 +611,7 @@ def test_a_release_out_less_than_a_day_ago_is_marked_new_with_its_age(
     main, lines = _version_render(version, now=at)
 
     assert main[-2:] == [line, ""]
-    assert len(line) + line.count("🆕") <= 32  # the mark takes two columns on a phone
+    assert _columns(line) <= 32
     assert ("> New release: Hermes 0.21.6 out Oct 8 11:51" in lines) == ("🆕" in line)
 
 
@@ -620,9 +621,16 @@ def test_a_release_out_less_than_a_day_ago_is_marked_new_with_its_age(
         ("0.21.6", 0, "🤖 Hermes 0.21.6 ✓ 🆕 3h"),
         ("0.22.0.dev0+local.abcdef", 3, "🤖 Hermes → 0.21.6 🆕 3h"),
         # Too long for anything after it: the version cut, the mark only in the details.
-        ("0.22.0.dev0+local.abcdef", None, "🤖 Hermes 0.22.0.dev0+local.abcd…"),
+        ("0.22.0.dev0+local.abcdef", None, "🤖 Hermes 0.22.0.dev0+local.abc…"),
+        # Latest does not fit beside ours: the mark goes with it, or it would date ours.
+        ("0.21.6.1-local", None, "🤖 Hermes 0.21.6.1-local"),
     ],
-    ids=["running it already", "a long version behind", "a long version not listed"],
+    ids=[
+        "running it already",
+        "a long version behind",
+        "a long version not listed",
+        "latest left out, the mark too",
+    ],
 )
 def test_the_new_mark_keeps_the_line_within_a_phone_line(
     running: str, behind: int | None, line: str
@@ -633,8 +641,13 @@ def test_the_new_mark_keeps_the_line_within_a_phone_line(
     main, lines = _version_render(version, now=at)
 
     assert main[-2] == line
-    assert len(line) + line.count("🆕") <= 32
+    assert _columns(line) <= 32
     assert "> New release: Hermes 0.21.6 out Oct 8 11:51" in lines
+
+
+def _columns(line: str) -> int:
+    """Columns on a phone: an emoji takes two."""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in line)
 
 
 def test_a_failed_check_keeps_the_last_answer_and_says_as_of_when() -> None:
