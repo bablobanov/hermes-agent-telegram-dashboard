@@ -59,13 +59,15 @@ Grok · usage not started            a state in words is never turned into a num
 Kimi 3% (29d)                       every window, in the provider's own order
 Gemini · no data                    no number without billing; ⚠️ hit limit for an hour after one
 
-🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release
+🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release;
+                                    🆕 and its age for a day after a release came out
 
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
                                     time, the cron failures and the channel's times, whether
-                                    each platform's agent sees its rules, release dates, the
-                                    reason of every "no data", the dashboard's own version last
+                                    each platform's agent sees its rules, the memory notebooks
+                                    and the approval queue, release dates, the reason of every
+                                    "no data", the dashboard's own version last
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
@@ -73,7 +75,8 @@ group. The plugin inside the gateway edits it in place every few minutes through
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
 status line, and the message under it carries the rest: gateway and Telegram state (and whether
 the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs,
-whether the agent sees its rules (the context files in its system prompt), the
+whether the agent sees its rules (the context files in its system prompt), whether its
+memory works (the notebooks against their limits, the writes waiting for approval), the
 account limits of every provider with the time to each reset, the
 Hermes version the gateway runs next to the latest upstream release, and a collapsed details
 block with the reasons and the timestamps. Nothing to open, nothing to install
@@ -98,7 +101,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.10.1`) after a blank line, so the installed
+close with the dashboard's own version (`Dashboard 0.11.0`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
 
 ## Freshness is a load-bearing requirement
@@ -135,6 +138,7 @@ What "verified" means here, honestly:
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
 source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
 | 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3; for 0.10.0 the saved prompt's context block and runtime line read in the source and built by the engine's own functions in `tests/test_context_files_engine.py`, as on 0.21.3 (row `context_files`) |
+| 0.21.6 (`v0.21.6`, 2026-10-08) | the whole suite against the installed engine on Python 3.14.6, the interpreter 0.21.6 requires; `hermes plugins validate`: `ok: true`, no warnings; every engine touchpoint of every source read against 0.21.5 (the matrix's `0.21.6` rows): the same or compatible, except three the plugin now reads as 0.21.6 does (the config through the engine's own YAML parser, the version without a constant, a context file's BOM); the plugin loaded by the engine's own plugin discovery in process, the default, and refused under `plugins.isolation: host` (below) |
 | main (`485979ddf4`, 2026-09-28) | `edit_message` and `_edit_text` read in the engine source: same signatures, the public verb still without a parse mode |
 | main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
@@ -150,6 +154,15 @@ does not load a handler and nothing is delivered; the only path there is the fal
 with its own bot token. The compatibility principle still holds for the *sources* (gateway
 state, limits, drift degrade per version); it does not extend to delivery, and this README
 does not promise otherwise.
+
+**In process only.** Hermes 0.21.6 added `plugins.isolation`. Its default, `in_process`, loads
+the plugin into the gateway as before. With `plugins.isolation: host` the engine runs
+third-party plugins in a separate host process and refuses there the one call delivery rests
+on, `register_platform_handler` (its factory receives the adapter's native SDK client): the
+plugin does not load, and the engine says so (`ctx.register_platform_handler() cannot run in
+the plugin host`; `hermes plugins validate` reports the verdict `in_process`). The plugin
+cannot fix that on its side: the message is edited through the live Telegram adapter, which
+stays in the gateway. A gateway under `host` has the fallback cron tick with its own bot token.
 
 Three prohibitions, learned from a predecessor that died of them: no imports of engine
 **internals**, no replacement of core files, no post-merge hooks or `assume-unchanged`.
@@ -247,6 +260,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
+   | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
    The drift reader takes numbers, never words: a `drift_command` prints a line
@@ -483,8 +497,13 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   file is, so a database in rollback-journal mode holds its writer back for milliseconds. In
   the prompt: the header, the block right after it and the runtime block's working directory.
   On disk: the context files by the names the engine loads, their text (up to 4 MB, to compare)
-  and change time. In `config.yaml`: only `gateway.platforms.<name>.skip_context_files`. In the
-  gateway process: the engine's `TERMINAL_CWD`. All in a worker under the tick's deadline
+  and change time; a leading BOM is read the way the running engine reads it (0.21.6 drops it
+  before `strip`, earlier versions after it; told by the default encoding of the engine's file
+  reader, both ways tried where no engine is loaded). In `config.yaml`: only
+  `gateway.platforms.<name>.skip_context_files`, through the engine's own YAML parser
+  (`hermes_yaml` from 0.21.6, else PyYAML); a file that is there and cannot be read makes a
+  missing block `unknown`, never an alarm. In the gateway process: the engine's `TERMINAL_CWD`.
+  All in a worker under the tick's deadline
 - **what is never shown or logged**: the prompt and the files' text, session ids, paths. The
   screen carries file names as the engine labels them, lengths, times and verdicts; nothing of the line
   is kept in the plugin's record; a failure is the exception's class only
@@ -499,9 +518,61 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   vanished
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
-engine's own functions and reads them back (0.21.3 and 0.21.5: every kind of file, a chain in
+engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6: every kind of file, a
+BOM-only file and a BOM before blank lines, a chain in
 a repository, a chain with a cut file, a chain cut twice, a cut cursor bundle, an override file,
 a directory reached through a link); it skips where Hermes is not importable.
+
+### The memory section: does the agent keep what it writes
+
+Hermes keeps a profile's built-in memory in two notebooks, `MEMORY.md` (the agent's notes) and
+`USER.md` (what it knows of the user), each held to a character limit (2,200 and 1,375 by
+default). With `memory.write_approval` on (`skills.write_approval` for skills), a write from the
+gateway, a cron job or the background review waits as a file in `pending/` until someone sends
+`/memory approve`, and nothing tells anyone. A queue can stand for weeks while the agent believes
+it remembered, and a notebook at its limit refuses the next write. Like the rules, the memory has
+no line of its own on the screen; it becomes an event when it fails:
+
+- `Memory: 58 writes stuck 24d` (`Skills: …` likewise): the oldest waiting write is older than
+  3 days and nothing has landed since it was queued
+- `Memory: USER.md 94% full`, or `over limit`: a notebook at 90% of its limit or past it
+- `Memory provider: 3 errors`: a configured provider (`memory.provider`) with the engine's
+  warnings about it in the errors log over the last day
+
+The numbers are in the details, always:
+
+```
+> Memory: MEMORY.md 1,934/2,200 (87%) · USER.md 1,301/1,375 (94%, one entry 71%)
+> Memory queue: 58 waiting since Sep 2 · last write Aug 30 16:05 · approval on
+> Waiting adds: USER.md 6,410 chars, 74 free: they do not fit
+> Skills queue: 12 waiting since Sep 10 · approval on
+> Memory provider honcho: no errors logged in 24 h
+```
+
+- **counted the engine's way**: the entries split on the line holding `§`, stripped, empty and
+  repeated ones dropped, joined with the delimiter; the engine's own `MemoryStore` gives the same
+  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6). The share of one entry shows when it
+  holds half the limit or more
+- **the last write** is the notebooks' modification time: the engine keeps no journal of applied
+  writes, so a hand edit moves it too; for skills, the curator's ledger. A waiting write's time
+  is its file's, which nothing rewrites
+- **the waiting adds** are measured, not replayed: the characters each add would write against
+  the room left; a replace or a remove is not counted
+- **a provider** leaves no status, only warnings in `logs/errors.log`; no warning is not proof it
+  works (0.21.3 logs a provider it cannot find at debug level only)
+- **what is read**: `config.yaml` (`memory.*` limits, switches, the gate and the provider's name,
+  `skills.write_approval`) through the engine's own YAML parser, unread = limits and gate
+  unknown, never guessed; the two notebooks (up to 4 MB); the names and times of the waiting
+  files, and of the memory ones the action, the target and the length of each add; the ledger's
+  time; the tail of the errors log for the provider's warnings, their time only. All in a worker
+  under the tick's deadline. Nothing is written anywhere (`tests/test_invariants.py`, 13)
+- **what is never shown or logged**: the text of a notebook, an entry, a waiting write or its
+  summary, a log line, a path. `tests/test_memory.py` plants a phrase in every one of them and
+  counts it in the screen, the HTML, the snapshot and the log: zero
+- **one profile**: the gateway's own `HERMES_HOME`; an empty home (no config, notebook or queue)
+  is `unsupported`
+- **off**: `memory: false` hides the section and drops it from the coverage; the details say
+  `Memory: off in the dashboard settings`
 
 ### The backup line
 
@@ -524,23 +595,33 @@ the release upstream (`NousResearch/hermes-agent`) marks Latest. The same releas
 `🤖 Hermes 0.21.5 ✓`; no answer from upstream reads `🤖 Hermes 0.21.3 · no data`, with the reason
 in the details. The details carry both release dates, how many releases lie between them and
 when upstream was last checked (`Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24`,
-`2 releases behind · checked Sep 25 16:40`).
+`2 releases behind · checked Sep 25 16:40`). For a day after Latest came out the line carries
+`🆕` and the release's age (`🤖 Hermes 0.21.5 → 0.21.6 🆕 3h`), and the details the time it came
+out (`New release: Hermes 0.21.6 out Oct 8 11:51`).
 
 The line informs, nothing more. Updating Hermes is a process, not a restart: the line carries no
-mark, no threshold, no button, no command and no advice to update. Update by your own process.
+threshold, no button, no command and no advice to update, and the new-release mark says only
+that a release is new. Update by your own process.
 
-- **The version** is `hermes_cli.__version__` of the module the gateway imported at start-up,
-  looked up in `sys.modules`: a capability, not a version gate. Not the files on disk, not
-  `importlib.metadata` (an editable install keeps the dist-info of install time), not the
-  engine's `build_info.get_code_identity(refresh=True)` (inside the gateway it would restamp the
-  gateway's own `code_sha`)
-- **The latest release** comes from two unauthenticated GETs to `api.github.com`, at most once a
-  day: `releases/latest` and `releases?per_page=100` (about 1 MB, the list carries every
-  release's notes). The version is the one in the release name
-  (`Hermes Agent v0.21.5 (v2026.9.24)`); releases behind are positions on upstream's list, never
-  arithmetic on version numbers; drafts and pre-releases are not counted. The engine's own
-  update check (`check_for_updates` in `hermes_cli/banner.py`) counts commits behind `main` and
-  is not used
+- **The version** is the one of the code the gateway imported at start-up, looked up in
+  `sys.modules`: a capability, not a version gate. Up to 0.21.5 that is the constant
+  `hermes_cli.__version__`. From 0.21.6 there is none: the module reads its install stamp from
+  disk on every access, so after an update on disk it names the new code, not the running one,
+  and without a stamp it says `0.0.0`. There the identity the gateway resolved at start-up comes
+  first (`hermes_cli.version_info`, process state, no git), the stamp last; `0.0.0` reads
+  `no version stamp on this installation`, never a version, and an error of the engine's lookup
+  `version lookup failed`. Not `importlib.metadata` (an editable install keeps the dist-info of
+  install time), not the engine's `build_info.get_code_identity(refresh=True)` (inside the
+  gateway it would restamp the gateway's own `code_sha`)
+- **The latest release** comes from unauthenticated GETs to `api.github.com`: `releases/latest`
+  with the last answer's ETag, and `releases?per_page=100` (about 1 MB, the list carries every
+  release's notes) only when Latest names another version than the last answer. A new ETag alone
+  is no new release: upstream edits a release's notes after publication. The version is the one
+  in the release name (`Hermes Agent v0.21.6`, `Hermes Agent v0.21.5 (v2026.9.24)`), else a tag in
+  the release scheme (`v0.21.6`, used since 0.21.6), never a date tag (`v2026.9.24`, the scheme
+  before it); releases behind are positions on upstream's list, never arithmetic on version
+  numbers; drafts and pre-releases are not counted. The engine's own update check
+  (`check_for_updates` in `hermes_cli/banner.py`) counts commits behind `main` and is not used
 - **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
   own worker thread, under Grok's single-flight deadline (`Flights`, 25 s; Kimi's is 15 s, for
   one request) and the cache policy Grok and Kimi share. The agent, its sessions and its tools
@@ -548,13 +629,21 @@ mark, no threshold, no button, no command and no advice to update. Update by you
   (`no answer within 25 s`) and nothing else: the check starts with the tick and runs beside
   every other source, the gateway's event loop keeps running, the tick waits for it no longer
   than that deadline, and a hung request is not started a second time.
-  `tests/test_hermes_version.py` pins each of these; a crash of the check is cached for the day
-  like a failed answer, so a bug cannot ask GitHub on every tick
-- **Once a day, failures too.** The attempt lives in the record under `release_cache` and
-  survives a restart; a failed check (`GitHub rate limit`, `HTTP 503`,
-  `request failed: URLError`, `answer shape: …`) is `no data` until the next attempt a day
-  later, never a number. A reason never quotes the answer: GitHub's rate-limit message carries
-  the caller's IP
+  `tests/test_hermes_version.py` pins each of these; a crash of the check waits for the next
+  interval like a failed answer, so a bug cannot ask GitHub on every tick
+- **At most every 15 minutes; a failure keeps the last answer.** The last answer and attempt
+  live in the record under `release_cache` and survive a restart. A check goes out at most once
+  per 15 minutes, whatever the tick's period: every tick at a period of 15 minutes or more, so a
+  new release is on the screen within one tick of a 30-minute gateway, and within 15 minutes at
+  the 60-second default. Without a token GitHub allows an address 60 requests an hour, and a
+  304 counts too (measured): 4 an hour plus one list per new release leave the rest to whatever
+  else asks from the address, the engine included; fewer than 10 left in GitHub's window, or
+  none, waits for its reset (`Retry-After` first, an hour at most). A failed check
+  (`GitHub rate limit`, `HTTP 503`, `request failed: URLError`, `answer shape: …`) keeps the last
+  answer on the line, and the details say since when it stands
+  (`Hermes latest as of Oct 8 12:10: GitHub rate limit · checked Oct 8 12:40`); with no answer
+  yet the line is `no data`. A reason never quotes the answer: GitHub's rate-limit message
+  carries the caller's IP
 - **Not a source.** The line moves neither the status nor the coverage, so a GitHub outage does
   not turn the screen ⚪. A crash of the collector itself is still an event, like any
   collector's
@@ -879,6 +968,7 @@ lives there, not in code:
   "display_timezone": "UTC",
   "limits_enabled": true,
   "context_files": true,
+  "memory": true,
   "gateway_dir": "/path/the/gateway/runs/in",
   "recreate_on_loss": true
 }
@@ -887,7 +977,8 @@ lives there, not in code:
 Limits are only available when the tick runs in an interpreter that can import the engine (the
 gateway's own); elsewhere they degrade to `unsupported`. The cron tick runs in a directory of its
 own, so the rules line looks for rules left beside the gateway only in the `gateway_dir` it is
-given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off.
+given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off,
+`memory: false` the memory section.
 
 ## Tests
 
@@ -907,7 +998,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins twelve properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins thirteen properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -915,7 +1006,8 @@ query-only through one connection function (the only SQLite the plugin opens), n
 `HERMES_HOME/cron` is ever written and the cron and traffic modules import no network client,
 the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
 counters without calling anything on it, and the rules line writes nothing, imports no network
-client and logs no text, no file of the plugin folder carries an invisible character (the
+client and logs no text, the memory section opens files to read bytes only, opens no database,
+imports no network client and logs nothing, no file of the plugin folder carries an invisible character (the
 catalog validator warns on one), and no word of any demo screen, sent as HTML, becomes a link,
 a command, a mention or a hashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a
