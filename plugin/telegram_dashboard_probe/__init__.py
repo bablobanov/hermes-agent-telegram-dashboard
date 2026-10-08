@@ -392,7 +392,7 @@ def import_dashboard() -> Dashboard | None:
 
 def _takes_parse_mode(verb: object) -> bool:
     """Whether ``verb`` is a coroutine function with a ``parse_mode`` parameter of its own."""
-    if not asyncio.iscoroutinefunction(verb):
+    if not inspect.iscoroutinefunction(verb):
         return False
     try:
         parameter = inspect.signature(verb).parameters.get(PARSE_MODE_PARAMETER)
@@ -409,7 +409,7 @@ def _html_verb(live: Any) -> tuple[str, Any] | None:
     if _takes_parse_mode(public):
         return PUBLIC_VERB, public
     private = getattr(live, PRIVATE_VERB, None)
-    if asyncio.iscoroutinefunction(private):
+    if inspect.iscoroutinefunction(private):
         return PRIVATE_VERB, private
     return None
 
