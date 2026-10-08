@@ -43,6 +43,8 @@ class Environment:
     limits_sources: tuple[Any, ...] = ()
     # The rules line (``context_files.py``); off by the dashboard's own setting only.
     context_files_enabled: bool = True
+    # The memory section (``memory.py``); off by the dashboard's own setting only.
+    memory_enabled: bool = True
     # The gateway process's working directory, where an operator may expect the agent's rules;
     # ``None`` outside the gateway unless the cron tick's config names it.
     gateway_dir: Path | None = None

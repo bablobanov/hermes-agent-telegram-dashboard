@@ -441,6 +441,7 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
         "cron_runs",
         "telegram_traffic",
         "context_files",
+        "memory",
     ]
     quota = next(q for q in snapshot.capacity.quotas if q.provider == "Kimi")
     assert quota.kind == "official" and quota.fetched_at == NOW.isoformat()
@@ -449,7 +450,7 @@ def test_the_tick_reads_kimi_on_its_own_cache_and_the_screen_carries_the_line(
     assert "Data 13:40" not in text  # read at the screen's own minute: nothing to add
     seen = [s for s in snapshot.sources if s.state in ("fresh", "stale")]
     assert "kimi_quota" in [s.name for s in seen]
-    assert f"sources {len(seen)}/11" in text
+    assert f"sources {len(seen)}/12" in text
 
 
 def test_with_limits_off_kimi_is_off_too_and_says_why(tmp_path: Path) -> None:

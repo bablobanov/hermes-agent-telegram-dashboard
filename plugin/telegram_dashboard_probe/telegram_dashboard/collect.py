@@ -56,6 +56,8 @@ from .kimi import DEFAULT_INTERVAL_SECONDS as KIMI_DEFAULT_INTERVAL_SECONDS
 from .kimi import TICK_TIMEOUT_SECONDS as KIMI_TICK_TIMEOUT_SECONDS
 from .kimi import fetch_item as kimi_fetch_item
 from .limits import Resolver, build_limits_payload, fetch_limits_payload_off_loop, import_fetcher
+from .memory import SOURCE_NAME as MEMORY
+from .memory import MemoryPart, read_memory
 from .normalize import classify_freshness, derive_overall
 from .policy import sanitize_public_text
 from .quota_cache import Fetch as QuotaFetch
@@ -70,6 +72,7 @@ from .schema import (
     DriftSummary,
     GatewaySummary,
     Incident,
+    MemorySummary,
     PlatformState,
     QuotaMetric,
     QuotaWindow,
@@ -878,6 +881,7 @@ def build_snapshot(
     cron: CronSummary | None = None,
     traffic: TrafficSummary | None = None,
     rules: RulesSummary | None = None,
+    memory: MemorySummary | None = None,
 ) -> DashboardSnapshot:
     ordered = _screen_incidents(incidents)
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
@@ -897,20 +901,26 @@ def build_snapshot(
         cron=cron,
         traffic=traffic,
         rules=rules,
+        memory=memory,
     )
 
 
 def _screen_incidents(incidents: tuple[Incident, ...]) -> tuple[Incident, ...]:
-    """Up to five events, the most severe first. Every source but the rules has a line of its
-    own on the screen; the rules have only their events (0.10.1). When the cut leaves out every
-    rules event, the last place goes to the first of them, so an agent that does not see its
-    rules never sinks into the collapsed details behind five other events."""
+    """Up to five events, the most severe first. Every source but the rules and the memory has
+    a line of its own on the screen; those two have only their events (0.10.1, 0.11.0). When
+    the cut leaves out every event of theirs, the last place goes to the first of them, so an
+    agent that does not see its rules or cannot keep its memory never sinks into the collapsed
+    details behind five other events."""
     ordered = sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))
     shown = ordered[:5]
-    rules = [item for item in ordered if item.incident_id.startswith("rules:")]
-    if rules and not any(item.incident_id.startswith("rules:") for item in shown):
-        shown = [*shown[:4], rules[0]]
+    lineless = [item for item in ordered if item.incident_id.startswith(_LINELESS)]
+    if lineless and not any(item.incident_id.startswith(_LINELESS) for item in shown):
+        shown = [*shown[:4], lineless[0]]
     return tuple(shown)
+
+
+# The sources with no line of their own on the screen, only events.
+_LINELESS = ("rules:", "memory:")
 
 
 def collect_all(
@@ -955,6 +965,7 @@ def collect_all(
         env, traffic_probe, traffic_cache, now=now
     )
     rules, rules_source, rules_incidents = read_rules(env, now=now)
+    memory, memory_source, memory_incidents = read_memory(env, now=now)
     capacity, limits_source, probe = collect_limits(env, now=now, resolve=resolve_limits)
     if probe.status == "supported":
         grok, grok_source = collect_grok(
@@ -988,6 +999,7 @@ def collect_all(
         cron=cron,
         traffic=traffic,
         rules=rules,
+        memory=memory,
         capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
         sources=(
             gateway_source,
@@ -1001,6 +1013,7 @@ def collect_all(
             runs_source,
             traffic_source,
             *_present(rules_source),
+            *_present(memory_source),
         ),
         incidents=(
             *gateway_incidents,
@@ -1010,6 +1023,7 @@ def collect_all(
             *cron_incidents,
             *traffic_incidents,
             *rules_incidents,
+            *memory_incidents,
             *(incident for part in externals for incident in part[2]),
         ),
     )
@@ -1131,6 +1145,7 @@ async def collect_all_async(
     traffic_cache: dict[str, Any] | None = None,
     traffic_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     rules_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    memory_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1179,6 +1194,11 @@ async def collect_all_async(
     # a busy database or a hung disk holds back nothing but the rules line.
     rules_task = asyncio.ensure_future(
         _rules_guarded(env, now=now, timeout_seconds=rules_timeout_seconds, flights=flights)
+    )
+    # The notebooks, the pending queues and the log tail likewise: a hung disk holds back
+    # nothing but the memory section.
+    memory_task = asyncio.ensure_future(
+        _memory_guarded(env, now=now, timeout_seconds=memory_timeout_seconds, flights=flights)
     )
     # The upstream release check starts with the tick and runs beside every other source: a
     # GitHub that hangs holds back nothing but its own line.
@@ -1274,6 +1294,7 @@ async def collect_all_async(
         runs, runs_source = await runs_task
         traffic, traffic_source, traffic_incidents = await traffic_task
         rules, rules_source, rules_incidents = await rules_task
+        memory, memory_source, memory_incidents = await memory_task
         cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
         if gemini_task is None:
             gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
@@ -1289,6 +1310,7 @@ async def collect_all_async(
             cron=cron,
             traffic=traffic,
             rules=rules,
+            memory=memory,
             capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
             sources=(
                 gateway_source,
@@ -1302,6 +1324,7 @@ async def collect_all_async(
                 runs_source,
                 traffic_source,
                 *_present(rules_source),
+                *_present(memory_source),
             ),
             incidents=(
                 *gateway_incidents,
@@ -1314,6 +1337,7 @@ async def collect_all_async(
                 *cron_incidents,
                 *traffic_incidents,
                 *rules_incidents,
+                *memory_incidents,
                 *version_incidents,
                 *(incident for part in externals for incident in part[2]),
             ),
@@ -1325,6 +1349,7 @@ async def collect_all_async(
         runs_task.cancel()
         traffic_task.cancel()
         rules_task.cancel()
+        memory_task.cancel()
         if gemini_task is not None:
             gemini_task.cancel()
 
@@ -1426,6 +1451,28 @@ async def _rules_guarded(
 def _rules_unavailable(detail: str) -> RulesPart:
     source = SourceObservation(RULES, "official", "unavailable", detail=detail)
     return RulesSummary("unknown", detail=detail), source, ()
+
+
+async def _memory_guarded(
+    env: Environment, *, now: datetime, timeout_seconds: float, flights: Flights
+) -> MemoryPart:
+    """``read_memory`` in its own worker under the tick's deadline, never on the loop."""
+    try:
+        return await flights.run(MEMORY, read_memory, env, now=now, timeout_seconds=timeout_seconds)
+    except TimeoutError:
+        return _memory_unavailable("memory read timed out")
+    except StillRunning:
+        return _memory_unavailable("still reading the memory")
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed(MEMORY, "official", exc)
+        return MemorySummary("unknown", detail=source.detail), source, (incident,)
+
+
+def _memory_unavailable(detail: str) -> MemoryPart:
+    source = SourceObservation(MEMORY, "official", "unavailable", detail=detail)
+    return MemorySummary("unknown", detail=detail), source, ()
 
 
 def _runs_unavailable(detail: str) -> SourceObservation:

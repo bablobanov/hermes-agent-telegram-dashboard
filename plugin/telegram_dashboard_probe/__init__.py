@@ -80,6 +80,7 @@ ENV_LIMITS_REFRESH = "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH"
 ENV_TZ = "HERMES_DASHBOARD_PROBE_TZ"
 ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
 ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
+ENV_MEMORY = "HERMES_DASHBOARD_PROBE_MEMORY"
 ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rules line
 # The Grok and Kimi quotas are asked at most once per this many seconds each, not every tick:
 # a weekly number does not move faster, and the surfaces are not documented ones. The caches
@@ -165,6 +166,8 @@ class Settings:
     limits_sources: tuple[Any, ...] = ()
     # The rules line (whether the agent sees its context files); on unless turned off.
     context_files: bool = True
+    # The memory section (notebooks, the approval queue, a provider); on unless turned off.
+    memory: bool = True
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,7 @@ def read_settings(ctx: Any) -> Settings | None:
         backup_status=Path(backup_status).expanduser() if backup_status else None,
         limits_sources=_entries(_raw_setting(ctx, "limits_sources")),
         context_files=_setting(ctx, "context_files", ENV_CONTEXT_FILES).lower() not in _FALSE_WORDS,
+        memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
     )
 
 
@@ -687,6 +691,7 @@ class ProbeRuntime:
             backup_status=self.settings.backup_status,
             limits_sources=self.settings.limits_sources,
             context_files_enabled=self.settings.context_files,
+            memory_enabled=self.settings.memory,
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
         )

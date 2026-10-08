@@ -9,7 +9,8 @@ a later change cannot undo one of them quietly:
 
 Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 below
 their tests; 6 widened and 10 and 11 added in 0.10.0 (the rules line reads ``state.db``; no
-invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a command).
+invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a command), 13 in
+0.11.0 (the memory section reads the notebooks, the queue and the log, and writes nothing).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -233,6 +234,22 @@ def test_the_rules_line_reads_and_never_writes_logs_text_or_reaches_the_network(
     assert not re.search(rf"\b(import|from)\s+({clients})\b", code)
     log_calls = re.findall(r"logger\.\w+\((.*)\)", code)
     assert log_calls == ['"rules: config.yaml not read (%s)", type(exc).__name__'], log_calls
+
+
+def test_the_memory_section_reads_only_logs_nothing_and_reaches_no_network() -> None:
+    """13. The memory section (0.11.0) reads the agent's notebooks, its approval queue and the
+    tail of the engine's errors log: every file is opened to read bytes, nothing is written,
+    renamed or removed, no database is opened, no network client is imported, and nothing is
+    logged at all, so no text of a notebook, a pending write or a log line can reach a log."""
+    code = _code_only((PACKAGE / "memory.py").read_text(encoding="utf-8"))
+    assert not re.search(
+        r"write_text|write_bytes|mkdir|unlink|rename\(|os\.replace|shutil|os\.remove|sqlite3",
+        code,
+    )
+    assert re.findall(r"\.open\(([^)]*)\)", code) == ['"rb"']
+    clients = r"urllib|http\.client|requests|aiohttp|httpx|socket"
+    assert not re.search(rf"\b(import|from)\s+({clients})\b", code)
+    assert not re.search(r"\blogg(er|ing)\b", code)
 
 
 def test_the_plugin_registers_no_hook_tool_middleware_or_command() -> None:

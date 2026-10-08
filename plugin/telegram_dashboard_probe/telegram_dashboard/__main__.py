@@ -54,6 +54,7 @@ def _environment(config: dict[str, object]) -> Environment:
         else None,
         limits_sources=tuple(sources) if isinstance(sources, list) else (),
         context_files_enabled=_enabled(config.get("context_files", True)),
+        memory_enabled=_enabled(config.get("memory", True)),
         # The cron tick runs in a directory of its own: the gateway's comes from the config.
         gateway_dir=Path(str(gateway_dir)).expanduser()
         if isinstance(gateway_dir, str) and gateway_dir

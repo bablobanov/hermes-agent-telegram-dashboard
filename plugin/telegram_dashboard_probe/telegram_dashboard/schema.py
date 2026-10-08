@@ -164,6 +164,62 @@ class RulesSummary:
     detail: str | None = None
 
 
+# The agent's memory (``memory.py``): ``observed`` the numbers stand; ``off`` the dashboard's own
+# setting turned the section off; ``unknown`` it could not be read (``detail``); ``unsupported``
+# no config, notebook or queue of Hermes in this home.
+MemoryState = Literal["observed", "unknown", "unsupported", "off"]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryNotebook:
+    """One notebook (``MEMORY.md``, ``USER.md``) counted the engine's way; never its text.
+    ``enabled`` and ``limit`` are ``None`` when the engine's config could not be read, ``chars``
+    when there is no file yet."""
+
+    name: str
+    enabled: bool | None = None
+    chars: int | None = None
+    limit: int | None = None
+    entries: int = 0
+    largest: int = 0
+    changed_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryQueue:
+    """The writes that wait for approval (``pending/memory``, ``pending/skills``): how many, the
+    oldest and the newest, when a write last landed; for memory, per notebook the characters
+    the waiting adds would write and the room left (``(name, needed, free)``). ``gate`` is the
+    engine's ``write_approval``, ``None`` when its config could not be read."""
+
+    subsystem: str
+    gate: bool | None = None
+    count: int = 0
+    oldest_at: str | None = None
+    newest_at: str | None = None
+    applied_at: str | None = None
+    needs: tuple[tuple[str, int, int], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryProvider:
+    """A configured provider and the engine's warnings about it over the last day."""
+
+    name: str
+    errors: int = 0
+    last_error_at: str | None = None
+    log_read: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySummary:
+    state: MemoryState = "unknown"
+    notebooks: tuple[MemoryNotebook, ...] = ()
+    queues: tuple[MemoryQueue, ...] = ()
+    provider: MemoryProvider | None = None
+    detail: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class QuotaWindow:
     label: str
@@ -294,3 +350,5 @@ class DashboardSnapshot:
     version: VersionSummary | None = None
     # Whether the agent sees its rules; ``None`` when not collected (the demo states).
     rules: RulesSummary | None = None
+    # Whether the agent's memory works; ``None`` when not collected.
+    memory: MemorySummary | None = None

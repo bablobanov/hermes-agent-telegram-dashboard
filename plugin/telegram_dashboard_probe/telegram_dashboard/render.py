@@ -37,6 +37,10 @@ from .schema import (
     DashboardSnapshot,
     DriftSummary,
     GatewaySummary,
+    MemoryNotebook,
+    MemoryProvider,
+    MemoryQueue,
+    MemorySummary,
     PlatformRules,
     QuotaMetric,
     QuotaWindow,
@@ -212,6 +216,8 @@ def render_dashboard(
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
     if snapshot.rules is not None:
         _rules_in_details(snapshot.rules, zone, details)
+    if snapshot.memory is not None:
+        _memory_in_details(snapshot.memory, zone, details)
     lines.extend(_coverage_lines(snapshot, details))
     details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
@@ -458,6 +464,75 @@ def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
     else:
         text = "no context file where the agent works"
     return f"Rules {platform_label(rules.platform)}: {text}"
+
+
+def _memory_in_details(memory: MemorySummary, zone: tzinfo, details: _Details) -> None:
+    """The memory has no line of its own on the screen, like the rules: a queue stuck, a
+    notebook nearly full or a provider that warns is an event under "Needs attention"
+    (``memory.incidents_for``); the numbers are in the details. Never a word of the text."""
+    if memory.state == "off":
+        details.state.append("Memory: off in the dashboard settings")
+        return
+    if memory.state != "observed":
+        reason = sanitize_public_text(memory.detail or "not read", limit=60)
+        details.state.append(f"Memory: {reason}")
+        return
+    notebooks = " · ".join(_notebook_words(notebook) for notebook in memory.notebooks)
+    unread = " · config.yaml not read" if memory.detail else ""
+    details.state.append(f"Memory: {notebooks}{unread}")
+    for queue in memory.queues:
+        details.state.extend(_queue_words(queue, zone))
+    if memory.provider is not None:
+        details.state.append(_provider_words(memory.provider, zone))
+
+
+def _notebook_words(notebook: MemoryNotebook) -> str:
+    """``USER.md 1,218/1,375 (88%, one entry 76%)``: the share of one entry only when it holds
+    half the limit or more."""
+    name = notebook.name
+    if notebook.enabled is False:
+        return f"{name} off"
+    if notebook.chars is None:
+        return f"{name} none yet"
+    if not notebook.limit:
+        return f"{name} {notebook.chars:,} chars"
+    percent = notebook.chars * 100 // notebook.limit
+    largest = notebook.largest * 100 // notebook.limit
+    one = f", one entry {largest}%" if notebook.entries > 1 and largest >= 50 else ""
+    return f"{name} {notebook.chars:,}/{notebook.limit:,} ({percent}%{one})"
+
+
+def _queue_words(queue: MemoryQueue, zone: tzinfo) -> list[str]:
+    """The approval queue in a line, and in a second what its adds would need: a queue of adds
+    larger than the room left cannot be approved as it stands."""
+    label = "Memory" if queue.subsystem == "memory" else "Skills"
+    gate = {True: "on", False: "off", None: "unknown"}[queue.gate]
+    landed = format_day_time(queue.applied_at, zone) if queue.applied_at else None
+    last = f" · last write {landed or 'never'}" if queue.subsystem == "memory" else ""
+    if not queue.count:
+        if queue.subsystem == "skills" and not queue.gate:
+            return []
+        return [f"{label} queue: empty{last} · approval {gate}"]
+    since = format_day(queue.oldest_at, zone) or "time unknown"
+    lines = [f"{label} queue: {queue.count:,} waiting since {since}{last} · approval {gate}"]
+    if queue.needs:
+        needs = "; ".join(
+            f"{name} {needed:,} chars, {free:,} free" for name, needed, free in queue.needs
+        )
+        tight = any(needed > free for _name, needed, free in queue.needs)
+        lines.append(f"Waiting adds: {needs}" + (": they do not fit" if tight else ""))
+    return lines
+
+
+def _provider_words(provider: MemoryProvider, zone: tzinfo) -> str:
+    name = sanitize_public_text(provider.name, limit=24)
+    if not provider.log_read:
+        return f"Memory provider {name}: errors.log not read"
+    if not provider.errors:
+        return f"Memory provider {name}: no errors logged in 24 h"
+    last = format_day_time(provider.last_error_at, zone) or "time unknown"
+    errors = _plural(provider.errors, "error", "errors")
+    return f"Memory provider {name}: {errors} in 24 h, last {last}"
 
 
 def _rules_none_words(rules: PlatformRules, files: str, changed: str | None, session: str) -> str:
