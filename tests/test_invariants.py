@@ -8,7 +8,8 @@ a later change cannot undo one of them quietly:
 5. nothing outlives a disable: the one task is spawned through ``ctx.spawn_task``
 
 Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 below
-their tests; 6 widened and 10 added in 0.10.0 (the rules line reads ``state.db``).
+their tests; 6 widened and 10 and 11 added in 0.10.0 (the rules line reads ``state.db``; no
+invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a command).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -270,3 +271,44 @@ def test_the_plugin_folder_carries_no_invisible_character() -> None:
             continue
         text = path.read_text(encoding="utf-8")
         assert not [c for c in text if ord(c) in invisible], path.name
+
+
+def test_no_word_of_the_screen_becomes_a_link_a_command_a_mention_or_a_hashtag() -> None:
+    """12. Telegram turns words into entities by itself, ``parse_mode=HTML`` or not: a word
+    ending in a top-level domain into a link (``AGENTS.md`` opened a site in the window of
+    07.10), a ``/word`` into a command a tap sends to the chat the dashboard lives in (``/new``
+    would reset that chat's session), ``@word`` and ``#word`` into a mention and a hashtag. Every
+    demo state as HTML, outside ``<code>`` (where Telegram finds none), holds none of them, and
+    neither do the forms Telegram finds inside a longer word, which a cron job's name or a reason
+    could carry. The detectors are Telegram's rules, not the renderer's."""
+    import html as html_module
+
+    from telegram_dashboard.render import render_dashboard, to_telegram_html
+    from telegram_dashboard.states import PERIOD_SECONDS, all_states
+
+    entities = {
+        "link": re.compile(r"[\w-]+\.[^\W\d_]{2,}(?![\w])"),
+        "url": re.compile(r"://"),
+        "command": re.compile(r"(?<![\w/])/\w"),
+        "mention": re.compile(r"(?<!\w)@\w{3,}"),
+        "hashtag": re.compile(r"(?<!\w)#\w+"),
+    }
+    screens = [
+        render_dashboard(s.snapshot, now=s.now, delivery=s.delivery, period_seconds=PERIOD_SECONDS)
+        for s in all_states()
+    ]
+    # Review of 0.10.1: a command or a domain inside a word, a digit after the slash, a digit name.
+    screens.append(
+        "- Cron send /new-session: failing\n> x ./new · -/new · /2fa · see x.com/y · 2.ai · "
+        "AGENTS.md/ · state.db. · https://api.example.org/bot/x"
+    )
+    checked = 0
+    for number, text in enumerate(screens, start=1):
+        markup = to_telegram_html(text)
+        shown = html_module.unescape(
+            re.sub(r"<[^>]+>", " ", re.sub(r"<code>.*?</code>", " ", markup))
+        )
+        for name, pattern in entities.items():
+            assert not pattern.findall(shown), (number, name, pattern.findall(shown))
+        checked += markup.count("<code>")
+    assert checked >= 12  # AGENTS.md (25, 26), /new (26), state.db (8) and the nine forms above

@@ -229,11 +229,13 @@ def test_each_research_state_reaches_telegram_through_the_tick(
     assert parse_mode == "HTML"
     assert lines[0].startswith(_STATUS_LABELS[state.expect_overall] + " · ")
     assert lines[0].endswith("Sep 9 21:00 UTC")
+    # A file name in a title (``state.db``) reaches the chat as ``<code>``, see test_render.
+    plain = text.replace("<code>", "").replace("</code>", "")
     for incident in state.snapshot.incidents:
-        assert html.escape(incident.title) in text
+        assert html.escape(incident.title) in plain
     if state.expect_overall != "normal":
         assert "🟢 Healthy" not in text
-    assert "#" not in text and "> " not in text
+    assert "#" not in plain and "> " not in plain
     assert "<blockquote expandable>" in text
     assert _utf16_units(text) <= TELEGRAM_TEXT_LIMIT
 

@@ -124,7 +124,7 @@ def test_2_no_section_while_the_file_is_in_the_service_directory_is_not_loaded(
     _summary, _source, incidents = read_rules(env, now=NOW)
     assert [i.incident_id for i in incidents] == ["rules:telegram:none"]
     lines = _screen(env)
-    assert "Rules ⚠️ Telegram: not loaded" in lines
+    assert not any(line.startswith("Rules") for line in lines)
     assert "- Telegram: rules not loaded" in lines
     assert (
         "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
@@ -145,7 +145,8 @@ def test_3_a_file_over_the_budget_is_truncated_with_what_was_kept(tmp_path: Path
     assert rules.verdict == "truncated"
     assert (rules.kept, rules.chars) == (14_000 + 4_000, len(section("AGENTS.md", text)))
     lines = _screen(env)
-    assert "Rules ⚠️ Telegram: truncated" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules truncated" in lines
     kept = f"kept 18,000 of {rules.chars:,} chars"
     assert f"> Rules Telegram: AGENTS.md cut, {kept} · session Oct 7 12:32" in lines
 
@@ -170,11 +171,11 @@ def test_4a_a_session_older_than_an_edited_file_is_outdated_until_new(tmp_path: 
 
     assert rules.verdict == "outdated" and rules.changed_at is not None
     lines = _screen(env)
-    assert "Rules ⚠️ Telegram: outdated" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules outdated" in lines
     assert (
         "> Rules Telegram: AGENTS.md changed Oct 7 12:36 after session Oct 7 12:32: /new" in lines
     )
-    assert "- Telegram: rules outdated" in lines
 
 
 def test_4b_a_file_that_appeared_after_the_session_says_new(tmp_path: Path) -> None:
@@ -197,7 +198,8 @@ def test_4b_a_file_that_appeared_after_the_session_says_new(tmp_path: Path) -> N
 
     assert (rules.verdict, rules.why) == ("none", "after")
     lines = _screen(env)
-    assert "Rules ⚠️ Telegram: not loaded" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules not loaded" in lines
     after = "AGENTS.md changed Oct 7 12:36, after session Oct 7 12:32: /new"
     assert f"> Rules Telegram: {after}" in lines
 
@@ -300,7 +302,8 @@ def test_4j_a_file_not_in_utf8_is_not_loaded_and_says_why(tmp_path: Path) -> Non
 
     assert (rules.verdict, rules.why, rules.files) == ("none", "not_utf8", ("AGENTS.md",))
     lines = _screen(env)
-    assert "Rules ⚠️ Telegram: not loaded" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules not loaded" in lines
     utf8 = "AGENTS.md not UTF-8, the engine skips it in silence: save it as UTF-8"
     assert f"> Rules Telegram: {utf8}" in lines
 
@@ -507,7 +510,9 @@ def test_a_file_the_engine_scan_refused_is_blocked(tmp_path: Path) -> None:
     env = Environment(hermes_home=home, gateway_dir=service)
 
     assert _one(env).verdict == "blocked"
-    assert "Rules ⚠️ Telegram: blocked" in _screen(env)
+    lines = _screen(env)
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules blocked" in lines
 
 
 def test_a_loaded_file_that_quotes_the_scan_notice_is_loaded_not_blocked(tmp_path: Path) -> None:
@@ -644,7 +649,7 @@ def test_a_platform_a_previous_process_wrote_is_not_judged(tmp_path: Path) -> No
     assert gateway_platforms(tmp_path) == ("telegram",)
 
 
-def test_two_platforms_in_trouble_are_counted_on_the_line(tmp_path: Path) -> None:
+def test_two_platforms_in_trouble_are_two_events_and_no_line(tmp_path: Path) -> None:
     home, agent, service = _layout(tmp_path)
     write_file(service / "AGENTS.md", rules_text(), at=BEFORE_SESSION)
     gateway_state(home, "telegram", "discord")
@@ -657,7 +662,8 @@ def test_two_platforms_in_trouble_are_counted_on_the_line(tmp_path: Path) -> Non
     )
     lines = _screen(Environment(hermes_home=home, gateway_dir=service))
 
-    assert "Rules ⚠️ 2 of 2 platforms" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert lines[0].startswith("🟡 Warning")
     assert "- Telegram: rules not loaded" in lines and "- Discord: rules not loaded" in lines
 
 
@@ -803,7 +809,7 @@ def test_the_line_off_in_the_settings_is_named_in_the_details_and_counted_nowher
 # ------------------------------------------------------------------ the screen
 
 
-def test_every_event_and_line_of_the_rules_fits_the_phone_width() -> None:
+def test_every_event_of_the_rules_fits_the_phone_width() -> None:
     """Review item 14, verification item 9: the 32 columns the cron events keep, for every
     platform the engine knows and an unknown one with a long name."""
     from telegram_dashboard.context_files import _PLATFORM_LABELS
@@ -814,7 +820,34 @@ def test_every_event_and_line_of_the_rules_fits_the_phone_width() -> None:
         events = incidents_for(judged)
         assert len(events) == 4
         assert all(len(f"- {event.title}") <= 32 for event in events), events
-    assert len("Rules ⚠️ Telegram: not loaded") <= 32
+
+
+def test_a_rules_event_keeps_a_place_when_five_other_events_fill_the_screen() -> None:
+    """Review of 0.10.1: every other source has a line of its own on the screen, the rules only
+    their events; the cut to five must not leave an agent without its rules in the details."""
+    from telegram_dashboard.collect import build_snapshot
+    from telegram_dashboard.schema import CapacitySummary, Incident
+
+    others = tuple(Incident(f"cron:job{n}", "warning", f"Cron job{n}: failing") for n in range(5))
+    rules = incidents_for([PlatformRules("telegram", "none"), PlatformRules("max", "outdated")])
+
+    def snapshot(incidents: tuple[Incident, ...]):
+        return build_snapshot(
+            now=NOW,
+            gateway=None,
+            drift=None,
+            capacity=CapacitySummary(),
+            sources=(),
+            incidents=incidents,
+        )
+
+    full = snapshot(others + rules)
+    assert full.incidents == (*others[:4], rules[0])
+    assert full.overall == "warning"
+    assert "- Telegram: rules not loaded" in render_dashboard(full, now=NOW, zone=UTC).splitlines()
+    # Room enough: nothing moves.
+    assert snapshot(others[:2] + rules).incidents == (*others[:2], *rules)
+    assert snapshot(others).incidents == others
 
 
 # ------------------------------------------------------------------ nothing of the text leaves

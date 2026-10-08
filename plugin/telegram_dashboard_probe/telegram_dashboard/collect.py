@@ -877,7 +877,7 @@ def build_snapshot(
     traffic: TrafficSummary | None = None,
     rules: RulesSummary | None = None,
 ) -> DashboardSnapshot:
-    ordered = tuple(sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))[:5])
+    ordered = _screen_incidents(incidents)
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
     counted = tuple(source for source in sources if source.name not in _COVERAGE_ONLY)
     overall = derive_overall(coverage=cov, sources=counted, incidents=ordered)
@@ -896,6 +896,19 @@ def build_snapshot(
         traffic=traffic,
         rules=rules,
     )
+
+
+def _screen_incidents(incidents: tuple[Incident, ...]) -> tuple[Incident, ...]:
+    """Up to five events, the most severe first. Every source but the rules has a line of its
+    own on the screen; the rules have only their events (0.10.1). When the cut leaves out every
+    rules event, the last place goes to the first of them, so an agent that does not see its
+    rules never sinks into the collapsed details behind five other events."""
+    ordered = sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))
+    shown = ordered[:5]
+    rules = [item for item in ordered if item.incident_id.startswith("rules:")]
+    if rules and not any(item.incident_id.startswith("rules:") for item in shown):
+        shown = [*shown[:4], rules[0]]
+    return tuple(shown)
 
 
 def collect_all(

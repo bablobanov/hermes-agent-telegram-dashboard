@@ -592,7 +592,8 @@ def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_pl
     lines = _render(STATES[24]).splitlines()
 
     assert lines[0].startswith("🟡 Warning")
-    assert "Rules ⚠️ Telegram: not loaded" in lines
+    # The event alone says it on the screen; a line beside it said the same (08.10).
+    assert not any(line.startswith("Rules") for line in lines)
     assert "- Telegram: rules not loaded" in lines
     assert (
         "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
@@ -604,7 +605,8 @@ def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_pl
 def test_state_26_an_edited_file_says_new() -> None:
     lines = _render(STATES[25]).splitlines()
 
-    assert "Rules ⚠️ Telegram: outdated" in lines
+    assert not any(line.startswith("Rules") for line in lines)
+    assert "- Telegram: rules outdated" in lines
     assert (
         "> Rules Telegram: AGENTS.md changed Sep 26 20:12 after session Sep 26 19:32: /new" in lines
     )
@@ -621,8 +623,8 @@ def test_the_rules_states_carry_what_the_collector_builds() -> None:
 
 
 def test_the_healthy_showcase_with_its_rules_loaded_keeps_its_fifteen_lines() -> None:
-    """Review item 14: the rules line comes up to the screen only when an agent does not see
-    its rules; loaded, the confirmation is a details line and the phone screen stays 15."""
+    """Review item 14: the rules come up to the screen only as an event, when an agent does not
+    see them; loaded, the confirmation is a details line and the phone screen stays 15."""
     from dataclasses import replace
 
     from telegram_dashboard.schema import PlatformRules, RulesSummary, SourceObservation

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 
@@ -25,7 +26,6 @@ from . import __version__
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
-from .context_files import WARNING_VERDICTS as RULES_WARNING_VERDICTS
 from .context_files import platform_label
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .gemini_log import hit_words, is_active
@@ -125,13 +125,6 @@ _SOURCE_LABELS = {
     "telegram_traffic": "Telegram traffic",
     "context_files": "agent rules",
 }
-# The word on the rules line for a platform whose agent does not see its rules as they are.
-_RULES_WORDS = {
-    "none": "not loaded",
-    "outdated": "outdated",
-    "truncated": "truncated",
-    "blocked": "blocked",
-}
 # The word on the Telegram line when the adapter is connected but the channel is deaf.
 _TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"}
 _FAILURE_WORDS = {
@@ -212,9 +205,7 @@ def render_dashboard(
     if snapshot.cron is not None:
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
     if snapshot.rules is not None:
-        rules_line = _rules_line(snapshot.rules, zone, details)
-        if rules_line:
-            lines.append(rules_line)
+        _rules_in_details(snapshot.rules, zone, details)
     lines.extend(_coverage_lines(snapshot, details))
     details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
@@ -412,29 +403,22 @@ def _streak_words(streak: int | None) -> str:
     return "1 run" if streak == 1 else f"{streak} in a row"
 
 
-def _rules_line(rules: RulesSummary, zone: tzinfo, details: _Details) -> str | None:
-    """On the screen only when an agent does not see its rules as they are: the platform and
-    the word, or the count. Everything else is a line in the details: the files loaded, no
-    files, off, the reason of a no data (whose source the coverage line already names). The
-    healthy screen keeps its fifteen lines (decision of 01.10)."""
+def _rules_in_details(rules: RulesSummary, zone: tzinfo, details: _Details) -> None:
+    """The rules are a line per platform in the details, never a line of the main part: an
+    agent that does not see its rules as they are is an event under "Needs attention"
+    (``context_files.incidents_for``), which also makes the status a warning. A screen line
+    beside the event said the same words twice (decision of 08.10, from the live window)."""
     if rules.state == "off":
         details.state.append("Rules: off in the dashboard settings")
-        return None
+        return
     if rules.state in ("unsupported", "unknown"):
         reason = sanitize_public_text(rules.detail or "not read", limit=60)
         details.state.append(f"Rules: {reason}")
-        return None
+        return
     if not rules.platforms:
         details.state.append("Rules: no platform session with a saved prompt yet")
-        return None
+        return
     details.state.extend(_rules_details(platform, zone) for platform in rules.platforms)
-    bad = [p for p in rules.platforms if p.verdict in RULES_WARNING_VERDICTS]
-    if len(bad) == 1:
-        word = _RULES_WORDS[bad[0].verdict]
-        return f"Rules {WARN_MARK} {platform_label(bad[0].platform)}: {word}"
-    if bad:
-        return f"Rules {WARN_MARK} {len(bad)} of {len(rules.platforms)} platforms"
-    return None
 
 
 def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
@@ -901,7 +885,8 @@ def to_telegram_plain(text: str) -> str:
 
 def to_telegram_html(text: str) -> str:
     """Escape for ``parse_mode=HTML``: headings become bold lines, a run of details lines
-    becomes one ``<blockquote expandable>``, which Telegram shows collapsed."""
+    becomes one ``<blockquote expandable>``, which Telegram shows collapsed, and a file name or
+    a ``/command`` becomes ``<code>`` (``_code_spans``)."""
     out: list[str] = []
     quote: list[str] = []
 
@@ -923,5 +908,36 @@ def to_telegram_html(text: str) -> str:
 
 def _html_line(line: str) -> str:
     if line.startswith("#"):
-        return f"<b>{html.escape(line.lstrip('#').lstrip())}</b>"
-    return html.escape(line)
+        return f"<b>{_code_spans(html.escape(line.lstrip('#').lstrip()))}</b>"
+    return _code_spans(html.escape(line))
+
+
+# A run of the characters a file name, a path or a command is made of.
+_WORD = re.compile(r"[\w./-]+")
+# A name with a letter in it, or nothing (a dotfile), then a dot and an extension of two or more
+# characters that starts with a letter: ``AGENTS.md``, ``.hermes.md``, ``.cursorrules``,
+# ``state.db``, a config key ``display.platforms.max.cleanup_progress``. A version (``0.21.3``,
+# ``kimi-k2.5``, ``gemini-2.5-pro``) has a digit there and stays plain.
+_FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
+# What Telegram finds inside a word: a command where a slash opens the word or follows a dot or a
+# dash (``/new``, ``/2fa``, ``./new``, ``/new-session``; a fraction ``1/1`` is not one), and a
+# domain before the word's end or a slash (``x.com/y``, ``2.ai``, ``AGENTS.md/``).
+_ENTITY_INSIDE = re.compile(r"(?:^|[.-])/\w|\.[^\W\d_]{2,}(?=$|/)")
+
+
+def _code_spans(escaped: str) -> str:
+    """Put every word that looks like a file name or a ``/command`` in ``<code>``, by its form,
+    not by a list. Telegram makes a link of any word ending in a top-level domain (``.md``,
+    ``.py``, ``.sh``) and a command of any ``/word``, ``parse_mode=HTML`` or not: a tap on
+    ``AGENTS.md`` opened a site, a tap on ``/new`` would have reset the session of the chat the
+    dashboard lives in (window of 07.10). Inside ``<code>`` it finds neither, and a tap copies the
+    word. ``escaped`` is already HTML-escaped: an entity (``&#x27;``) has no dot and no slash."""
+    return _WORD.sub(_code_word, escaped)
+
+
+def _code_word(match: re.Match[str]) -> str:
+    word = match.group()
+    core = word.rstrip(".")
+    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core):
+        return f"<code>{core}</code>{word[len(core) :]}"
+    return word

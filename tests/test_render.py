@@ -391,6 +391,62 @@ def test_html_form_bolds_headings_and_folds_the_details_into_one_expandable_quot
     assert html.count("<blockquote") == 1
 
 
+def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> None:
+    """Window of 07.10: Telegram made ``AGENTS.md`` a link and ``/new`` a command. The rule is
+    the form, not a list: a name, a dot, an extension that starts with a letter; a ``/word``.
+    A version, a count and a fraction stay plain; the plain form is left as it was."""
+    line = (
+        "> Rules Max: AGENTS.md changed Oct 7 17:29, after session Sep 24 19:23: /new\n"
+        "> .hermes.md, .cursorrules, .cursor/rules/a.mdc, AGENTS.override.md, state.db.\n"
+        "- Config drift: model.default, display.platforms.max.cleanup_progress\n"
+        "Hermes 0.21.3 → 0.21.5 · v0.10.0 · kimi-k2.5 · gemini-2.5-pro · e.g. 1.5x\n"
+        "Profiles 1/1 · sources 12/12 · 11,162 chars · the gateway's a < b"
+    )
+
+    html = to_telegram_html(line)
+
+    coded = (
+        "AGENTS.md",
+        "/new",
+        ".hermes.md",
+        ".cursorrules",
+        ".cursor/rules/a.mdc",
+        "AGENTS.override.md",
+        "state.db",
+        "model.default",
+        "display.platforms.max.cleanup_progress",
+    )
+    for word in coded:
+        assert f"<code>{word}</code>" in html, word
+    assert "<code>state.db</code>." in html
+    assert html.count("<code>") == len(coded)
+    assert "Hermes 0.21.3 → 0.21.5 · v0.10.0 · kimi-k2.5 · gemini-2.5-pro · e.g. 1.5x" in html
+    assert "Profiles 1/1 · sources 12/12 · 11,162 chars · the gateway&#x27;s a &lt; b" in html
+    assert "<code>" not in to_telegram_plain(line)
+
+
+@pytest.mark.parametrize(
+    ("line", "coded"),
+    [
+        ("send /new-session", "/new-session"),
+        ("x ./new", "./new"),
+        ("-/new", "-/new"),
+        ("/2fa", "/2fa"),
+        ("see x.com/y", "x.com/y"),
+        ("2.ai", "2.ai"),
+        ("AGENTS.md/", "AGENTS.md/"),
+        ("https://api.example.org/bot/x", "//api.example.org/bot/x"),
+    ],
+)
+def test_html_form_codes_what_telegram_finds_inside_a_word(line: str, coded: str) -> None:
+    """Review of 0.10.1: Telegram finds a command or a domain inside a longer word; the whole
+    word goes to ``<code>``. A fraction, an abbreviation and a version stay plain."""
+    assert f"<code>{coded}</code>" in to_telegram_html(line)
+    assert to_telegram_html("1/1 · 12/12 · e.g. i.e. 17:29 v0.10.1") == (
+        "1/1 · 12/12 · e.g. i.e. 17:29 v0.10.1"
+    )
+
+
 def test_drift_that_could_not_be_checked_shows_why_and_no_check_time() -> None:
     snapshot = DashboardSnapshot(
         overall="unknown",

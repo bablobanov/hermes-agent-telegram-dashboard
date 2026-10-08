@@ -51,8 +51,6 @@ Gateway ✓ · Telegram ✓              words when something is off: stopped, d
 Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
 Drift ✓ 0 of 481                    keys that differ from the approved baseline
 Cron ✓ 27 jobs                      active jobs; ⚠️ N of M failing, ticker silent, ticks failing
-Rules ⚠️ Telegram: not loaded        only when an agent does not see its rules: not loaded,
-                                    outdated, truncated, blocked; loaded is ✓ in the details
 
 🧠 Limits used
 Claude · no data                    a line without a number never shows a zero
@@ -65,9 +63,9 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 
 ▎Details                            collapsed: confirmation time, the odd data minute, period,
 ▎…                                  coverage, absolute backup time and integrity, drift check
-                                    time, the cron failures and the channel's times, release
-                                    dates, the reason of every "no data", the dashboard's
-                                    own version last
+                                    time, the cron failures and the channel's times, whether
+                                    each platform's agent sees its rules, release dates, the
+                                    reason of every "no data", the dashboard's own version last
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its
@@ -100,7 +98,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.10.0`) after a blank line, so the installed
+close with the dashboard's own version (`Dashboard 0.10.1`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
 
 ## Freshness is a load-bearing requirement
@@ -248,7 +246,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok, Kimi and the external sources are asked (not every tick) |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
-   | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules line off (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
+   | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
    The drift reader takes numbers, never words: a `drift_command` prints a line
@@ -414,18 +412,20 @@ answers are just worse. Hermes looks for its project context files (`.hermes.md`
 not the service's `WorkingDirectory` (`hermes gateway install` sets that to `HERMES_HOME`). A
 file put next to the service, or next to `SOUL.md`, is silently never loaded. The dashboard
 judges it per platform of the gateway, from the system prompt the engine saved for that
-platform's latest session, and comes up to the screen only when an agent does not see its rules
-(the healthy screen keeps its fifteen lines):
+platform's latest session, and comes up to the screen only when an agent does not see its rules,
+as one event per platform under "Needs attention" that turns the status to a warning (the
+healthy screen keeps its fifteen lines; there is no separate rules line beside the event).
+Of the five events the screen shows, one place is kept for the rules when other sources fill
+them: those sources have lines of their own, the rules do not:
 
 ```
-Rules ⚠️ Telegram: not loaded        no file in the prompt, while one is there for it
-Rules ⚠️ Telegram: outdated          the prompt holds another text than the file: /new
-Rules ⚠️ Telegram: truncated         over context_file_max_chars, the middle cut out
-Rules ⚠️ Telegram: blocked           the engine's injection scan refused the file
-Rules ⚠️ 2 of 3 platforms            more than one platform; each in the details
+- Telegram: rules not loaded        no file in the prompt, while one is there for it
+- Telegram: rules outdated          the prompt holds another text than the file: /new
+- Telegram: rules truncated         over context_file_max_chars, the middle cut out
+- Telegram: rules blocked           the engine's injection scan refused the file
 ```
 
-Every warning is also an event. The details always carry one line per platform:
+The details always carry one line per platform:
 `Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Oct 7 14:32` when the agent sees them,
 otherwise the files and what to do (`AGENTS.md only in the gateway's directory, the agent works
 in another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's
@@ -434,6 +434,9 @@ the prompt, no such file now`, `differ from the prompt of session …`), and als
 file where the agent works` (never an alarm), `context files off for it in the engine's
 config`, `the agent's directory not known here` (a sandbox prompt with no host directory to
 compare), or the reason of a no data (the coverage line names that source on the screen).
+A `/new` there is for the chat of the platform it names, sent by hand: in the HTML message the
+file names and `/new` are code, which Telegram turns into neither a link (`AGENTS.md` ends in a
+top-level domain) nor a command a tap would send to the dashboard's own chat.
 
 - **how it judges**: the files are found on disk by the engine's own rules, never by headings
   read out of the prompt: in the agent's directory, `.hermes.md` up to the git root, else the
@@ -904,7 +907,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins eleven properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins twelve properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -912,8 +915,12 @@ query-only through one connection function (the only SQLite the plugin opens), n
 `HERMES_HOME/cron` is ever written and the cron and traffic modules import no network client,
 the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
 counters without calling anything on it, and the rules line writes nothing, imports no network
-client and logs no text, and no file of the plugin folder carries an invisible character (the
-catalog validator warns on one).
+client and logs no text, no file of the plugin folder carries an invisible character (the
+catalog validator warns on one), and no word of any demo screen, sent as HTML, becomes a link,
+a command, a mention or a hashtag outside `<code>`: a word that looks like a file name
+(`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a
+list. The plain fallback has no code: there Telegram may still link a file name and make `/new`
+a command a tap would send to the dashboard's own chat.
 
 ## License
 
