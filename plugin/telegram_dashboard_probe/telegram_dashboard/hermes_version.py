@@ -4,12 +4,19 @@ The line only informs: which Hermes the gateway runs, which release NousResearch
 marks Latest, how many releases lie between them. Nothing here updates anything or suggests a
 command: updating Hermes is a process (a window by the operator's own runbook), not a restart.
 
-The running version is ``hermes_cli.__version__`` of the module the gateway imported at start-up,
-found in ``sys.modules``: a capability, never a version gate. Two sources that look equivalent
-are wrong here and never used: ``importlib.metadata`` (an editable install keeps the dist-info
-of install time) and ``hermes_cli.build_info.get_code_identity(refresh=True)`` (inside the
-gateway it would restamp the gateway's own ``code_sha``, and ``hermes update`` would take a
-stale process for a fresh one).
+The running version is the one of the code the gateway imported at start-up, found in
+``sys.modules``: a capability, never a version gate. Up to 0.21.5 it is the constant
+``hermes_cli.__version__``. From 0.21.6 there is no constant: the module's ``__getattr__`` reads
+the install stamp from disk on every access, so after an update on disk it names the new code,
+not the running one, and without a stamp it says ``0.0.0`` (``unknown`` for a checkout git cannot
+place). The identity the gateway resolved at start-up
+(``hermes_cli.version_info._cached_version_info.base_version``, filled by the gateway's status
+writer) comes first there: process state, no I/O, no git. The stamp is the last resort, and any
+error of the engine's ``__getattr__`` is a reason, never a crash; a placeholder is "no version
+stamp", never a version. Two sources that look equivalent are wrong here and never used:
+``importlib.metadata`` (an editable install keeps the dist-info of install time) and
+``hermes_cli.build_info.get_code_identity(refresh=True)`` (inside the gateway it would restamp
+the gateway's own ``code_sha``, and ``hermes update`` would take a stale process for a fresh one).
 
 Upstream is read by the plugin itself, in its own worker, with plain stdlib ``urllib``: no LLM,
 no agent, no agent tool. Two unauthenticated GETs to api.github.com at most once a day
@@ -58,6 +65,11 @@ TICK_TIMEOUT_SECONDS = 25.0
 # this is cut, and a cut body is not JSON.
 MAX_BODY_BYTES = 16_000_000
 NOT_HERE = "not on this installation"
+UNSTAMPED = "no version stamp on this installation"
+LOOKUP_FAILED = "version lookup failed"
+# What the engine says when it does not know its own version (0.21.6: no install stamp, or a
+# checkout git cannot place).
+PLACEHOLDERS = frozenset({"0.0.0", "unknown"})
 # ``Hermes Agent v0.21.5 (v2026.9.24)``: the version ends at a space or at the end of the name.
 _NAME_VERSION = re.compile(r"Hermes Agent v(\d+(?:\.\d+){1,3})(?=\s|$)")
 _VERSION = re.compile(r"\d+(?:\.\d+){1,3}")
@@ -80,15 +92,44 @@ class _Failed(Exception):
 def running_version(
     modules: Mapping[str, object] = sys.modules,
 ) -> tuple[str | None, str | None]:
-    """``(version, None)`` from the Hermes module the gateway imported, else ``(None, reason)``.
+    """``(version, None)`` from the Hermes the gateway imported, else ``(None, reason)``.
 
     Looked up, never imported: an import here would read the files on disk, which after a pull
     are not what the process serves."""
     module = modules.get("hermes_cli")
-    version = getattr(module, "__version__", None) if module is not None else None
+    if module is None:
+        return None, NOT_HERE
+    version = _constant(module)
+    if version is None:
+        version = _started_identity(modules)
+    if version is None:
+        try:
+            version = getattr(module, "__version__", None)
+        except Exception:  # the engine's __getattr__: an import, a path, a file; never quoted
+            return None, LOOKUP_FAILED
     if not isinstance(version, str) or not version.strip():
         return None, NOT_HERE
+    if version.strip().lower() in PLACEHOLDERS:
+        return None, UNSTAMPED
     return sanitize_public_text(version.strip(), limit=24), None
+
+
+def _constant(module: object) -> object:
+    """``__version__`` as a value of the module itself (0.21.1-0.21.5); ``None`` when the module
+    only serves it through ``__getattr__`` (0.21.6), which this never triggers."""
+    try:
+        return vars(module).get("__version__")
+    except TypeError:  # an object without a __dict__
+        return None
+
+
+def _started_identity(modules: Mapping[str, object]) -> object:
+    """The version the gateway resolved at start-up (0.21.6), ``None`` before it did."""
+    try:
+        info = getattr(modules.get("hermes_cli.version_info"), "_cached_version_info", None)
+        return getattr(info, "base_version", None)
+    except Exception:  # a property that raises is no identity
+        return None
 
 
 # ----------------------------------------------------------------------------- one attempt

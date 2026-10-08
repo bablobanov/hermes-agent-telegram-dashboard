@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import time
 import types
@@ -103,6 +104,79 @@ def test_a_version_that_is_not_a_non_empty_string_is_not_on_this_installation(
     value: object,
 ) -> None:
     assert hv.running_version(_gateway(value)) == (None, "not on this installation")
+
+
+def _lazy_gateway(
+    stamp: object = None, *, started: object = None, error: BaseException | None = None
+) -> tuple[dict[str, object], list[str]]:
+    """Hermes 0.21.6: no constant; the module's __getattr__ reads the install stamp from disk on
+    every access. ``started``: the identity the gateway resolved at start-up, when it did."""
+    reads: list[str] = []
+    module = types.ModuleType("hermes_cli")
+
+    def lazy(name: str) -> object:
+        if name != "__version__":
+            raise AttributeError(name)
+        reads.append(name)
+        if error is not None:
+            raise error
+        return stamp
+
+    module.__getattr__ = lazy  # type: ignore[attr-defined]
+    modules: dict[str, object] = {"hermes_cli": module}
+    if started is not None:
+        info = types.SimpleNamespace(base_version=started)
+        modules["hermes_cli.version_info"] = types.SimpleNamespace(_cached_version_info=info)
+    return modules, reads
+
+
+def test_on_0_21_6_the_version_comes_from_the_install_stamp_when_nothing_else_knows_it() -> None:
+    modules, reads = _lazy_gateway("0.21.6")
+    assert hv.running_version(modules) == ("0.21.6", None)
+    assert reads == ["__version__"]
+
+
+def test_on_0_21_6_the_identity_of_the_running_process_wins_over_the_stamp_on_disk() -> None:
+    """An update rewrote the stamp, the gateway has not restarted: the line names the code that
+    runs, and the stamp is not even read."""
+    modules, reads = _lazy_gateway("0.21.7", started="0.21.6")
+    assert hv.running_version(modules) == ("0.21.6", None)
+    assert reads == []
+
+
+@pytest.mark.parametrize("stamp", ["0.0.0", "unknown", " UNKNOWN "])
+def test_a_placeholder_is_no_version_stamp_never_a_version(stamp: str) -> None:
+    """No install stamp: 0.21.6 says 0.0.0 (a manual clone, a local docker build, a Nix build,
+    a failed install tail), or unknown for a checkout git cannot place."""
+    assert hv.running_version(_lazy_gateway(stamp)[0]) == (None, hv.UNSTAMPED)
+    assert hv.running_version(_lazy_gateway(started=stamp)[0]) == (None, hv.UNSTAMPED)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("No module named 'hermes_cli.steward'"),
+        ImportError("cannot import name 'repo_root' from 'pm.paths' (/home/op/hermes/pm/paths.py)"),
+        RuntimeError("Symlink loop from '/home/op/.hermes/hermes-agent'"),
+        OSError("[Errno 13] Permission denied: '/home/op/hermes-agent/install-stamp.json'"),
+    ],
+    ids=["import", "import name", "resolve", "os"],
+)
+def test_any_error_of_the_engine_s_version_lookup_is_a_reason_that_quotes_nothing(
+    error: BaseException,
+) -> None:
+    """getattr with a default swallows AttributeError only; 0.21.6's __getattr__ can raise an
+    import error, a resolve error or an OS error, each with a path in its message."""
+    assert hv.running_version(_lazy_gateway(error=error)[0]) == (None, hv.LOOKUP_FAILED)
+
+
+def test_with_the_installed_engine_the_line_never_shows_a_placeholder() -> None:
+    """The real hermes_cli of this interpreter: 0.21.3 a constant, 0.21.6 an editable tree
+    without a stamp (0.0.0 from its __getattr__)."""
+    pytest.importorskip("hermes_cli", reason="Hermes is not installed in this interpreter")
+    version, reason = hv.running_version(sys.modules)
+    assert version not in hv.PLACEHOLDERS
+    assert (version is None) == (reason is not None)
 
 
 # ----------------------------------------------------------------------------- one attempt
