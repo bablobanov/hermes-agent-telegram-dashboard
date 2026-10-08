@@ -163,3 +163,20 @@ def test_the_grok_and_kimi_rows_say_what_hermes_auth_code_may_write() -> None:
         paragraph = _readme_paragraph(start)
         assert "`auth.json`" in paragraph and "plugin's own code writes" in paragraph, name
         assert no_redirect in paragraph, name
+
+
+def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
+    """0.11.0: the audit of 08.10 read every engine touchpoint of 0.21.6 against 0.21.5; the
+    plugin's own scripts and the engine-free sources have no engine to verify against."""
+    engine_free = {"drift", "backup", "external_limits"}
+    for name, entry in load_matrix()["sources"].items():
+        if name not in engine_free:
+            assert "0.21.6" in entry["verified"], name
+
+
+def test_the_memory_section_is_a_row_that_names_what_it_never_reads() -> None:
+    entry = load_matrix()["sources"]["memory"]
+
+    assert "hermes_yaml" in " ".join(entry["reads"]) and "§" in " ".join(entry["reads"])
+    assert any("text of an entry" in item for item in entry["never_reads"])
+    assert {"0.21.3", "0.21.6"} <= set(entry["verified"])
