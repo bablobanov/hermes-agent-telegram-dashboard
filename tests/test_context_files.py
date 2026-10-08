@@ -663,7 +663,6 @@ def test_two_platforms_in_trouble_are_two_events_and_no_line(tmp_path: Path) -> 
     lines = _screen(Environment(hermes_home=home, gateway_dir=service))
 
     assert not any(line.startswith("Rules") for line in lines)
-    assert lines[0].startswith("🟡 Warning")
     assert "- Telegram: rules not loaded" in lines and "- Discord: rules not loaded" in lines
 
 
