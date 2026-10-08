@@ -310,13 +310,81 @@ def test_4j_a_file_not_in_utf8_is_not_loaded_and_says_why(tmp_path: Path) -> Non
     assert f"> Rules Telegram: {utf8}" in lines
 
 
-def test_4k_a_bom_only_file_is_an_empty_section_as_the_engine_loads_it(tmp_path: Path) -> None:
-    """Verification item 6: ``strip`` keeps a BOM, so the engine loads an empty section."""
+def test_the_profile_line_of_0_21_6_proves_where_the_block_ends(tmp_path: Path) -> None:
+    """0.21.6 moved the profile line into the volatile tier before the timestamp: with no skills
+    index, workspace or memory it is the part right after the block (the audit of 08.10). A
+    file changed after the session started reads loaded when that part proves the end."""
+    home, agent, service = _layout(tmp_path)
+    text = rules_text()
+    write_file(agent / "AGENTS.md", text, at=AFTER_SESSION)
+    profile = "Active Hermes profile: default. Other profiles (if any) live under /home/op/x/."
+    full = prompt([section("AGENTS.md", text)], agent, next_part=profile)
+    make_state_db(home, [Session("telegram", SESSION_AT, full)])
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+def test_4k_a_bom_only_file_is_an_empty_section_as_0_21_5_loads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verification item 6: up to 0.21.5 ``strip`` keeps a BOM, so the engine loads an empty
+    section."""
+    monkeypatch.setattr(context_files, "engine_drops_bom", lambda: False)
     home, agent, service = _layout(tmp_path)
     write_file(agent / "AGENTS.md", "\ufeff\n", at=BEFORE_SESSION)
     _db(home, agent, "## AGENTS.md\n\n")
 
     assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+@pytest.mark.parametrize("drops_bom", [True, None], ids=["0.21.6", "engine not loaded"])
+def test_4k_a_bom_only_file_is_skipped_by_0_21_6_and_no_alarm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drops_bom: bool | None
+) -> None:
+    """0.21.6 reads context files as utf-8-sig: a file of a BOM alone is empty and skipped, no
+    block in the prompt is what it loads (the audit of 08.10). Where no engine is loaded (the
+    cron tick) both readings are tried before an alarm."""
+    monkeypatch.setattr(context_files, "engine_drops_bom", lambda: drops_bom)
+    home, agent, service = _layout(tmp_path)
+    write_file(agent / "AGENTS.md", "\ufeff\n", at=BEFORE_SESSION)
+    _db(home, agent)
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "no_files"
+
+
+@pytest.mark.parametrize(
+    ("drops_bom", "carried"),
+    [(False, "\n\n  Use the staging database."), (True, "Use the staging database.")],
+    ids=["0.21.5 keeps the lines after the BOM", "0.21.6 strips them with the BOM"],
+)
+def test_4k_blank_lines_after_a_bom_are_read_as_the_running_engine_reads_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drops_bom: bool, carried: str
+) -> None:
+    monkeypatch.setattr(context_files, "engine_drops_bom", lambda: drops_bom)
+    home, agent, service = _layout(tmp_path)
+    write_file(agent / "AGENTS.md", "\ufeff\n\n  Use the staging database.\n", at=BEFORE_SESSION)
+    _db(home, agent, section("AGENTS.md", carried))
+
+    assert _one(Environment(hermes_home=home, gateway_dir=service)).verdict == "loaded"
+
+
+def test_how_the_engine_reads_a_bom_is_read_off_its_file_reader() -> None:
+    """A capability, never a version: the default encoding of the reader the gateway imported."""
+
+    def reader_0_21_5(path: object, timeout: object = None) -> None:
+        return None
+
+    def reader_0_21_6(path: object, timeout: object = None, encoding: str = "utf-8-sig") -> None:
+        return None
+
+    def module(reader: object) -> object:
+        return types.SimpleNamespace(_read_text_with_timeout=reader)
+
+    detect = context_files.engine_drops_bom
+    assert detect({"agent.prompt_builder": module(reader_0_21_5)}) is False
+    assert detect({"agent.prompt_builder": module(reader_0_21_6)}) is True
+    assert detect({"agent.prompt_builder": types.SimpleNamespace()}) is None
+    assert detect({}) is None
 
 
 def test_4l_a_cursor_bundle_the_engine_cut_is_truncated(tmp_path: Path) -> None:

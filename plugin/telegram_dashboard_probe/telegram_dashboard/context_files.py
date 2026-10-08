@@ -35,12 +35,15 @@ lengths, times and verdicts, never their text and never a path.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import logging
 import os
 import re
 import sqlite3
-from collections.abc import Callable, Iterable
+import sys
+from collections.abc import Callable, Iterable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +67,13 @@ SOURCE_NAME = "context_files"
 STATE_FILE = "state.db"
 GATEWAY_STATE_FILE = "gateway_state.json"
 CONFIG_FILE = "config.yaml"
+# How the engine decodes a context file. 0.21.6 reads it as ``utf-8-sig``: a leading BOM goes
+# before ``strip``, so blank lines after it go too, and a file of a BOM alone is empty and
+# skipped. 0.21.1-0.21.5 read ``utf-8``: ``strip`` keeps the BOM (it is no whitespace), the lines
+# after it stay, the scan drops the BOM afterwards, and a file of a BOM alone is an empty section.
+# Set for one discovery by ``discover``; read by ``_read``.
+_DROPS_BOM: ContextVar[bool] = ContextVar("drops_bom", default=False)
+_ENGINE_READER = ("agent.prompt_builder", "_read_text_with_timeout")
 # The engine's own YAML parser first: from 0.21.6 the engine reads config.yaml with ``hermes_yaml``
 # (ruamel) and no longer depends on PyYAML; 0.21.1-0.21.5 read it with PyYAML.
 YAML_PARSERS = ("hermes_yaml", "yaml")
@@ -96,12 +106,14 @@ _CWD_PREFIX = "Current working directory:"
 _HOME_PREFIX = "User home directory:"
 # The parts the engine puts right after the context block (``build_system_prompt_parts``, the
 # same on 0.21.1, 0.21.3, 0.21.5 and main): the skills index, the workspace snapshot, the
-# memory block, the timestamp line, the runtime block. One of them after the current text
-# proves the block ended there.
+# memory block, the timestamp line, the runtime block; from 0.21.6 the profile line too, moved
+# into the volatile tier before the timestamp (``agent/system_prompt.py``). One of them after
+# the current text proves the block ended there.
 _NEXT_PARTS = (
     "## Skills\nBefore replying, scan the skills below",
     "Workspace (snapshot at session start",
     "═" * 46 + "\n",
+    "Active Hermes profile: ",
     "Conversation started: ",
     f"{_RUNTIME_HEADING}\n\n",
 )
@@ -180,8 +192,15 @@ def read_rules(env: Environment, *, now: datetime) -> RulesPart:
         if sessions is None:
             return _not_here("state.db has no saved system prompts")
         skipping = skipping_platforms(env.hermes_home)
+        drops_bom = engine_drops_bom()
         judged = tuple(
-            judge(s, env, skipped=_skips(skipping, s.platform), now=now.timestamp())
+            judge(
+                s,
+                env,
+                skipped=_skips(skipping, s.platform),
+                now=now.timestamp(),
+                drops_bom=drops_bom,
+            )
             for s in sessions
         )
     except sqlite3.Error as exc:
@@ -343,12 +362,61 @@ def _skips(skipping: frozenset[str] | None, platform: str) -> bool | None:
     return None if skipping is None else platform in skipping
 
 
+def engine_drops_bom(modules: Mapping[str, object] = sys.modules) -> bool | None:
+    """Whether the running engine drops a context file's BOM before ``strip`` (0.21.6 on): the
+    default ``encoding`` of its file reader, ``utf-8-sig``; a reader with no ``encoding`` reads
+    ``utf-8`` and keeps it (0.21.1-0.21.5). Looked up in the module the gateway imported, never
+    imported; ``None`` where no engine is loaded (the cron tick), and both ways are tried."""
+    module_name, function_name = _ENGINE_READER
+    reader = getattr(modules.get(module_name), function_name, None)
+    if not callable(reader):
+        return None
+    try:
+        parameter = inspect.signature(reader).parameters.get("encoding")
+    except (TypeError, ValueError):
+        return None
+    if parameter is None:
+        return False
+    if isinstance(parameter.default, str):
+        return parameter.default.replace("_", "-").lower() == "utf-8-sig"
+    return None
+
+
 # ------------------------------------------------------------------ the verdict
 
 
-def judge(session: Session, env: Environment, *, skipped: bool | None, now: float) -> PlatformRules:
+def judge(
+    session: Session,
+    env: Environment,
+    *,
+    skipped: bool | None,
+    now: float,
+    drops_bom: bool | None = False,
+) -> PlatformRules:
     """The verdict on one platform's latest saved prompt; ``skipped`` is ``None`` when the
-    engine's config could not be read."""
+    engine's config could not be read, ``drops_bom`` when it is not known how the engine reads
+    a file's BOM: then a warning read one way is read the other way too, and the better holds
+    (the two differ only for a file that starts with a BOM)."""
+    first = _judged(session, env, skipped=skipped, now=now, drops_bom=bool(drops_bom))
+    if drops_bom is not None or first.verdict not in WARNING_VERDICTS:
+        return first
+    second = _judged(session, env, skipped=skipped, now=now, drops_bom=True)
+    return second if second.verdict not in WARNING_VERDICTS else first
+
+
+def _judged(
+    session: Session, env: Environment, *, skipped: bool | None, now: float, drops_bom: bool
+) -> PlatformRules:
+    token = _DROPS_BOM.set(drops_bom)
+    try:
+        return _judge(session, env, skipped=skipped, now=now)
+    finally:
+        _DROPS_BOM.reset(token)
+
+
+def _judge(
+    session: Session, env: Environment, *, skipped: bool | None, now: float
+) -> PlatformRules:
     prompt, started_at = session.prompt, _iso(session.started)
     # Where discovery ran: the prompt's own line; for a sandbox backend the engine's TERMINAL_CWD
     # when it exists on the host, else the process's directory (``resolve_context_cwd``).
@@ -718,9 +786,10 @@ def _read(path: Path) -> Read | None:
     except (OSError, ValueError):
         return None
     try:
-        raw = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     except UnicodeDecodeError:
         return Read(None, None, changed, "undecodable" if data.strip() else "empty")
+    raw = (text[1:] if _DROPS_BOM.get() and text.startswith("\ufeff") else text).strip()
     if not raw:
         return Read(raw, raw, changed, "empty")
     return Read(raw, raw[1:] if raw.startswith("\ufeff") else raw, changed, "ok")

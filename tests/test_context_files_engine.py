@@ -3,7 +3,7 @@
 ``build_context_files_prompt`` and ``build_environment_hints`` of the installed Hermes make the
 context block and the runtime block from real files; the dashboard must read back what the
 engine wrote. Skipped where the engine is not importable (the CI runner has none); run locally
-in an interpreter with Hermes (0.21.3 and 0.21.5 on 07.10).
+in an interpreter with Hermes (0.21.3 and 0.21.5 on 07.10, 0.21.6 on 08.10).
 """
 
 from __future__ import annotations
@@ -94,6 +94,9 @@ def test_a_file_the_engine_scan_refused_reads_back_as_blocked(
         (".hermes.md", "---\ntitle: rules\n---\n\nUse the staging database.", ".hermes.md"),
         ("CLAUDE.md", "\ufeffUse the staging database.", "CLAUDE.md"),
         (".cursorrules", "Use the staging database.", ".cursorrules"),
+        # 0.21.6 drops the BOM before strip, earlier engines after it: blank lines in between
+        # are in the prompt before 0.21.6 and gone from it (the audit of 08.10).
+        ("AGENTS.md", "\ufeff\n\n  Use the staging database.\n", "AGENTS.md"),
     ],
 )
 def test_every_kind_of_context_file_reads_back_as_loaded(
@@ -109,6 +112,19 @@ def test_every_kind_of_context_file_reads_back_as_loaded(
     rules = _judge(tmp_path, monkeypatch, agent)
 
     assert (rules.verdict, rules.files) == ("loaded", (label,))
+
+
+def test_a_bom_only_file_reads_back_as_the_installed_engine_loads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Up to 0.21.5 an empty section; from 0.21.6 skipped (utf-8-sig), so no block at all."""
+    agent = tmp_path / "agent"
+    put(agent / "AGENTS.md", "\ufeff\n", at=BEFORE_SESSION)
+    block = pb.build_context_files_prompt(cwd=str(agent), skip_soul=True, context_length=None)
+
+    rules = _judge(tmp_path, monkeypatch, agent)
+
+    assert rules.verdict == ("loaded" if block.strip() else "no_files")
 
 
 def test_an_empty_directory_gives_no_block_and_no_files(
