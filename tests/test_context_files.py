@@ -1011,6 +1011,10 @@ def test_a_rules_event_keeps_a_place_when_five_other_events_fill_the_screen() ->
     # Room enough: nothing moves.
     assert snapshot(others[:2] + rules).incidents == (*others[:2], *rules)
     assert snapshot(others).incidents == others
+    # Review of 0.11.0: the memory has no line either, and a place of its own beside the rules'.
+    memory = (Incident("memory:memory:stuck", "warning", "Memory: 3 writes stuck 10d"),)
+    assert snapshot(others + rules + memory).incidents == (*others[:3], rules[0], memory[0])
+    assert snapshot(others + memory).incidents == (*others[:4], memory[0])
 
 
 # ------------------------------------------------------------------ nothing of the text leaves

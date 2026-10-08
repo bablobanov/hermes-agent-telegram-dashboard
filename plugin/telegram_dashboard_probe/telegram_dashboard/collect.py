@@ -907,15 +907,19 @@ def build_snapshot(
 
 def _screen_incidents(incidents: tuple[Incident, ...]) -> tuple[Incident, ...]:
     """Up to five events, the most severe first. Every source but the rules and the memory has
-    a line of its own on the screen; those two have only their events (0.10.1, 0.11.0). When
-    the cut leaves out every event of theirs, the last place goes to the first of them, so an
-    agent that does not see its rules or cannot keep its memory never sinks into the collapsed
-    details behind five other events."""
+    a line of its own on the screen; those two have only their events (0.10.1, 0.11.0). Each
+    keeps a place: when the cut leaves out every event of one, its first takes the place of
+    the last event shown that is neither's, so an agent that does not see its rules or cannot
+    keep its memory never sinks into the collapsed details behind five other events."""
     ordered = sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))
     shown = ordered[:5]
-    lineless = [item for item in ordered if item.incident_id.startswith(_LINELESS)]
-    if lineless and not any(item.incident_id.startswith(_LINELESS) for item in shown):
-        shown = [*shown[:4], lineless[0]]
+    for prefix in _LINELESS:
+        first = next((item for item in ordered if item.incident_id.startswith(prefix)), None)
+        if first is None or first in shown:
+            continue
+        others = [i for i, item in enumerate(shown) if not item.incident_id.startswith(_LINELESS)]
+        drop = others[-1] if others else len(shown) - 1
+        shown = [*shown[:drop], *shown[drop + 1 :], first]
     return tuple(shown)
 
 
