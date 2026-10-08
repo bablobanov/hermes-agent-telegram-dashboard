@@ -47,8 +47,8 @@ def _held_to_width(main: list[str]) -> list[str]:
     return main[:start] + main[end:]
 
 
-def test_twenty_six_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 27))
+def test_twenty_eight_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 29))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])

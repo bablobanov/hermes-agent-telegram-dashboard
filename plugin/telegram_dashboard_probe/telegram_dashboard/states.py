@@ -10,8 +10,9 @@ same text can be looked at in Telegram during the pilot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .freshness import DeliveryRecord
 from .schema import (
@@ -24,6 +25,9 @@ from .schema import (
     DriftSummary,
     GatewaySummary,
     Incident,
+    MemoryNotebook,
+    MemoryQueue,
+    MemorySummary,
     PlatformRules,
     QuotaMetric,
     QuotaWindow,
@@ -207,6 +211,7 @@ def _showcase_snapshot(
     cron: CronSummary | None = None,
     traffic: TrafficSummary | None = None,
     rules: RulesSummary | None = None,
+    memory: MemorySummary | None = None,
 ) -> DashboardSnapshot:
     rules_source = (
         (SourceObservation("context_files", "official", "fresh", observed_at=_S),)
@@ -232,6 +237,11 @@ def _showcase_snapshot(
             SourceObservation("cron_runs", "official", "fresh", observed_at=_S),
             SourceObservation("telegram_traffic", "local", "fresh", observed_at=_S),
             *rules_source,
+            *(
+                (SourceObservation("memory", "official", "fresh", observed_at=_S),)
+                if memory is not None
+                else ()
+            ),
             *extra_sources,
         ),
         version=VersionSummary(
@@ -248,6 +258,7 @@ def _showcase_snapshot(
         traffic=traffic
         or TrafficSummary("ok", last_update_seen_at=_S_LAST_UPDATE, polling_at=_S_MINUS_2M),
         rules=rules,
+        memory=memory,
     )
 
 
@@ -612,6 +623,98 @@ def _rules_states() -> tuple[State, ...]:
     )
 
 
+# The memory state (27): the showcase installation whose approval queue has stood since early
+# September with nothing applied, its USER.md nearly full, and the adds waiting there far larger
+# than the room left. Every number is made up.
+_M_QUEUED = "2026-09-02T09:14:00+00:00"
+_M_NEWEST = "2026-09-26T18:40:00+00:00"
+_M_LANDED = "2026-08-30T16:05:00+00:00"
+_M_SKILLS = "2026-09-10T11:20:00+00:00"
+
+
+def _memory_states() -> tuple[State, ...]:
+    memory = MemorySummary(
+        "observed",
+        (
+            MemoryNotebook("MEMORY.md", True, 1_934, 2_200, 8, 412, _M_LANDED),
+            MemoryNotebook("USER.md", True, 1_301, 1_375, 3, 977, _M_LANDED),
+        ),
+        (
+            MemoryQueue(
+                "memory", True, 58, _M_QUEUED, _M_NEWEST, _M_LANDED, (("USER.md", 6_410, 74),)
+            ),
+            MemoryQueue("skills", True, 12, _M_SKILLS, _M_SKILLS),
+        ),
+    )
+    return (
+        State(
+            27,
+            "Memory: the approval queue stands, USER.md nearly full",
+            _showcase_snapshot(
+                "warning",
+                incidents=(
+                    Incident("memory:memory:stuck", "warning", "Memory: 58 writes stuck 24d"),
+                    Incident("memory:USER.md:full", "warning", "Memory: USER.md 94% full"),
+                    Incident("memory:skills:stuck", "warning", "Skills: 12 writes stuck 16d"),
+                ),
+                memory=memory,
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
+# The release state (28): the showcase screen on the day Hermes 0.21.6 came out, three hours
+# after its real publication (2026-10-08 11:51:57 UTC). The showcase's own moments move with the
+# clock, so nothing on the screen is older than in state 14; 0.21.5's date stays its own.
+RELEASE_NOW = datetime(2026, 10, 8, 14, 52, tzinfo=UTC)
+_V0_21_6 = "2026-10-08T11:51:57Z"
+
+
+def _shifted(value: Any, delta: timedelta) -> Any:
+    """Every moment of a demo snapshot or record moved by ``delta``."""
+    if is_dataclass(value) and not isinstance(value, type):
+        changes = {
+            field.name: _shifted(getattr(value, field.name), delta) for field in fields(value)
+        }
+        return replace(value, **changes)
+    if isinstance(value, tuple):
+        return tuple(_shifted(item, delta) for item in value)
+    if isinstance(value, str) and len(value) >= 19 and value[4] == "-" and value[10] == "T":
+        try:
+            return (datetime.fromisoformat(value) + delta).isoformat()
+        except ValueError:
+            return value
+    return value
+
+
+def _release_states() -> tuple[State, ...]:
+    delta = RELEASE_NOW - SHOWCASE_NOW
+    snapshot = _shifted(_showcase_snapshot("normal"), delta)
+    version = VersionSummary(
+        running="0.21.5",
+        latest="0.21.6",
+        running_published_at=_V0_21_5,
+        latest_published_at=_V0_21_6,
+        behind=1,
+        list_size=37,
+        checked_at=snapshot.observed_at,
+        confirmed_at=snapshot.observed_at,
+    )
+    return (
+        State(
+            28,
+            "A new Hermes release, out three hours ago",
+            replace(snapshot, version=version),
+            _shifted(_delivery_ok(_S_MINUS_2M), delta),
+            "normal",
+            now=RELEASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -792,4 +895,6 @@ def all_states() -> tuple[State, ...]:
         *_cron_states(),
         *_phone_states(),
         *_rules_states(),
+        *_memory_states(),
+        *_release_states(),
     )
