@@ -1,10 +1,12 @@
 """The Hermes version line: the version the running gateway serves against the latest upstream
-release, read by the plugin itself from api.github.com at most once a day.
+release, read by the plugin itself from api.github.com at most once per 15 minutes.
 
 Pinned here: the version is the one the gateway imported (a capability, never a version gate);
 the number of releases behind is a position on upstream's list, never arithmetic on version
-numbers; every way GitHub can fail is "no data" with a reason that never quotes the answer (a
-rate-limit message carries the caller's IP); a failed check is not retried before a day passes.
+numbers; every way GitHub can fail is a reason that never quotes the answer (a rate-limit
+message carries the caller's IP), and a failed check keeps the last answer read; a new release
+is seen within one check, by its version and not by the ETag; a 304 reads no list; a limit
+running low or out waits for GitHub's reset.
 """
 
 from __future__ import annotations
@@ -26,7 +28,6 @@ import pytest
 from telegram_dashboard import hermes_version as hv
 from telegram_dashboard.collect import CommandResult, collect_all_async
 from telegram_dashboard.compat import Environment
-from telegram_dashboard.quota_cache import tick
 from telegram_dashboard.render import render_dashboard
 from telegram_dashboard.schema import VersionSummary
 from telegram_dashboard.workers import Flights
@@ -57,24 +58,28 @@ RELEASES = [
 LATEST = RELEASES[0]
 
 
-class FakeHttp:
-    """Answers per URL; records every request so a test can count attempts."""
+Answer = tuple[int, str] | tuple[int, str, dict[str, str]]
 
-    def __init__(self, answers: dict[str, tuple[int, str] | BaseException]) -> None:
+
+class FakeHttp:
+    """Answers per URL (status, body and, when a test means them, the response headers);
+    records every request so a test can count attempts."""
+
+    def __init__(self, answers: dict[str, Answer | BaseException]) -> None:
         self.answers = answers
         self.calls: list[tuple[str, dict[str, str]]] = []
 
-    def __call__(self, url: str, headers: dict[str, str]) -> tuple[int, str]:
+    def __call__(self, url: str, headers: dict[str, str]) -> tuple[int, str, dict[str, str]]:
         self.calls.append((url, dict(headers)))
         answer = self.answers[url]
         if isinstance(answer, BaseException):
             raise answer
-        return answer
+        return (answer[0], answer[1], answer[2] if len(answer) == 3 else {})
 
 
 def _http(
-    latest: tuple[int, str] | BaseException | None = None,
-    listing: tuple[int, str] | BaseException | None = None,
+    latest: Answer | BaseException | None = None,
+    listing: Answer | BaseException | None = None,
 ) -> FakeHttp:
     return FakeHttp(
         {
@@ -274,8 +279,8 @@ def _named(name: str) -> str:
     ],
 )
 def test_every_failure_is_no_data_with_a_reason_that_never_quotes_the_answer(
-    latest: tuple[int, str] | BaseException | None,
-    listing: tuple[int, str] | BaseException | None,
+    latest: Answer | BaseException | None,
+    listing: Answer | BaseException | None,
     reason: str,
 ) -> None:
     item = hv.fetch_item(now=NOW, get=_http(latest, listing))
@@ -314,6 +319,7 @@ def test_two_releases_behind_is_a_position_on_the_list() -> None:
         behind=2,
         list_size=5,
         checked_at=NOW.isoformat(),
+        confirmed_at=NOW.isoformat(),
     )
 
 
@@ -383,52 +389,66 @@ def test_a_cached_item_in_an_unknown_shape_is_no_data_never_a_crash(item: object
     assert summary.reason
 
 
-# ----------------------------------------------------------------------------- once a day
+# ----------------------------------------------------------------------------- the cadence
 
 
 class CountingFetch:
     def __init__(self, item: dict[str, Any]) -> None:
         self.item = item
         self.calls = 0
+        self.previous: list[object] = []
 
-    def __call__(self, *, now: datetime) -> dict[str, Any]:
+    def __call__(self, *, now: datetime, previous: object = None) -> dict[str, Any]:
         self.calls += 1
+        self.previous.append(previous)
         return {**self.item, "checked_at": now.isoformat()}
 
 
-def test_one_attempt_a_day_the_cache_serves_the_rest() -> None:
+def test_one_check_per_interval_the_cache_serves_the_ticks_between() -> None:
     fetch = CountingFetch(_available())
     cache: dict[str, Any] = {}
 
-    tick(cache, now=NOW, interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
-    tick(
+    hv.tick(cache, now=NOW, interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
+    hv.tick(
         cache,
-        now=NOW + timedelta(hours=23, minutes=59),
+        now=NOW + timedelta(minutes=14, seconds=59),
         interval_seconds=hv.INTERVAL_SECONDS,
         fetch=fetch,
     )
     assert fetch.calls == 1
 
-    tick(cache, now=NOW + timedelta(days=1), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
+    hv.tick(
+        cache, now=NOW + timedelta(minutes=15), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
+    )
     assert fetch.calls == 2
+    assert fetch.previous[0] is None
+    assert isinstance(fetch.previous[1], dict)  # each check is built on the last one
 
 
-def test_a_failed_check_is_not_retried_before_a_day() -> None:
-    failed = hv.fetch_item(now=NOW, get=_http(latest=(429, "{}")))
+def test_a_failed_check_is_retried_after_the_interval_not_a_day() -> None:
+    failed = hv.fetch_item(now=NOW, get=_http(latest=(500, "")))
     fetch = CountingFetch(failed)
     cache: dict[str, Any] = {}
 
-    tick(cache, now=NOW, interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
-    later = tick(
-        cache, now=NOW + timedelta(hours=6), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
+    hv.tick(cache, now=NOW, interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch)
+    later = hv.tick(
+        cache, now=NOW + timedelta(minutes=10), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
     )
-
     assert fetch.calls == 1
-    assert later["reason"] == "GitHub rate limit"
+    assert later["reason"] == "HTTP 500"
+
+    hv.tick(
+        cache, now=NOW + timedelta(minutes=16), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
+    )
+    assert fetch.calls == 2
 
 
-def test_the_interval_is_a_day_and_the_deadline_outlasts_two_socket_timeouts() -> None:
-    assert hv.INTERVAL_SECONDS == 86400
+def test_the_cadence_keeps_well_inside_github_s_hourly_limit_without_a_token() -> None:
+    """60 requests an hour per address without a token, a 304 included; the engine or a script
+    may ask from the same address. One check a quarter of an hour is 4, a new release adds one
+    list; the deadline outlasts two socket timeouts."""
+    assert hv.INTERVAL_SECONDS == 900
+    assert 3600 / hv.INTERVAL_SECONDS + 1 <= 60 - hv.RATE_RESERVE
     assert hv.TICK_TIMEOUT_SECONDS > 2 * hv.HTTP_TIMEOUT_SECONDS
     assert hv.PER_PAGE == 100
 
@@ -501,7 +521,7 @@ def test_a_hung_github_stalls_neither_the_loop_nor_the_rest_of_the_screen(
     release = threading.Event()
     calls: list[datetime] = []
 
-    def hung(*, now: datetime) -> dict[str, Any]:
+    def hung(*, now: datetime, previous: object = None) -> dict[str, Any]:
         calls.append(now)
         release.wait(10)
         return _available(checked_at=now.isoformat())
@@ -553,7 +573,7 @@ def test_a_hung_github_stalls_neither_the_loop_nor_the_rest_of_the_screen(
 
 
 def test_a_crashing_check_is_an_incident_and_the_screen_still_renders(tmp_path: Path) -> None:
-    def crash(*, now: datetime) -> dict[str, Any]:
+    def crash(*, now: datetime, previous: object = None) -> dict[str, Any]:
         raise RuntimeError("boom at /var/lib/secret/path")
 
     snapshot = _collect(tmp_path, version_cache={}, version_fetch=crash, version_local=_local)
@@ -629,10 +649,10 @@ def test_a_redirect_is_followed_only_while_it_stays_on_api_github_com() -> None:
         handler.redirect_request(request, None, 302, "Found", {}, "https://example.com/x")
 
 
-def test_a_crashing_check_is_cached_for_the_day_not_retried_every_tick(tmp_path: Path) -> None:
+def test_a_crashing_check_is_cached_for_the_interval_not_retried_every_tick(tmp_path: Path) -> None:
     calls: list[datetime] = []
 
-    def crash(*, now: datetime) -> dict[str, Any]:
+    def crash(*, now: datetime, previous: object = None) -> dict[str, Any]:
         calls.append(now)
         raise RuntimeError("parser bug")
 
@@ -673,7 +693,7 @@ def test_a_hung_github_does_not_hold_back_the_other_sources(tmp_path: Path) -> N
     while GitHub still hangs. Held back until GitHub gave up, Grok would never start here."""
     grok_started = threading.Event()
 
-    def github(*, now: datetime) -> dict[str, Any]:
+    def github(*, now: datetime, previous: object = None) -> dict[str, Any]:
         if grok_started.wait(2):
             return _available(checked_at=now.isoformat())
         return {"status": "unavailable", "reason": "Grok never started", "checked_at": None}
@@ -699,3 +719,245 @@ def test_a_hung_github_does_not_hold_back_the_other_sources(tmp_path: Path) -> N
     )
 
     assert snapshot.version.latest == "0.21.5", snapshot.version.reason
+
+
+# ----------------------------------------------------------------------------- a new release
+#
+# 0.11.0: a new release is on the screen within one check. Each check asks for Latest with the
+# last answer's ETag; a 304 reads no list, nor does a 200 for the same release (its notes are
+# edited after publication, which changes the ETag); the list is read when Latest names another
+# version. A failed check keeps the last answer. GitHub's limit (60 an hour per address without
+# a token, a 304 included) is shared with whatever else asks from the address.
+
+V0216 = {
+    "tag_name": "v0.21.6",
+    "name": "Hermes Agent v0.21.6",
+    "draft": False,
+    "prerelease": False,
+    "published_at": "2026-10-08T11:51:57Z",
+}
+LATER = NOW + timedelta(days=12, hours=19, minutes=30)  # 2026-10-08 12:10 UTC
+
+
+def _known(etag: str = 'W/"e1"') -> dict[str, Any]:
+    """A check's answer as the cache keeps it: Latest 0.21.5 with its ETag, read at NOW."""
+    item = hv.fetch_item(now=NOW, get=_http(latest=(200, json.dumps(LATEST), {"etag": etag})))
+    assert item["etag"] == etag
+    return item
+
+
+def test_a_new_release_is_read_with_its_list_on_the_first_check_after_it_appears() -> None:
+    previous = _known()
+    http = _http(
+        latest=(200, json.dumps(V0216), {"etag": 'W/"e2"'}),
+        listing=(200, json.dumps([V0216, *RELEASES])),
+    )
+
+    item = hv.fetch_item(now=LATER, get=http, previous=previous)
+
+    assert [url for url, _ in http.calls] == [hv.LATEST_URL, hv.LIST_URL]
+    assert http.calls[0][1]["If-None-Match"] == 'W/"e1"'
+    assert "If-None-Match" not in http.calls[1][1]
+    assert item["latest"] == {"version": "0.21.6", "published_at": "2026-10-08T11:51:57Z"}
+    assert (item["etag"], item["reason"], item["fetched_at"]) == ('W/"e2"', None, LATER.isoformat())
+    summary = hv.summarize(item, "0.21.3", None)
+    assert (summary.latest, summary.behind) == ("0.21.6", 3)
+
+
+def test_a_304_confirms_the_last_answer_and_reads_no_list() -> None:
+    previous = _known()
+    http = _http(latest=(304, "", {"etag": 'W/"e1"', "x-ratelimit-remaining": "41"}))
+
+    item = hv.fetch_item(now=LATER, get=http, previous=previous)
+
+    assert [url for url, _ in http.calls] == [hv.LATEST_URL]
+    assert http.calls[0][1]["If-None-Match"] == 'W/"e1"'
+    assert (item["latest"], item["releases"]) == (previous["latest"], previous["releases"])
+    assert item["fetched_at"] == item["checked_at"] == LATER.isoformat()
+    assert (item["reason"], item["retry_after"], item["rate_remaining"]) == (None, None, 41)
+
+
+def test_the_same_release_with_its_notes_edited_is_no_new_release() -> None:
+    """A new ETag is not a new release: v0.21.6 was published at 11:51:57Z and its notes last
+    modified at 13:08:31Z. A new release is a new version."""
+    previous = _known()
+    http = _http(latest=(200, json.dumps({**LATEST, "body": "notes, edited"}), {"etag": 'W/"e3"'}))
+
+    item = hv.fetch_item(now=LATER, get=http, previous=previous)
+
+    assert [url for url, _ in http.calls] == [hv.LATEST_URL]
+    assert (item["latest"], item["etag"]) == (previous["latest"], 'W/"e3"')
+
+
+def test_an_exhausted_limit_keeps_the_last_answer_and_waits_for_github_s_reset() -> None:
+    previous = _known()
+    reset = int((LATER + timedelta(minutes=40)).timestamp())
+    headers = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)}
+
+    item = hv.fetch_item(
+        now=LATER, get=_http(latest=(403, RATE_LIMIT_BODY, headers)), previous=previous
+    )
+
+    assert (item["status"], item["latest"]) == ("available", previous["latest"])
+    assert (item["reason"], item["fetched_at"]) == ("GitHub rate limit", NOW.isoformat())
+    assert item["retry_after"] == (LATER + timedelta(minutes=40)).isoformat()
+    assert "203.0.113.7" not in json.dumps(item)
+    summary = hv.summarize(item, "0.21.3", None)
+    assert (summary.latest, summary.behind, summary.reason) == ("0.21.5", 2, "GitHub rate limit")
+    assert (summary.confirmed_at, summary.checked_at) == (NOW.isoformat(), LATER.isoformat())
+
+    fetch = CountingFetch(item)
+    cache: dict[str, Any] = {"attempted_at": LATER.isoformat(), "item": item}
+    for minutes in (16, 39):
+        hv.tick(
+            cache,
+            now=LATER + timedelta(minutes=minutes),
+            interval_seconds=hv.INTERVAL_SECONDS,
+            fetch=fetch,
+        )
+    assert fetch.calls == 0
+    hv.tick(
+        cache, now=LATER + timedelta(minutes=40), interval_seconds=hv.INTERVAL_SECONDS, fetch=fetch
+    )
+    assert fetch.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("remaining", "waits"), [(hv.RATE_RESERVE - 1, True), (hv.RATE_RESERVE, False)]
+)
+def test_a_limit_running_low_leaves_the_rest_to_the_engine_until_the_reset(
+    remaining: int, waits: bool
+) -> None:
+    reset = int((NOW + timedelta(minutes=50)).timestamp())
+    headers = {"x-ratelimit-remaining": str(remaining), "x-ratelimit-reset": str(reset)}
+
+    item = hv.fetch_item(now=NOW, get=_http(latest=(200, json.dumps(LATEST), headers)))
+
+    assert (item["status"], item["reason"]) == ("available", None)
+    expected = (NOW + timedelta(minutes=50)).isoformat() if waits else None
+    assert item["retry_after"] == expected
+
+
+@pytest.mark.parametrize(
+    ("headers", "seconds"),
+    [
+        ({"retry-after": "120"}, 120),
+        ({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "9999999999"}, 3600),
+        ({}, 3600),
+    ],
+    ids=["Retry-After", "a reset far away", "no reset named"],
+)
+def test_github_s_wait_is_believed_up_to_an_hour(headers: dict[str, str], seconds: int) -> None:
+    item = hv.fetch_item(now=NOW, get=_http(latest=(429, "{}", headers)))
+
+    assert item["retry_after"] == (NOW + timedelta(seconds=seconds)).isoformat()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [urllib.error.URLError("no route"), (500, ""), (200, "<html>maintenance</html>")],
+    ids=["network", "server", "shape"],
+)
+def test_any_failed_check_keeps_the_last_answer_read(failure: Answer | BaseException) -> None:
+    item = hv.fetch_item(now=LATER, get=_http(latest=failure), previous=_known())
+
+    summary = hv.summarize(item, "0.21.3", None)
+
+    assert (summary.latest, summary.behind) == ("0.21.5", 2)
+    assert summary.reason
+    assert (summary.confirmed_at, summary.checked_at) == (NOW.isoformat(), LATER.isoformat())
+
+
+def test_a_tick_without_an_answer_keeps_the_last_one_in_the_cache() -> None:
+    """A deadline, a busy worker, a crash: the line keeps what it knew."""
+    from telegram_dashboard import collect
+
+    item = collect._version_missed(LATER, "no answer within 25 s", {"item": _known()})
+
+    summary = hv.summarize(item, "0.21.3", None)
+    assert (summary.latest, summary.reason) == ("0.21.5", "no answer within 25 s")
+    assert collect._version_missed(LATER, "x", {})["status"] == "unavailable"
+
+
+def test_an_answer_cached_by_0_10_without_an_etag_is_built_on_without_reading_the_list() -> None:
+    old = hv.fetch_item(now=NOW, get=_http())
+    for key in ("etag", "rate_remaining", "retry_after"):
+        old.pop(key)
+    http = _http()
+
+    item = hv.fetch_item(now=LATER, get=http, previous=old)
+
+    assert "If-None-Match" not in http.calls[0][1]
+    assert [url for url, _ in http.calls] == [hv.LATEST_URL]
+    assert item["latest"] == old["latest"]
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        None,
+        "not a dict",
+        {"status": "available", "latest": {"version": 5}, "etag": 'W/"e1"'},
+        {"status": "unavailable", "reason": "HTTP 500", "etag": 'W/"e1"'},
+    ],
+)
+def test_without_a_readable_last_answer_the_check_asks_unconditionally(previous: object) -> None:
+    http = _http()
+
+    item = hv.fetch_item(now=LATER, get=http, previous=previous)
+
+    assert "If-None-Match" not in http.calls[0][1]
+    assert [url for url, _ in http.calls] == [hv.LATEST_URL, hv.LIST_URL]
+    assert item["status"] == "available"
+
+
+def test_the_tag_scheme_change_from_dates_to_versions_reads_one_list() -> None:
+    """Up to 0.21.5 the tag was a date (v2026.9.24) and the name carried the version; from
+    0.21.6 the tag is the version (v0.21.6) and the name has no date."""
+    listing = [V0216, *RELEASES]
+    http = _http(latest=(200, json.dumps(V0216)), listing=(200, json.dumps(listing)))
+
+    item = hv.fetch_item(now=LATER, get=http)
+
+    assert [entry["version"] for entry in item["releases"]] == [
+        "0.21.6",
+        "0.21.5",
+        "0.21.4",
+        "0.21.3",
+        "0.21.2",
+        "0.21.1",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "tag", "version"),
+    [
+        ("Hermes Agent v0.21.6", "v0.21.6", "0.21.6"),
+        ("Hermes Agent v0.21.5 (v2026.9.24)", "v2026.9.24", "0.21.5"),
+        ("Hermes Agent v0.21.6 - The Quicksilver Release", "v0.21.6", "0.21.6"),
+        ("Hermes Agent v0.20.0 (2026.8.18)", "v2026.8.18", "0.20.0"),
+        ("The Quicksilver Release", "v0.22.0", "0.22.0"),
+        ("", "v0.22.1", "0.22.1"),
+    ],
+)
+def test_the_version_is_the_name_s_else_a_tag_in_the_release_scheme(
+    name: str, tag: str, version: str
+) -> None:
+    assert hv.parse_release({**V0216, "name": name, "tag_name": tag})["version"] == version
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v2026.10.1",
+        "v2026.9.24",
+        "0.22.0",
+        "v0.22",
+        "v0.22.0-rc1",
+        "v0.21.4+canary.20261007T070234Z",
+        "v1000.1.1",
+    ],
+)
+def test_a_date_tag_or_a_tag_out_of_the_release_scheme_is_never_a_version(tag: str) -> None:
+    with pytest.raises(hv.ShapeError):
+        hv.parse_release({**V0216, "name": "Hermes Agent", "tag_name": tag})

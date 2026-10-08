@@ -469,6 +469,8 @@ def test_drift_that_could_not_be_checked_shows_why_and_no_check_time() -> None:
 _CHECKED = "2026-09-25T16:40:00+00:00"
 _OURS = "2026-09-14T16:04:14Z"
 _LATEST = "2026-09-24T10:09:38Z"
+# The snapshot's own time, 30 hours after 0.21.5 came out: past the day of the new-release mark.
+_VERSION_NOW = datetime(2026, 9, 25, 16, 45, tzinfo=UTC)
 
 
 def _with_version(version: VersionSummary) -> DashboardSnapshot:
@@ -480,8 +482,10 @@ def _with_version(version: VersionSummary) -> DashboardSnapshot:
     )
 
 
-def _version_render(version: VersionSummary) -> tuple[list[str], list[str]]:
-    text = render_dashboard(_with_version(version), now=NOW, zone=UTC)
+def _version_render(
+    version: VersionSummary, now: datetime = _VERSION_NOW
+) -> tuple[list[str], list[str]]:
+    text = render_dashboard(_with_version(version), now=now, zone=UTC)
     main = _main_part(text)
     return main, text.splitlines()
 
@@ -575,9 +579,82 @@ def test_the_version_line_stands_alone_without_a_limits_block() -> None:
         version=VersionSummary("0.21.5", "0.21.5", _LATEST, _LATEST, 0, 36, _CHECKED),
     )
 
-    main = _main_part(render_dashboard(snapshot, now=NOW, zone=UTC))
+    main = _main_part(render_dashboard(snapshot, now=_VERSION_NOW, zone=UTC))
 
     assert main[-3:] == ["", "🤖 Hermes 0.21.5 ✓", ""]
+
+
+# 0.11.0: for a day after Latest came out, the version line carries 🆕 and its age; the details
+# the time it came out. v0.21.6 came out on 2026-10-08 at 11:51:57 UTC.
+_V0216_OUT = "2026-10-08T11:51:57Z"
+
+
+@pytest.mark.parametrize(
+    ("at", "line"),
+    [
+        (datetime(2026, 10, 8, 12, 10, tzinfo=UTC), "🤖 Hermes 0.21.3 → 0.21.6 🆕 18m"),
+        (datetime(2026, 10, 8, 14, 52, tzinfo=UTC), "🤖 Hermes 0.21.3 → 0.21.6 🆕 3h"),
+        (datetime(2026, 10, 9, 11, 51, tzinfo=UTC), "🤖 Hermes 0.21.3 → 0.21.6 🆕 23h"),
+        (datetime(2026, 10, 9, 11, 51, 57, tzinfo=UTC), "🤖 Hermes 0.21.3 → 0.21.6"),
+        (datetime(2026, 10, 8, 11, 50, tzinfo=UTC), "🤖 Hermes 0.21.3 → 0.21.6 🆕 1m"),
+    ],
+    ids=["18 minutes", "3 hours", "23 hours", "a day: gone", "clock behind GitHub"],
+)
+def test_a_release_out_less_than_a_day_ago_is_marked_new_with_its_age(
+    at: datetime, line: str
+) -> None:
+    version = VersionSummary(
+        "0.21.3", "0.21.6", _OURS, _V0216_OUT, 3, 37, checked_at=at.isoformat()
+    )
+
+    main, lines = _version_render(version, now=at)
+
+    assert main[-2:] == [line, ""]
+    assert len(line) + line.count("🆕") <= 32  # the mark takes two columns on a phone
+    assert ("> New release: Hermes 0.21.6 out Oct 8 11:51" in lines) == ("🆕" in line)
+
+
+@pytest.mark.parametrize(
+    ("running", "behind", "line"),
+    [
+        ("0.21.6", 0, "🤖 Hermes 0.21.6 ✓ 🆕 3h"),
+        ("0.22.0.dev0+local.abcdef", 3, "🤖 Hermes → 0.21.6 🆕 3h"),
+        # Too long for anything after it: the version cut, the mark only in the details.
+        ("0.22.0.dev0+local.abcdef", None, "🤖 Hermes 0.22.0.dev0+local.abcd…"),
+    ],
+    ids=["running it already", "a long version behind", "a long version not listed"],
+)
+def test_the_new_mark_keeps_the_line_within_a_phone_line(
+    running: str, behind: int | None, line: str
+) -> None:
+    at = datetime(2026, 10, 8, 14, 52, tzinfo=UTC)
+    version = VersionSummary(running, "0.21.6", None, _V0216_OUT, behind, 37, at.isoformat())
+
+    main, lines = _version_render(version, now=at)
+
+    assert main[-2] == line
+    assert len(line) + line.count("🆕") <= 32
+    assert "> New release: Hermes 0.21.6 out Oct 8 11:51" in lines
+
+
+def test_a_failed_check_keeps_the_last_answer_and_says_as_of_when() -> None:
+    version = VersionSummary(
+        "0.21.3",
+        "0.21.5",
+        _OURS,
+        _LATEST,
+        2,
+        36,
+        checked_at=_CHECKED,
+        reason="GitHub rate limit",
+        confirmed_at="2026-09-25T15:00:00+00:00",
+    )
+
+    main, lines = _version_render(version)
+
+    assert main[-2:] == ["🤖 Hermes 0.21.3 → 0.21.5", ""]
+    assert "> Hermes latest as of Sep 25 15:00: GitHub rate limit · checked Sep 25 16:40" in lines
+    assert "> 2 releases behind" in lines
 
 
 def test_a_version_reason_is_sanitized_like_every_other_reason() -> None:

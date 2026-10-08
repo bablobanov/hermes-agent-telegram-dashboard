@@ -259,7 +259,9 @@ class VersionSummary:
     ``None`` when this installation cannot say (``local_reason``); ``latest`` is ``None`` when
     the upstream check has no answer (``reason``). ``behind`` is the position of ours on
     upstream's release list relative to Latest: above zero behind, zero the same release, below
-    zero newer; ``None`` when ours is not among the ``list_size`` releases read."""
+    zero newer; ``None`` when ours is not among the ``list_size`` releases read. With ``latest``
+    set, ``reason`` is why the last check failed (the answer is the one confirmed at
+    ``confirmed_at``)."""
 
     running: str | None = None
     latest: str | None = None
@@ -270,6 +272,7 @@ class VersionSummary:
     checked_at: str | None = None
     reason: str | None = None
     local_reason: str | None = None
+    confirmed_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

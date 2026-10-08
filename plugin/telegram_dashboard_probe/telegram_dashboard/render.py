@@ -70,6 +70,12 @@ LIMITS_HEADING = "🧠 Limits used"
 # The Hermes version line after the limits: information only, no sign and no advice (decision of
 # 25.09: updating Hermes is a process, not a restart).
 VERSION_MARK = "🤖"
+# A release upstream published less than a day ago (0.11.0): the mark and its age on the version
+# line, the time it came out in the details. Two columns wide on a phone, counted so.
+NEW_MARK = "🆕"
+NEW_RELEASE_SECONDS = 86_400
+# A publication time this far ahead of the clock still reads "just out" (skew), not "no mark".
+NEW_RELEASE_SKEW_SECONDS = 300
 # A phone line; the version line keeps to it whatever the version string (a dev build, a local
 # tag): a shorter form first, then the version cut with an ellipsis, whole in the details.
 _LINE_COLUMNS = 32
@@ -221,7 +227,7 @@ def render_dashboard(
         details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
         details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
     if snapshot.version is not None:
-        lines.extend(["", _version_line(snapshot.version, details, zone)])
+        lines.extend(["", _version_line(snapshot.version, details, zone, reference)])
     if snapshot.work is not None:
         work = snapshot.work
         lines.extend(
@@ -745,9 +751,13 @@ def _duration_words(minutes: int) -> str:
     return f"{mins}m"
 
 
-def _version_line(version: VersionSummary, details: _Details, zone: tzinfo) -> str:
+def _version_line(
+    version: VersionSummary, details: _Details, zone: tzinfo, reference: datetime | None
+) -> str:
     """``🤖 Hermes 0.21.3 → 0.21.5``: the version the gateway runs, then the release upstream
-    marks Latest. The dates, the count and the time of the check go to the details."""
+    marks Latest; for a day after Latest came out, ``🆕`` and its age (``🤖 Hermes 0.21.3 →
+    0.21.6 🆕 3h``). The dates, the count, the time it came out and the time of the check go to
+    the details; a check that failed keeps the last answer, and the details say so."""
     checked = _checked(version.checked_at, zone)
     running = sanitize_public_text(version.running, limit=24) if version.running else None
     if running is None:
@@ -762,21 +772,48 @@ def _version_line(version: VersionSummary, details: _Details, zone: tzinfo) -> s
         return line
     latest = sanitize_public_text(version.latest, limit=24)
     latest_of = f"{latest}{_of(version.latest_published_at, zone)}"
+    new = _new_release_age(version.latest_published_at, reference)
+    if new is not None:
+        out = format_day_time(version.latest_published_at, zone) or "time unknown"
+        details.state.append(f"New release: Hermes {latest} out {out}")
+    if version.reason:
+        confirmed = format_day_time(version.confirmed_at, zone) or "time unknown"
+        reason = sanitize_public_text(version.reason, limit=60)
+        details.state.append(f"Hermes latest as of {confirmed}: {reason}{checked}")
+        checked = ""
     if running is None:
         details.state.append(f"Hermes latest {latest_of}{checked}")
         return _no_version()
     details.state.extend(_version_details(version, running, latest_of, checked, zone))
-    return _version_words(version.behind, running, latest)
+    mark = f" {NEW_MARK} {new}" if new is not None else ""
+    return _version_words(version.behind, running, latest, mark)
 
 
-def _version_words(behind: int | None, running: str, latest: str) -> str:
+def _new_release_age(published: str | None, reference: datetime | None) -> str | None:
+    """How long ago Latest came out, while that is less than a day: ``45m``, ``3h``."""
+    stamp = parse_timestamp(published) if published else None
+    if stamp is None or reference is None:
+        return None
+    age = (reference - stamp).total_seconds()
+    if not -NEW_RELEASE_SKEW_SECONDS <= age < NEW_RELEASE_SECONDS:
+        return None
+    minutes = max(int(age // 60), 1)
+    return f"{minutes}m" if minutes < 60 else f"{minutes // 60}h"
+
+
+def _version_words(behind: int | None, running: str, latest: str, mark: str = "") -> str:
     if behind == 0:
-        return _fit(running, f" {OK_MARK}")
+        return _fit(running, f" {OK_MARK}{mark}")
     if behind is not None and behind > 0:
-        return _fit(running, f" → {latest}")
+        return _fit(running, f" → {latest}{mark}", f"{VERSION_MARK} Hermes → {latest}{mark}")
     # Newer than Latest, or not on the list at all: no arrow, it would point the wrong way.
     shorter = f"{VERSION_MARK} Hermes {running}" + (" · newer" if behind is not None else "")
-    return _fit(running, f" · latest {latest}", shorter)
+    return _fit(running, f" · latest {latest}{mark}", f"{shorter}{mark}", shorter)
+
+
+def _width(line: str) -> int:
+    """Columns on a phone: the new-release mark takes two."""
+    return len(line) + line.count(NEW_MARK)
 
 
 def _fit(running: str, after: str, *shorter: str) -> str:
@@ -784,9 +821,9 @@ def _fit(running: str, after: str, *shorter: str) -> str:
     that fits, else the running version cut with an ellipsis so ``after`` stays whole."""
     head = f"{VERSION_MARK} Hermes "
     for line in (f"{head}{running}{after}", *shorter):
-        if len(line) <= _LINE_COLUMNS:
+        if _width(line) <= _LINE_COLUMNS:
             return line
-    room = _LINE_COLUMNS - len(head) - len(after) - 1
+    room = _LINE_COLUMNS - len(head) - _width(after) - 1
     if room < 1:
         return f"{head}{running}"[: _LINE_COLUMNS - 1] + "…"
     return f"{head}{running[:room]}…{after}"

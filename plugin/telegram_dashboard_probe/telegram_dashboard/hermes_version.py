@@ -19,10 +19,13 @@ stamp", never a version. Two sources that look equivalent are wrong here and nev
 the gateway's own ``code_sha``, and ``hermes update`` would take a stale process for a fresh one).
 
 Upstream is read by the plugin itself, in its own worker, with plain stdlib ``urllib``: no LLM,
-no agent, no agent tool. Two unauthenticated GETs to api.github.com at most once a day
-(``quota_cache.tick``): ``releases/latest`` for the release upstream calls Latest, and the list
-for the position of ours. The version is the one in the release name (``Hermes Agent v0.21.5
+no agent, no agent tool. Unauthenticated GETs to api.github.com, at most one check per 15
+minutes (``tick``): ``releases/latest`` with ``If-None-Match`` for the release upstream calls
+Latest, and the list for the position of ours only when Latest names another version. A new
+release is on the screen within one 30-minute tick, or 15 minutes at a shorter period. The
+version is the one in the release name (``Hermes Agent v0.21.6``, ``Hermes Agent v0.21.5
 (v2026.9.24)``); releases behind are counted on the list, never computed from version numbers.
+A failed check keeps the last answer read; a limit running low waits for GitHub's reset.
 The engine's own update check (``banner.check_for_updates``) counts commits behind ``main`` and
 is not used. A reason never quotes an answer: GitHub's rate-limit message carries the caller's
 IP.
@@ -37,12 +40,12 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .policy import sanitize_public_text
 from .schema import VersionSummary
-from .timeparse import parse_timestamp
+from .timeparse import age_seconds, parse_timestamp
 
 SOURCE = "github_releases"
 REPOSITORY = "NousResearch/hermes-agent"
@@ -55,7 +58,17 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "hermes-agent-telegram-dashboard",
 }
-INTERVAL_SECONDS = 86400.0
+# At most one check per 15 minutes, whatever the tick's period (60 s by default): 4 requests an
+# hour of the 60 GitHub gives an address without a token, which the engine or a script on the
+# same address may share. Without a token a 304 counts against that limit too (measured on
+# 2026-10-08: three 304s, remaining 35 -> 32): the cadence keeps the budget, the ETag saves
+# the body.
+INTERVAL_SECONDS = 900.0
+# Fewer requests than this left in GitHub's window: wait for its reset, leave the rest to others.
+RATE_RESERVE = 10
+# A reset or a Retry-After further away than this is not believed.
+MAX_WAIT_SECONDS = 3600.0
+KEPT_HEADERS = ("etag", "x-ratelimit-remaining", "x-ratelimit-reset", "retry-after")
 # urllib's timeout bounds each socket operation, not a whole request: a slow body can take
 # longer. The worker deadline only releases the tick ("no answer within 25 s"); the worker then
 # finishes on its own and its attempt lands in the cache like any other.
@@ -72,9 +85,12 @@ LOOKUP_FAILED = "version lookup failed"
 PLACEHOLDERS = frozenset({"0.0.0", "unknown"})
 # ``Hermes Agent v0.21.5 (v2026.9.24)``: the version ends at a space or at the end of the name.
 _NAME_VERSION = re.compile(r"Hermes Agent v(\d+(?:\.\d+){1,3})(?=\s|$)")
+# A tag in the release scheme (``v0.21.6``), never a date (``v2026.9.24``): a major of 999 at most.
+_TAG_VERSION = re.compile(r"v((?:0|[1-9]\d{0,2})(?:\.\d+){2})")
 _VERSION = re.compile(r"\d+(?:\.\d+){1,3}")
 
-HttpGet = Callable[[str, dict[str, str]], tuple[int, str]]
+HttpGet = Callable[[str, dict[str, str]], tuple[int, str, Mapping[str, str]]]
+Fetch = Callable[..., dict[str, Any]]
 Release = dict[str, str]
 
 
@@ -84,6 +100,10 @@ class ShapeError(ValueError):
 
 class _Failed(Exception):
     """An attempt that ends as "no data"; the message is the public reason."""
+
+
+class _RateLimited(_Failed):
+    """GitHub's limit for this address is out."""
 
 
 # ----------------------------------------------------------------------------- running version
@@ -132,7 +152,7 @@ def _started_identity(modules: Mapping[str, object]) -> object:
         return None
 
 
-# ----------------------------------------------------------------------------- one attempt
+# ----------------------------------------------------------------------------- one check
 
 
 class _StayOnApi(urllib.request.HTTPRedirectHandler):
@@ -156,56 +176,100 @@ class _StayOnApi(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_StayOnApi)
 
 
-def http_get(url: str, headers: dict[str, str]) -> tuple[int, str]:
+def http_get(url: str, headers: dict[str, str]) -> tuple[int, str, dict[str, str]]:
+    """One GET: the status, the body and the few headers this module reads. urllib raises a 304
+    like any non-2xx; it comes back here as its status."""
     if not url.startswith(API_ROOT):
         raise ValueError("only api.github.com is read")
     request = urllib.request.Request(url, headers=headers)
     try:
         with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            return int(response.status), response.read(MAX_BODY_BYTES).decode("utf-8", "replace")
+            body = response.read(MAX_BODY_BYTES).decode("utf-8", "replace")
+            return int(response.status), body, _kept(response.headers)
     except urllib.error.HTTPError as exc:
-        return int(exc.code), (exc.read(2000) if exc.fp else b"").decode("utf-8", "replace")
+        body = (exc.read(2000) if exc.fp else b"").decode("utf-8", "replace")
+        return int(exc.code), body, _kept(exc.headers)
 
 
-def fetch_item(*, now: datetime, get: HttpGet = http_get) -> dict[str, Any]:
-    """One attempt at upstream's releases, as a cache item; never raises. ``checked_at`` is the
-    attempt, ``fetched_at`` only an answer that was read."""
-    item: dict[str, Any] = {
-        "status": "unavailable",
-        "reason": None,
-        "source": SOURCE,
-        "fetched_at": None,
-        "checked_at": now.isoformat(),
-        "latest": None,
-        "releases": [],
-    }
+def _kept(headers: Any) -> dict[str, str]:
+    kept: dict[str, str] = {}
+    for name in KEPT_HEADERS:
+        value = headers.get(name) if headers is not None else None
+        if isinstance(value, str) and value.strip():
+            kept[name] = value.strip()[:200]
+    return kept
+
+
+def fetch_item(
+    *, now: datetime, get: HttpGet = http_get, previous: object = None
+) -> dict[str, Any]:
+    """One check of upstream's releases, as a cache item; never raises.
+
+    ``previous`` is the item of the last check. Its answer goes out as ``If-None-Match`` and
+    stays the answer while Latest names the same release (a 304, or a 200 for the same release
+    whose notes were edited after publication): the list is read only when Latest names another
+    version. A failed check keeps the last answer and says why. ``checked_at`` is this attempt,
+    ``fetched_at`` the last time an answer was read or confirmed; ``retry_after`` is set when
+    GitHub's limit for this address runs low or out, and no check goes out before it."""
+    known = known_answer(previous)
+    seen: dict[str, str] = {}
+    limited = False
     try:
-        latest = parse_release(_get_json(get, LATEST_URL))
-        releases = parse_list(_get_json(get, LIST_URL))
-        if latest not in releases:
-            raise ShapeError("Latest is not on the release list")
+        item = _check(get, known, now, seen)
+    except _RateLimited:
+        limited = True
+        item = _failed(known, now, "GitHub rate limit")
     except _Failed as exc:
-        item["reason"] = str(exc)
-        return item
+        item = _failed(known, now, str(exc))
     except ShapeError as exc:
-        item["reason"] = f"answer shape: {exc}"
-        return item
+        item = _failed(known, now, f"answer shape: {exc}")
     except Exception as exc:  # a parsing surprise is this attempt's reason, cached like any other
-        item["reason"] = f"answer shape: {type(exc).__name__}"
-        return item
-    item.update(status="available", fetched_at=now.isoformat(), latest=latest, releases=releases)
+        item = _failed(known, now, f"answer shape: {type(exc).__name__}")
+    item["rate_remaining"] = _whole(seen.get("x-ratelimit-remaining"))
+    item["retry_after"] = _retry_after(seen, now, limited=limited)
     return item
 
 
-def _get_json(get: HttpGet, url: str) -> object:
+def _check(
+    get: HttpGet, known: dict[str, Any] | None, now: datetime, seen: dict[str, str]
+) -> dict[str, Any]:
+    etag = known["etag"] if known is not None else None
+    status, body = _ask(get, LATEST_URL, etag, seen)
+    if status == 304:
+        if known is None:
+            raise ShapeError("not modified, and nothing cached")
+        return _answered(known["latest"], known["releases"], now, seen.get("etag") or etag)
+    latest = parse_release(_json(body))
+    etag = seen.get("etag")
+    if known is not None and known["latest"] == latest:
+        return _answered(latest, known["releases"], now, etag)
+    _status, listing = _ask(get, LIST_URL, None, seen)
+    releases = parse_list(_json(listing))
+    if latest not in releases:
+        raise ShapeError("Latest is not on the release list")
+    return _answered(latest, releases, now, etag)
+
+
+def _ask(get: HttpGet, url: str, etag: str | None, seen: dict[str, str]) -> tuple[int, str]:
+    headers = dict(HEADERS)
+    if etag:
+        headers["If-None-Match"] = etag
     try:
-        status, body = get(url, dict(HEADERS))
+        status, body, answered = get(url, headers)
     except Exception as exc:
         raise _Failed(f"request failed: {type(exc).__name__}") from exc
+    if isinstance(answered, Mapping):  # a header one answer lacks stays the earlier one's
+        seen.update({str(k).lower(): v for k, v in answered.items() if isinstance(v, str)})
     if status == 429 or (status == 403 and _rate_limited(body)):
-        raise _Failed("GitHub rate limit")
+        raise _RateLimited("GitHub rate limit")
+    if status == 304 and etag:
+        return status, ""
     if status != 200:
         raise _Failed(f"HTTP {status}")
+    return status, body
+
+
+def _json(body: str) -> object:
     try:
         return json.loads(body)
     except ValueError as exc:
@@ -222,12 +286,128 @@ def _rate_limited(body: str) -> bool:
     return isinstance(message, str) and "rate limit" in message.lower()
 
 
+def _answered(
+    latest: Release, releases: list[Release], now: datetime, etag: str | None
+) -> dict[str, Any]:
+    return {
+        "status": "available",
+        "reason": None,
+        "source": SOURCE,
+        "fetched_at": now.isoformat(),
+        "checked_at": now.isoformat(),
+        "latest": latest,
+        "releases": releases,
+        "etag": etag,
+    }
+
+
+def _failed(known: dict[str, Any] | None, now: datetime, reason: str) -> dict[str, Any]:
+    """No answer this time: the last one stays, with the reason and the time of this attempt."""
+    if known is None:
+        return {
+            "status": "unavailable",
+            "reason": reason,
+            "source": SOURCE,
+            "fetched_at": None,
+            "checked_at": now.isoformat(),
+            "latest": None,
+            "releases": [],
+            "etag": None,
+        }
+    return {**known, "status": "available", "reason": reason, "checked_at": now.isoformat()}
+
+
+def known_answer(item: object) -> dict[str, Any] | None:
+    """The last answer an item carries, checked as a cached item is; ``None`` when it carries
+    none or one in a shape this code does not know."""
+    if not isinstance(item, dict) or item.get("status") != "available":
+        return None
+    try:
+        latest = _cached_release(item.get("latest"))
+        releases = [_cached_release(entry) for entry in _cached_list(item.get("releases"))]
+    except ShapeError:
+        return None
+    fetched = item.get("fetched_at")
+    if latest not in releases or not isinstance(fetched, str) or parse_timestamp(fetched) is None:
+        return None
+    etag = item.get("etag")
+    return {
+        "status": "available",
+        "reason": None,
+        "source": SOURCE,
+        "fetched_at": fetched,
+        "checked_at": item.get("checked_at"),
+        "latest": latest,
+        "releases": releases,
+        "etag": etag if isinstance(etag, str) and etag else None,
+    }
+
+
+def _whole(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _retry_after(seen: Mapping[str, str], now: datetime, *, limited: bool) -> str | None:
+    """When the next check may go out, if not on the usual cadence: GitHub's ``Retry-After``; the
+    window's reset when the limit is out or fewer than ``RATE_RESERVE`` requests are left (the
+    rest belong to whatever else on this address asks GitHub, the engine included); an hour
+    when the limit is out and GitHub names no reset. Never further than ``MAX_WAIT_SECONDS``."""
+    retry = _whole(seen.get("retry-after"))
+    remaining = _whole(seen.get("x-ratelimit-remaining"))
+    reset = _whole(seen.get("x-ratelimit-reset"))
+    wait: float | None = None
+    if retry is not None and retry > 0:
+        wait = float(retry)
+    elif (limited or (remaining is not None and remaining < RATE_RESERVE)) and reset is not None:
+        wait = reset - now.timestamp()
+    elif limited:
+        wait = MAX_WAIT_SECONDS
+    if wait is None or wait <= 0:
+        return None
+    return (now + timedelta(seconds=min(wait, MAX_WAIT_SECONDS))).isoformat()
+
+
+def tick(
+    cache: dict[str, Any], *, now: datetime, interval_seconds: float, fetch: Fetch
+) -> dict[str, Any]:
+    """The item for this tick: the cached one while the last attempt is younger than the
+    interval, or than GitHub's ``retry_after``; else one new check, built on the cached item
+    (mutated into ``cache`` in place; the caller owns the durable copy)."""
+    item = cache.get("item")
+    attempted = parse_timestamp(cache.get("attempted_at"))
+    if attempted is not None and isinstance(item, dict):
+        age = age_seconds(attempted, now)
+        wait = max(interval_seconds, _wait_after(item.get("retry_after"), attempted))
+        if age is not None and 0 <= age < wait:
+            return item
+    new = fetch(now=now, previous=item)
+    cache["attempted_at"] = now.isoformat()
+    cache["item"] = new
+    return new
+
+
+def _wait_after(retry_after: object, attempted: datetime) -> float:
+    retry = parse_timestamp(retry_after) if isinstance(retry_after, str) else None
+    if retry is None:
+        return 0.0
+    return min(max((retry - attempted).total_seconds(), 0.0), MAX_WAIT_SECONDS)
+
+
 def parse_release(payload: object) -> Release:
-    """``{"version", "published_at"}`` of one release; ``ShapeError`` names what is missing."""
+    """``{"version", "published_at"}`` of one release; ``ShapeError`` names what is missing.
+
+    The version is the one in the name (``Hermes Agent v0.21.6``, ``Hermes Agent v0.21.5
+    (v2026.9.24)``); a name without one falls back to a tag in the release scheme (``v0.21.6``,
+    used since 0.21.6), never to a date tag (``v2026.9.24``, the scheme before it)."""
     if not isinstance(payload, dict):
         raise ShapeError("release is not an object")
-    name = payload.get("name")
+    name, tag = payload.get("name"), payload.get("tag_name")
     match = _NAME_VERSION.match(name) if isinstance(name, str) else None
+    if match is None and isinstance(tag, str):
+        match = _TAG_VERSION.fullmatch(tag)
     if match is None:
         raise ShapeError("no version in name")
     published = payload.get("published_at")
@@ -255,7 +435,9 @@ def _draft_or_prerelease(entry: object) -> bool:
 
 def summarize(item: object, running: str | None, local_reason: str | None) -> VersionSummary:
     """The line's facts from one cache item and the running version; never raises. A cached item
-    in a shape this code does not know (a hand-edited state file) is "no data", not a crash."""
+    in a shape this code does not know (a hand-edited state file) is "no data", not a crash. With
+    an answer, ``reason`` is why the last check failed, if it did, and ``confirmed_at`` when the
+    answer was last read or confirmed."""
     base = VersionSummary(running=running, local_reason=local_reason)
     if not isinstance(item, dict):
         return replace(base, reason="not checked yet")
@@ -272,6 +454,7 @@ def summarize(item: object, running: str | None, local_reason: str | None) -> Ve
     if latest not in releases:
         return replace(base, reason="cached answer unreadable")
     ours, behind = _position(releases, running, latest)
+    reason, fetched = item.get("reason"), item.get("fetched_at")
     return replace(
         base,
         latest=latest["version"],
@@ -279,6 +462,8 @@ def summarize(item: object, running: str | None, local_reason: str | None) -> Ve
         running_published_at=ours["published_at"] if ours else None,
         behind=behind,
         list_size=len(releases),
+        reason=reason if isinstance(reason, str) and reason else None,
+        confirmed_at=fetched if isinstance(fetched, str) else None,
     )
 
 

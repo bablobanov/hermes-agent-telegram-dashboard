@@ -88,8 +88,8 @@ DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
 LIMITS_CACHE_KEY = "limits_cache"
 QUOTA_CACHE_PROVIDERS = ("grok", "kimi")
-# The once-a-day check of the latest Hermes release upstream keeps its attempt beside them, so a
-# restart does not ask GitHub again.
+# The check of the latest Hermes release upstream (at most one per 15 minutes) keeps its last
+# answer and attempt beside them, so a restart neither asks GitHub again nor forgets the answer.
 RELEASE_CACHE_KEY = "release_cache"
 # External limit sources (``limits_sources``, contract 1) keep one attempt each, by URL
 # digest, under a key of their own.

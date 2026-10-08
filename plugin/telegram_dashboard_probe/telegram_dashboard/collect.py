@@ -48,8 +48,10 @@ from .grok import fetch_item as grok_fetch_item
 from .hermes_version import INTERVAL_SECONDS as VERSION_INTERVAL_SECONDS
 from .hermes_version import TICK_TIMEOUT_SECONDS as VERSION_TICK_TIMEOUT_SECONDS
 from .hermes_version import fetch_item as version_fetch_item
+from .hermes_version import known_answer as known_release_answer
 from .hermes_version import running_version
 from .hermes_version import summarize as summarize_version
+from .hermes_version import tick as version_tick
 from .kimi import DEFAULT_INTERVAL_SECONDS as KIMI_DEFAULT_INTERVAL_SECONDS
 from .kimi import TICK_TIMEOUT_SECONDS as KIMI_TICK_TIMEOUT_SECONDS
 from .kimi import fetch_item as kimi_fetch_item
@@ -1136,8 +1138,9 @@ async def collect_all_async(
     deadline is not started again until it returns. ``grok_cache`` and ``kimi_cache`` are the
     caller's durable dicts (the plugin keeps them in its record, one per provider): a worker
     abandoned by its deadline still writes its attempt there when it returns, so the next tick
-    serves it instead of asking again. ``version_cache`` is the same for the once-a-day upstream
-    release check; without it (no durable record) the version line is not collected at all.
+    serves it instead of asking again. ``version_cache`` is the same for the upstream release
+    check (at most one per 15 minutes); without it (no durable record) the version line is not
+    collected at all.
     ``external_caches`` is the durable dict of the external limit sources, one cache per URL
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
     last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
@@ -1721,9 +1724,10 @@ async def _version_guarded(
     local: LocalVersion,
 ) -> VersionPart:
     """The version line: the running version is one attribute read here; the upstream check
-    runs in the plugin's own worker under a deadline, at most once a day through ``cache``. A
-    hung or failing GitHub is this line's "no data", never a stalled loop or a missing screen;
-    the line is no source, so it moves neither the status nor the coverage."""
+    runs in the plugin's own worker under a deadline, at most once per 15 minutes through
+    ``cache``. A hung or failing GitHub keeps the last answer with the reason, or is this line's
+    "no data" without one; never a stalled loop or a missing screen. The line is no source, so
+    it moves neither the status nor the coverage."""
     if cache is None:
         return None, ()
     incidents: list[Incident] = []
@@ -1762,7 +1766,7 @@ async def _version_attempt(
     try:
         return await flights.run(
             VERSION_FLIGHT,
-            quota_tick,
+            version_tick,
             cache,
             now=now,
             interval_seconds=interval_seconds,
@@ -1770,23 +1774,27 @@ async def _version_attempt(
             timeout_seconds=timeout_seconds,
         )
     except TimeoutError:
-        return _version_missed(now, f"no answer within {timeout_seconds:g} s")
+        return _version_missed(now, f"no answer within {timeout_seconds:g} s", cache)
     except StillRunning:
-        return _version_missed(now, "previous request has not returned")
+        return _version_missed(now, "previous request has not returned", cache)
     except _UNGUARDED:
         raise
     except BaseException as exc:
         source, incident = _collector_crashed(VERSION_FLIGHT, "official", exc)
         incidents.append(incident)
-        missed = _version_missed(now, source.detail or "collector crashed")
-        # A crash is an attempt too, cached for the day: a parsing bug must not ask GitHub on
-        # every tick. The worker has returned (it raised); nothing else writes the cache now.
+        missed = _version_missed(now, source.detail or "collector crashed", cache)
+        # A crash is an attempt too, cached for the interval: a parsing bug must not ask GitHub
+        # on every tick. The worker has returned (it raised); nothing else writes the cache now.
         cache["attempted_at"] = now.isoformat()
         cache["item"] = missed
         return missed
 
 
-def _version_missed(now: datetime, reason: str) -> dict[str, Any]:
+def _version_missed(now: datetime, reason: str, cache: dict[str, Any]) -> dict[str, Any]:
+    """No answer this tick; the last one in the cache stays, with the reason."""
+    known = known_release_answer(cache.get("item"))
+    if known is not None:
+        return {**known, "reason": reason, "checked_at": now.isoformat()}
     return {"status": "unavailable", "reason": reason, "checked_at": now.isoformat()}
 
 

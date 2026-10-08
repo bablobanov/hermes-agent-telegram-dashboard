@@ -29,7 +29,7 @@ def _stub(provider: str, source: str):
     return stub
 
 
-def _release_stub(*, now):
+def _release_stub(*, now, previous=None):
     return {
         "status": "unavailable",
         "reason": "test stub",
