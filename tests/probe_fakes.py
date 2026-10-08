@@ -33,6 +33,15 @@ def load_plugin(
     fills it with the file's folder) and takes the installed package, which is those very files;
     ``vendored=True`` lets it see the copy."""
     init_file = plugin_dir / "__init__.py"
+    parent = name.rpartition(".")[0]
+    if parent and parent not in sys.modules:
+        # The engine's empty namespace parent (``plugins_loader.py``, ``_NS_PARENT``). Without it
+        # an import that reaches for the parent fails with ``ModuleNotFoundError: hermes_plugins``
+        # and the plugin falls back to the installed package: CI on 3.13 did, now and then.
+        namespace = ModuleType(parent)
+        namespace.__path__ = []
+        namespace.__package__ = parent
+        sys.modules[parent] = namespace
     for cached in [key for key in sys.modules if key == name or key.startswith(f"{name}.")]:
         del sys.modules[cached]
     spec = importlib.util.spec_from_file_location(
