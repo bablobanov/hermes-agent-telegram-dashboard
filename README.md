@@ -529,15 +529,23 @@ Hermes keeps a profile's built-in memory in two notebooks, `MEMORY.md` (the agen
 `USER.md` (what it knows of the user), each held to a character limit (2,200 and 1,375 by
 default). With `memory.write_approval` on (`skills.write_approval` for skills), a write from the
 gateway, a cron job or the background review waits as a file in `pending/` until someone sends
-`/memory approve`, and nothing tells anyone. A queue can stand for weeks while the agent believes
-it remembered, and a notebook at its limit refuses the next write. Like the rules, the memory has
-no line of its own on the screen; it becomes an event when it fails:
+`/memory approve`, and nothing tells anyone; a background review's replace or remove waits there
+even with the gate off. A queue can stand for weeks while the agent believes it remembered. Like
+the rules, the memory has no line of its own on the screen, and a place of its own among the five
+events; it becomes an event when it fails:
 
 - `Memory: 58 writes stuck 24d` (`Skills: …` likewise): the oldest waiting write is older than
-  3 days and nothing has landed since it was queued
-- `Memory: USER.md 94% full`, or `over limit`: a notebook at 90% of its limit or past it
-- `Memory provider: 3 errors`: a configured provider (`memory.provider`) with the engine's
-  warnings about it in the errors log over the last day
+  3 days. Approval and rejection both delete a write's file, so a write that old has had neither,
+  whatever landed beside it
+- `Memory: USER.md over limit`: more text than the limit, the engine's own warning on load (every
+  add refused until the agent frees room); `not UTF-8`: a file the engine cannot decode (it loads
+  none of it and refuses every write); `bad limit`: a limit no add can pass (zero, below zero, or
+  not a number). A notebook near its limit is no event: the engine runs notebooks close to their
+  cap, and a refused add asks the model to consolidate in the same turn
+- `Memory provider: unavailable`: the engine said in this gateway process that the configured
+  provider reports unavailable (0.21.6 says so once per process, so it stands until the next
+  start); `Memory provider: 3 errors`: the engine's warnings about the provider in the errors log
+  over the last day
 
 The numbers are in the details, always:
 
@@ -546,7 +554,7 @@ The numbers are in the details, always:
 > Memory queue: 58 waiting since Sep 2 · last write Aug 30 16:05 · approval on
 > Waiting adds: USER.md 6,410 chars, 74 free: they do not fit
 > Skills queue: 12 waiting since Sep 10 · approval on
-> Memory provider honcho: no errors logged in 24 h
+> Memory provider honcho: no errors logged in 24 h, last Sep 24 10:12
 ```
 
 - **counted the engine's way**: the entries split on the line holding `§`, stripped, empty and
@@ -557,15 +565,19 @@ The numbers are in the details, always:
   writes, so a hand edit moves it too; for skills, the curator's ledger. A waiting write's time
   is its file's, which nothing rewrites
 - **the waiting adds** are measured, not replayed: the characters each add would write against
-  the room left; a replace or a remove is not counted
+  the room left, at most (an add the engine finds already there writes nothing); a replace or a
+  remove is not counted, nor an add to a notebook the engine has switched off
 - **a provider** leaves no status, only warnings in `logs/errors.log`; no warning is not proof it
   works (0.21.3 logs a provider it cannot find at debug level only)
 - **what is read**: `config.yaml` (`memory.*` limits, switches, the gate and the provider's name,
-  `skills.write_approval`) through the engine's own YAML parser, unread = limits and gate
-  unknown, never guessed; the two notebooks (up to 4 MB); the names and times of the waiting
-  files, and of the memory ones the action, the target and the length of each add; the ledger's
-  time; the tail of the errors log for the provider's warnings, their time only. All in a worker
-  under the tick's deadline. Nothing is written anywhere (`tests/test_invariants.py`, 13)
+  `skills.write_approval`) through the engine's own YAML parser, each value as the engine takes it
+  (`write_mode` of old configs is not read at run time, so neither here; the managed overlay and
+  `${VAR}` references are not applied), unread = limits and gate unknown, never guessed; the two
+  notebooks (up to 4 MB), decoded as strictly as the engine decodes them; the names and times of
+  the waiting files, and of the memory ones (up to 256 KB each) the action, the target and the
+  length of each add; the ledger's time; the tail of the errors log for the provider's warnings,
+  their time and whether one says unavailable. All in a worker under the tick's deadline. Nothing
+  is written anywhere (`tests/test_invariants.py`, 13)
 - **what is never shown or logged**: the text of a notebook, an entry, a waiting write or its
   summary, a log line, a path. `tests/test_memory.py` plants a phrase in every one of them and
   counts it in the screen, the HTML, the snapshot and the log: zero
@@ -597,7 +609,8 @@ in the details. The details carry both release dates, how many releases lie betw
 when upstream was last checked (`Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24`,
 `2 releases behind · checked Sep 25 16:40`). For a day after Latest came out the line carries
 `🆕` and the release's age (`🤖 Hermes 0.21.5 → 0.21.6 🆕 3h`), and the details the time it came
-out (`New release: Hermes 0.21.6 out Oct 8 11:51`).
+out (`New release: Hermes 0.21.6 out Oct 8 11:51`). The mark goes with Latest: a line too narrow
+for Latest beside a long version of ours leaves both to the details, so the mark never dates ours.
 
 The line informs, nothing more. Updating Hermes is a process, not a restart: the line carries no
 threshold, no button, no command and no advice to update, and the new-release mark says only
@@ -608,13 +621,15 @@ that a release is new. Update by your own process.
   `hermes_cli.__version__`. From 0.21.6 there is none: the module reads its install stamp from
   disk on every access, so after an update on disk it names the new code, not the running one,
   and without a stamp it says `0.0.0`. There the identity the gateway resolved at start-up comes
-  first (`hermes_cli.version_info`, process state, no git), the stamp last; `0.0.0` reads
+  first (`hermes_cli.version_info`, read as process state, never computed here), unless git gave
+  it for another tree (no stamp and no `.git` of its own: 0.21.6 then asks the process home's
+  `hermes-agent` clone, whatever that holds); the stamp last; `0.0.0` reads
   `no version stamp on this installation`, never a version, and an error of the engine's lookup
   `version lookup failed`. Not `importlib.metadata` (an editable install keeps the dist-info of
   install time), not the engine's `build_info.get_code_identity(refresh=True)` (inside the
   gateway it would restamp the gateway's own `code_sha`)
 - **The latest release** comes from unauthenticated GETs to `api.github.com`: `releases/latest`
-  with the last answer's ETag, and `releases?per_page=100` (about 1 MB, the list carries every
+  with the last answer's ETag (a stored one a header cannot carry is dropped), and `releases?per_page=100` (about 1 MB, the list carries every
   release's notes) only when Latest names another version than the last answer. A new ETag alone
   is no new release: upstream edits a release's notes after publication. The version is the one
   in the release name (`Hermes Agent v0.21.6`, `Hermes Agent v0.21.5 (v2026.9.24)`), else a tag in
