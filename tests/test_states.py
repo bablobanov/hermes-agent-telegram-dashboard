@@ -111,6 +111,7 @@ def test_state_1_is_this_exact_screen() -> None:
         "> Profiles 1/1 · sources 3/3",
         ">",
         "> Drift checked 08:00",
+        ">",
         "> Hermes 0.21.1 of Sep 7 is the latest · checked Sep 9 21:00",
         ">",
         "> ## No data",
@@ -647,3 +648,88 @@ def test_the_healthy_showcase_with_its_rules_loaded_keeps_its_fifteen_lines() ->
     assert (
         "> Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Sep 26 19:32" in text.splitlines()
     )
+
+
+def test_the_details_read_by_source_with_a_blank_line_between() -> None:
+    """Ilya, 09.10: the details were one run of lines. A blank line now parts the screen itself,
+    Telegram, backup with drift and cron, the rules, the memory, the plans with the logins and
+    the Gemini refusals, the Hermes version, the reasons for "no data" and the dashboard's own
+    version; a source with nothing to say leaves no blank line of its own."""
+    from dataclasses import replace
+
+    from telegram_dashboard.schema import PlatformRules, RulesSummary
+
+    state = STATES[26]
+    rules = RulesSummary(
+        "observed",
+        (PlatformRules("telegram", "loaded", "2026-09-26T19:32:34+00:00", ("AGENTS.md",), 11_162),),
+    )
+    text = render_dashboard(
+        replace(state.snapshot, rules=rules),
+        now=state.now,
+        delivery=state.delivery,
+        period_seconds=PERIOD_SECONDS,
+    )
+    lines = text.splitlines()
+    details = lines[lines.index("> ## Details") + 1 :]
+    groups = [group.splitlines() for group in "\n".join(details).split("\n>\n")]
+
+    assert [group[0].split(" ")[1] for group in groups] == [
+        "Confirmed",
+        "Telegram",
+        "Backup",
+        "Rules",
+        "Memory:",
+        "Gemini",
+        "Hermes",
+        "##",
+        "Dashboard",
+    ]
+    assert [len(group) for group in groups[1:5]] == [2, 3, 1, 4]
+    # State 1 has neither Telegram, nor rules, nor memory, nor plans; no state doubles a blank
+    # line, opens the block with one or closes it with one.
+    for each in STATES:
+        rendered = _render(each).splitlines()
+        block = rendered[rendered.index("> ## Details") + 1 :]
+        assert block[0] != ">" and block[-2] == ">" and block[-3] != ">", each.title
+        assert all(block[i : i + 2] != [">", ">"] for i in range(len(block))), each.title
+
+
+def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
+    """Review of 0.11.0: with a blank line between the sources, a message cut at the limit could
+    end the kept part on a bare ``>``; ``>…`` is no details line, and the HTML form split the
+    block in two quotes. The ellipsis now keeps the prefix: one quote, the version last."""
+    from dataclasses import replace
+
+    from telegram_dashboard.schema import CronFailure, PlatformRules, RulesSummary
+
+    state = STATES[26]
+    rules = RulesSummary(
+        "observed",
+        (PlatformRules("telegram", "loaded", "2026-09-26T19:32:34+00:00", ("AGENTS.md",), 11_162),),
+    )
+    cuts = []
+    # Each step moves everything after the first failure one character past the fixed cut.
+    for name, length in [(name, length) for name in (1, 12, 23) for length in range(1, 25)]:
+        failing = tuple(
+            CronFailure(
+                f"j{i}",
+                "x" * name if i == 0 else f"job-{i:03d}",
+                "run",
+                at=state.now.isoformat(),
+                streak=1,
+                reason="y" * length if i == 0 else "x",
+            )
+            for i in range(55)
+        )
+        cron = replace(state.snapshot.cron, state="failing", active=55, failing=failing)
+        snapshot = replace(state.snapshot, cron=cron, rules=rules)
+        text = render_dashboard(
+            snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
+        )
+
+        assert len(text) <= TELEGRAM_TEXT_LIMIT
+        assert to_telegram_html(text).count("<blockquote") == 1, (name, length)
+        assert text.splitlines()[-2:] == [">", f"> Dashboard {__version__}"]
+        cuts.append(text.splitlines()[-3])
+    assert "> …" in cuts  # the sweep meets a cut right at a blank line

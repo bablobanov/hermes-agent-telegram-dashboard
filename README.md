@@ -62,12 +62,13 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release;
                                     🆕 and its age for a day after a release came out
 
-▎Details                            collapsed: confirmation time, the odd data minute, period,
-▎…                                  coverage, absolute backup time and integrity, drift check
-                                    time, the cron failures and the channel's times, whether
-                                    each platform's agent sees its rules, the memory notebooks
-                                    and the approval queue, release dates, the reason of every
-                                    "no data", the dashboard's own version last
+▎Details                            collapsed, a blank line between the sources: confirmation
+▎…                                  time, the odd data minute, period, coverage; the channel's
+                                    times; absolute backup time and integrity, drift check time,
+                                    the cron failures; whether each platform's agent sees its
+                                    rules; the memory notebooks and the approval queue; the
+                                    plans, logins and Gemini refusals; release dates; the reason
+                                    of every "no data"; the dashboard's own version last
 ```
 
 The dashboard is one pinned text message in the agent's private chat or in a topic of its

@@ -153,8 +153,8 @@ def _plural(count: int, one: str, many: str) -> str:
 
 @dataclass
 class _Details:
-    """What the collapsed block says, grouped: the screen itself, backup and drift, reasons for
-    every "no data", the dashboard's own version last."""
+    """What the collapsed block says, grouped: the screen itself, one group per source, reasons
+    for every "no data", the dashboard's own version last."""
 
     confirmed: str | None = None
     data: str | None = None
@@ -163,15 +163,26 @@ class _Details:
     # The dashboard's own version (decision of 01.10): the installed copy, told from the message;
     # the last line of the block, a blank line before it (Ilya, 01.10, 0.9.2).
     version: str | None = None
-    state: list[str] = field(default_factory=list)
+    # A blank line between the sources (Ilya, 09.10, 0.11.0): Telegram; backup, drift and cron;
+    # the rules; the memory; the plans; the Hermes version. A source writes into the last group.
+    groups: list[list[str]] = field(default_factory=lambda: [[]])
     missing: list[str] = field(default_factory=list)
+
+    @property
+    def state(self) -> list[str]:
+        return self.groups[-1]
+
+    def section(self) -> None:
+        """Start the next source's group; a source that wrote nothing leaves no blank line."""
+        if self.groups[-1]:
+            self.groups.append([])
 
     def lines(self) -> list[str]:
         parts = (self.confirmed, self.data, self.period, self.coverage)
         screen = [part for part in parts if part]
         groups = [
             screen,
-            self.state,
+            *self.groups,
             ["## No data", *self.missing] if self.missing else [],
             [self.version] if self.version else [],
         ]
@@ -209,16 +220,20 @@ def render_dashboard(
         lines.append(_gateway_line(snapshot.gateway, snapshot.traffic))
     if snapshot.traffic is not None:
         details.state.extend(_traffic_words(snapshot.traffic, zone))
+    details.section()
     if snapshot.backup is not None:
         lines.append(_backup_line(snapshot.backup, reference, zone, details))
     if snapshot.drift is not None:
         lines.append(_drift_line(snapshot.drift, zone, details))
     if snapshot.cron is not None:
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
+    details.section()
     if snapshot.rules is not None:
         _rules_in_details(snapshot.rules, zone, details)
+    details.section()
     if snapshot.memory is not None:
         _memory_in_details(snapshot.memory, zone, details)
+    details.section()
     lines.extend(_coverage_lines(snapshot, details))
     details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
@@ -233,6 +248,7 @@ def render_dashboard(
         details.data = _data_stamps(snapshot, zone)
         details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
         details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
+    details.section()
     if snapshot.version is not None:
         lines.extend(["", _version_line(snapshot.version, details, zone, reference)])
     if snapshot.work is not None:
@@ -254,7 +270,12 @@ def render_dashboard(
     closing = f"\n>\n{_DETAILS_PREFIX}{details.version}"
     if len(text) <= _SAFE_LIMIT or not text.endswith(closing):
         return bound_text(text)
-    return bound_text(text.removesuffix(closing), _SAFE_LIMIT - len(closing)) + closing
+    # A cut at a blank line of the block leaves ``>…``, a line outside the quote that splits it
+    # in two (review of 0.11.0): the ellipsis keeps the details prefix, in the one place kept.
+    cut = bound_text(text.removesuffix(closing), _SAFE_LIMIT - len(closing) - 1)
+    if cut.endswith("\n>…"):
+        cut = cut.removesuffix(">…") + _DETAILS_PREFIX + "…"
+    return cut + closing
 
 
 def _freshness(
