@@ -413,17 +413,19 @@ gate, `send_path_degraded`, is the adapter's public API since 0.21.1 and is read
 four polling attributes are not part of the engine's public contract: like `_edit_text` for the
 HTML form, a future adapter that renames or retypes them degrades the line to no data with the
 reason and never raises inside the adapter (`tests/test_invariants.py` pins that nothing is
-called on it). The plugin's catalog entry is to disclose the two on lines of their own with this
-release, and a public
+called on it). The plugin's catalog entry discloses the property and the four attributes by
+name, and a public
 snapshot of the polling state on the adapter is the upstream change that would turn the
 capability into a contract.
 
 ### The rules line: does the agent see its context files
 
 An `AGENTS.md` the agent never sees looks exactly like one it follows: nothing fails, the
-answers are just worse. Hermes looks for its project context files (`.hermes.md`, `AGENTS.md`,
-`CLAUDE.md`, `.cursorrules`) in the agent's working directory, and for a gateway with
-`terminal.cwd: .` (or unset) and the local backend that directory is the service user's home,
+answers are just worse. Hermes looks for its project context files (`.hermes.md` or `HERMES.md`
+up to the git root, the `AGENTS.override.md` / `AGENTS.md` / `agents.md` chain from the git root
+down, `CLAUDE.md` or `claude.md`, `.cursorrules` and `.cursor/rules/*.mdc`) from the agent's
+working directory, and for a gateway with `terminal.cwd: .` (or unset) and the local backend
+that directory is the service user's home,
 not the service's `WorkingDirectory` (`hermes gateway install` sets that to `HERMES_HOME`). A
 file put next to the service, or next to `SOUL.md`, is silently never loaded. The dashboard
 judges it per platform of the gateway, from the system prompt the engine saved for that
@@ -454,9 +456,11 @@ file names and `/new` are code, which Telegram turns into neither a link (`AGENT
 top-level domain) nor a command a tap would send to the dashboard's own chat.
 
 - **how it judges**: the files are found on disk by the engine's own rules, never by headings
-  read out of the prompt: in the agent's directory, `.hermes.md` up to the git root, else the
-  `AGENTS.md` chain from the git root down (`AGENTS.override.md` first in each directory),
-  else `CLAUDE.md`, else the cursor rules; the first kind found wins. They are rendered the way
+  read out of the prompt: in the agent's directory, the nearest `.hermes.md` or `HERMES.md`
+  there or in a parent up to the git root, else the `AGENTS.md` chain from the git root down
+  (the first of `AGENTS.override.md`, `AGENTS.md`, `agents.md` in each directory), else
+  `CLAUDE.md` (or `claude.md`), else `.cursorrules` and `.cursor/rules/*.mdc`; the first kind
+  found wins, and a link is followed as the engine follows it. They are rendered the way
   the engine renders them and compared with the prompt right after its `# Project Context`
   header: the same text is loaded, the engine's own cut of that text (its marker with this
   text's length, the head and the tail it kept) is truncated, the scan's notice under the
@@ -473,8 +477,9 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   time ahead of the clock is no time. One case slips through: a copy that keeps an old time
   (`rsync -a`, `cp -p`), made after the session started, that removed a rule from the very end
   of the file, with no known engine part after the text in the prompt
-- **where else rules may wait**: only `.hermes.md` and `AGENTS.md` count in the gateway
-  process's working directory and in `HERMES_HOME`, where the agent does not look; a
+- **where else rules may wait**: only `.hermes.md`, `HERMES.md` and the AGENTS names
+  (`AGENTS.override.md`, `AGENTS.md`, `agents.md`) count in the gateway process's working
+  directory and in `HERMES_HOME`, where the agent does not look; a
   `CLAUDE.md` or `.cursorrules` there is taken to be another tool's (an `AGENTS.md` kept there
   for another tool raises the alarm too; turn the line off for such a gateway). A file of
   whitespace is no file, as for the engine; a file that is not UTF-8 (a Windows editor's ANSI or
@@ -497,10 +502,15 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   that one prompt. No other session's prompt is read, and the connection is closed before any
   file is, so a database in rollback-journal mode holds its writer back for milliseconds. In
   the prompt: the header, the block right after it and the runtime block's working directory.
-  On disk: the context files by the names the engine loads, their text (up to 4 MB, to compare)
-  and change time; a leading BOM is read the way the running engine reads it (0.21.6 drops it
-  before `strip`, earlier versions after it; told by the default encoding of the engine's file
-  reader, both ways tried where no engine is loaded). In `config.yaml`: only
+  On disk: the context files by the names the engine loads, in the directory the prompt names
+  (else the engine's `TERMINAL_CWD` or the gateway's working directory, either of which may be
+  outside `HERMES_HOME`), and the `.hermes.md`, `HERMES.md` and AGENTS names also in the
+  gateway's working directory and `HERMES_HOME`: their text (up to 4 MB, to compare) and change
+  time; a leading BOM is read the way the running engine reads it (0.21.6 drops it before
+  `strip`, earlier versions after it; told by the default `encoding` in the signature of the
+  engine's private `agent.prompt_builder._read_text_with_timeout`, looked up in the module the
+  gateway already imported and never called, both ways tried where no engine is loaded). In
+  `config.yaml`: only
   `gateway.platforms.<name>.skip_context_files`, through the engine's own YAML parser
   (`hermes_yaml` from 0.21.6, else PyYAML); a file that is there and cannot be read makes a
   missing block `unknown`, never an alarm. In the gateway process: the engine's `TERMINAL_CWD`.
@@ -574,11 +584,13 @@ The numbers are in the details, always:
   `skills.write_approval`) through the engine's own YAML parser, each value as the engine takes it
   (`write_mode` of old configs is not read at run time, so neither here; the managed overlay and
   `${VAR}` references are not applied), unread = limits and gate unknown, never guessed; the two
-  notebooks (up to 4 MB), decoded as strictly as the engine decodes them; the names and times of
-  the waiting files, and of the memory ones (up to 256 KB each) the action, the target and the
-  length of each add; the ledger's time; the tail of the errors log for the provider's warnings,
-  their time and whether one says unavailable. All in a worker under the tick's deadline. Nothing
-  is written anywhere (`tests/test_invariants.py`, 13)
+  notebooks, `memories/MEMORY.md` and `memories/USER.md` (up to 4 MB each), decoded as strictly as
+  the engine decodes them; the names and times of every waiting file, `pending/memory/*.json` and
+  `pending/skills/*.json`, and of the first 2,000 memory ones (up to 256 KB each) the action, the
+  target and the length of each add; the time of `skills/.curator_ledger.jsonl`; the last 256 KB
+  of `logs/errors.log` for the provider's warnings, their time and whether one says unavailable.
+  All under `HERMES_HOME`, in a worker under the tick's deadline. Nothing is written anywhere
+  (`tests/test_invariants.py`, 13)
 - **what is never shown or logged**: the text of a notebook, an entry, a waiting write or its
   summary, a log line, a path. `tests/test_memory.py` plants a phrase in every one of them and
   counts it in the screen, the HTML, the snapshot and the log: zero
@@ -622,7 +634,8 @@ that a release is new. Update by your own process.
   `hermes_cli.__version__`. From 0.21.6 there is none: the module reads its install stamp from
   disk on every access, so after an update on disk it names the new code, not the running one,
   and without a stamp it says `0.0.0`. There the identity the gateway resolved at start-up comes
-  first (`hermes_cli.version_info`, read as process state, never computed here), unless git gave
+  first (the private `hermes_cli.version_info._cached_version_info`, read as process state from
+  the module the gateway already imported; nothing on it is called or changed), unless git gave
   it for another tree (no stamp and no `.git` of its own: 0.21.6 then asks the process home's
   `hermes-agent` clone, whatever that holds); the stamp last; `0.0.0` reads
   `no version stamp on this installation`, never a version, and an error of the engine's lookup
@@ -636,8 +649,10 @@ that a release is new. Update by your own process.
   in the release name (`Hermes Agent v0.21.6`, `Hermes Agent v0.21.5 (v2026.9.24)`), else a tag in
   the release scheme (`v0.21.6`, used since 0.21.6), never a date tag (`v2026.9.24`, the scheme
   before it); releases behind are positions on upstream's list, never arithmetic on version
-  numbers; drafts and pre-releases are not counted. The engine's own update check
-  (`check_for_updates` in `hermes_cli/banner.py`) counts commits behind `main` and is not used
+  numbers; drafts and pre-releases are not counted. Of each release only its version and
+  publication time are kept, and the check downloads, installs or replaces nothing. The
+  engine's own update check (`check_for_updates` in `hermes_cli/banner.py`) counts commits
+  behind `main` and is not used
 - **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
   own worker thread, under Grok's single-flight deadline (`Flights`, 25 s; Kimi's is 15 s, for
   one request) and the cache policy Grok and Kimi share. The agent, its sessions and its tools
