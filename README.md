@@ -423,9 +423,9 @@ capability into a contract.
 An `AGENTS.md` the agent never sees looks exactly like one it follows: nothing fails, the
 answers are just worse. Hermes looks for its project context files (`.hermes.md` or `HERMES.md`
 up to the git root, the `AGENTS.override.md` / `AGENTS.md` / `agents.md` chain from the git root
-down, `CLAUDE.md`, `.cursorrules` and `.cursor/rules/*.mdc`) from the agent's working directory,
-and for a gateway with
-`terminal.cwd: .` (or unset) and the local backend that directory is the service user's home,
+down, `CLAUDE.md` or `claude.md`, `.cursorrules` and `.cursor/rules/*.mdc`) from the agent's
+working directory, and for a gateway with `terminal.cwd: .` (or unset) and the local backend
+that directory is the service user's home,
 not the service's `WorkingDirectory` (`hermes gateway install` sets that to `HERMES_HOME`). A
 file put next to the service, or next to `SOUL.md`, is silently never loaded. The dashboard
 judges it per platform of the gateway, from the system prompt the engine saved for that
@@ -584,11 +584,13 @@ The numbers are in the details, always:
   `skills.write_approval`) through the engine's own YAML parser, each value as the engine takes it
   (`write_mode` of old configs is not read at run time, so neither here; the managed overlay and
   `${VAR}` references are not applied), unread = limits and gate unknown, never guessed; the two
-  notebooks (up to 4 MB), decoded as strictly as the engine decodes them; the names and times of
-  the waiting files, and of the memory ones (up to 256 KB each) the action, the target and the
-  length of each add; the ledger's time; the tail of the errors log for the provider's warnings,
-  their time and whether one says unavailable. All in a worker under the tick's deadline. Nothing
-  is written anywhere (`tests/test_invariants.py`, 13)
+  notebooks, `memories/MEMORY.md` and `memories/USER.md` (up to 4 MB each), decoded as strictly as
+  the engine decodes them; the names and times of every waiting file, `pending/memory/*.json` and
+  `pending/skills/*.json`, and of the first 2,000 memory ones (up to 256 KB each) the action, the
+  target and the length of each add; the time of `skills/.curator_ledger.jsonl`; the last 256 KB
+  of `logs/errors.log` for the provider's warnings, their time and whether one says unavailable.
+  All under `HERMES_HOME`, in a worker under the tick's deadline. Nothing is written anywhere
+  (`tests/test_invariants.py`, 13)
 - **what is never shown or logged**: the text of a notebook, an entry, a waiting write or its
   summary, a log line, a path. `tests/test_memory.py` plants a phrase in every one of them and
   counts it in the screen, the HTML, the snapshot and the log: zero
