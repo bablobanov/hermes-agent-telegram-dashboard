@@ -84,7 +84,7 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 
 ## 新鲜度是硬性要求
 
-更新程序死掉的置顶面板，看起来和一切正常的系统一模一样，所以消息里始终带有数据的绝对时间和最后一次 Telegram 确认的时间；连续两个周期未确认，第一行就会出现醒目的横幅；`python -m telegram_dashboard --config c.json --check` 供外部看门狗检查消息新鲜度，退出码 0 表示已确认（confirmed），1 表示滞后（lagging），2 表示过期、丢失或从未确认（stale、lost、never）。检查读取的是实际负责投递的那条路径的记录：插件读 `plugin_state_path`，否则读 cron tick 的 `state_path`；两条路径从不写同一个文件，检查指向错误的文件时会报告 `never`。Telegram 返回的 `message is not modified` 视为确认而不是失败；消息丢失时，会以 ERROR 级别记入日志、重建一次，并在新消息中说明。
+更新程序死掉的置顶面板，看起来和一切正常的系统一模一样，所以消息里始终带有数据的绝对时间和最后一次 Telegram 确认的时间；连续两个周期未确认，第一行就会出现醒目的横幅；`python -m telegram_dashboard --config c.json --check` 供外部看门狗检查消息新鲜度，退出码 0 表示已确认（confirmed），1 表示滞后（lagging），2 表示过期、丢失或从未确认（stale、lost、never）。检查读取的是实际负责投递的那条路径的记录：插件读 `plugin_state_path`，否则读 cron tick 的 `state_path`；两条路径从不写同一个文件，检查指向错误的文件时会报告 `never`。Telegram 返回的 `message is not modified` 视为确认而不是失败；消息丢失时，会以 ERROR 级别记入日志、写入记录、重建一次，并在新消息中说明。
 
 ## 跨 Hermes 版本的兼容性
 
@@ -97,7 +97,7 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 | 0.21.1 (`2237be3559`) | 插件路径在真实的引擎对象上执行（`tests/test_probe_plugin.py`），并自 2026-09-11 起在一台在线网关上持续试运行 |
 | 0.21.3 (`v2026.9.14`) | 升级后的试运行网关：自 2026-09-25 起，插件在该网关上通过 `_edit_text` 以 HTML 形式编辑置顶消息；Kimi 凭据解析器、cron 文件、上下文文件等数据源涉及的引擎接口在引擎源码中核对过 |
 | 0.21.5 (`v2026.9.24`) | 在引擎源码中核对 `_edit_text` 和 `edit_message`：签名和实现与 0.21.1、0.21.3 相同 |
-| 0.21.6 (`v0.21.6`, 2026-10-08) | 在 0.21.6 要求的 Python 3.14.6 上，针对已安装的引擎运行完整测试套件；`hermes plugins validate`：`ok: true`，无警告；插件由引擎自己的插件发现机制以默认的进程内模式加载，在 `plugins.isolation: host` 下被拒绝（见下文） |
+| 0.21.6 (`v0.21.6`, 2026-10-08) | 在 0.21.6 要求的 Python 3.14.6 上，针对已安装的引擎运行完整测试套件；`hermes plugins validate`：`ok: true`，无警告；逐个数据源对照 0.21.5 核对了引擎接口：相同或兼容，只有三处改为按 0.21.6 的方式读取（用引擎自己的 YAML 解析器读配置、版本号不再来自常量、上下文文件的 BOM）；插件由引擎自己的插件发现机制以默认的进程内模式加载，在 `plugins.isolation: host` 下被拒绝（见下文） |
 | main (`485979ddf4`, 2026-09-28) | 在引擎源码中核对 `edit_message` 和 `_edit_text`：签名不变，公开方法仍不接受 parse mode |
 | main (`6ec05205a9`, 2026-09-30) | 在引擎源码中核对 cron 文件、运行历史的结构和适配器的流量计数器：字段和属性与 0.21.3 相同 |
 | 0.20.5 | 读过一个桌面版安装的源码：数据源会降级，插件 API 不存在（见下文的最低版本） |
@@ -108,7 +108,12 @@ Gemini · no data                    no number without billing; ⚠️ hit limit
 
 **只能在进程内运行。** Hermes 0.21.6 新增了 `plugins.isolation`。默认值 `in_process` 像以前一样把插件加载进网关。设为 `plugins.isolation: host` 时，引擎会在单独的宿主进程中运行第三方插件，并在那里拒绝投递所依赖的那个调用 `register_platform_handler`：插件不会加载，引擎也会明确报出原因。插件这一侧无法解决这个问题：消息要通过在线的 Telegram 适配器编辑，而适配器留在网关里。`host` 模式下的网关只能使用带独立机器人 token 的兜底 cron tick。
 
-三条禁令，来自一个前身项目因此失败的教训：不导入引擎**内部**模块，不替换核心文件，不使用 post-merge 钩子或 `assume-unchanged`。唯一明确的例外：账号额度来自 `agent.account_usage.fetch_account_usage`，这是一个在所有已验证版本上签名都相同的公开函数，调用方式与网关自带的 `/usage` 完全一致；导入失败时，该数据源记为 `unsupported`。
+三条禁令，来自一个前身项目因此失败的教训：不导入引擎**内部**模块，不替换核心文件，不使用 post-merge 钩子或 `assume-unchanged`。一个明确的例外：账号额度来自 `agent.account_usage.fetch_account_usage`，这是一个在所有已验证版本上签名都相同的公开函数，调用方式与网关自带的 `/usage` 完全一致；导入失败时，该数据源记为 `unsupported`。
+
+本精简译文没有收录、但英文版逐一写明的引擎接触点：
+
+- Grok 和 Kimi 的凭据由引擎自己的认证代码解析（`hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials`、`hermes_cli.auth.resolve_api_key_provider_credentials`），其行为与 Hermes 的任何请求相同：快过期的 Grok token 会在 xAI 的 token 端点刷新并保存到 `auth.json`，xAI 永久拒绝刷新时会清掉那里失效的 token；`.env` 和网关环境中都没有可用的 Kimi key 时，解析函数会加载 Hermes 的凭据池，池有变化时会写回 `auth.json`。插件自己的代码不写 `auth.json`。见英文版 [Limits: three kinds that never mix](README.md#limits-three-kinds-that-never-mix)。
+- 插件还以只读方式使用引擎的几个私有名称，只当作能力来探测，不当作承诺：适配器的 `_edit_text`（HTML 形式的消息）和 Telegram 行用到的四个轮询属性、`agent.prompt_builder._read_text_with_timeout` 的签名（从不调用）、`hermes_cli.version_info._cached_version_info`（不调用也不修改其中任何东西）。见英文版 [Connected but deaf: the Telegram line](README.md#connected-but-deaf-the-telegram-line)、[The rules line](README.md#the-rules-line-does-the-agent-see-its-context-files) 和 [The Hermes version line](README.md#the-hermes-version-line)。
 
 ## 更多内容
 
