@@ -1,5 +1,7 @@
 # hermes-agent-telegram-dashboard
 
+**English** · [简体中文](README.zh-Hans.md)
+
 [![CI](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml)
 
 ![Hermes Agent Telegram Dashboard](docs/social-preview.jpg)
