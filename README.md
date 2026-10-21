@@ -104,8 +104,18 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
 only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.11.0`) after a blank line, so the installed
+close with the dashboard's own version (`Dashboard 0.12.0`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
+
+Where Telegram takes Rich Messages (Bot API 10.1+), the same message is a rich one (0.12.0): the
+first lines stay as above, and the details are a collapsed section per source instead of one
+quote, opened one at a time. The limits come with a compact table of every window, how much is
+spent, the time to its reset and the moment; the cron jobs with their schedules, what fails now
+first, the paused ones under ⏸ (see "The cron line"); then the agent's rules, its memory, the
+Telegram channel, backup and drift, the Hermes version, every "no data" with its reason, and the
+confirmation, period, coverage and the dashboard's version last. The two tables are the only
+words the text form does not carry; they come from the same snapshot. How the plugin sends it,
+and falls back to the text form, is in "The plugin" below.
 
 ## Freshness is a load-bearing requirement
 
@@ -185,11 +195,14 @@ register(ctx) → ctx.register_platform_handler("telegram", wire)
              → adapter.connect() calls wire(app, adapter)
              → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
              → each tick: the traffic counters read off the adapter as attributes, then
-               collect_all_async → render_dashboard → to_telegram_html and
-               to_telegram_plain, then adapter = runner.adapters["telegram"] if connected,
-               adapter.send(plain) once, then every tick the HTML form through the verb the
-               adapter has for it: edit_message(html, parse_mode="HTML") when its signature
-               takes a parse mode, else the adapter's own _edit_text(html, "HTML"),
+               collect_all_async → render_dashboard → to_telegram_html,
+               to_telegram_plain and to_telegram_rich, then adapter =
+               runner.adapters["telegram"] if connected, the message created once
+               (sendRichMessage through the engine's bot, else adapter.send(plain)), then
+               every tick the rich form (_bot.do_api_request("editMessageText", ...)), on a
+               refusal the HTML form through the verb the adapter has for it:
+               edit_message(html, parse_mode="HTML") when its signature takes a parse mode,
+               else the adapter's own _edit_text(html, "HTML"), and
                adapter.edit_message(plain) in the same tick when the HTML edit is refused
 ```
 
@@ -224,10 +237,35 @@ headings, the details shown in full), the record says `screen_format: plain` wit
 `html_error` (the exception class, or `edit_message: <its error>`), one warning goes to the
 journal, and HTML is tried again twelve ticks later. The record also names the verb that carries
 the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
-private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`). The
-one `send` that creates the message (and a recreation after a loss) goes through the adapter's
-own markdown conversion as plain text; the next tick edits it into the HTML form. The cron path
-sends the HTML form with its own bot.
+private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`).
+Without the rich call (below), the one `send` that creates the message (and a recreation after a
+loss) goes through the adapter's own markdown conversion as plain text; the next tick edits it
+into the HTML form. The cron path sends the HTML form with its own bot.
+
+**Before HTML, the rich form** (0.12.0). Where the engine's bot has the raw Bot API call the
+engine sends its own rich messages with (`adapter._bot.do_api_request`, a coroutine function:
+the engine's own test, `_bot_supports_rich`), every tick edits the message as a Rich Message
+first: `editMessageText` with `rich_message: {html}`, the chat and the id as numbers, no topic,
+no text and no parse mode, a 30 s deadline; "not modified" confirms. No verb of the adapter
+carries it, and the public `edit_message(finalize=True)` splits into new messages, so the call is
+the engine's bot itself: the bot token stays inside the engine and the plugin passes no
+credential. A private attribute, read as a capability on every tick, never a promise
+(`compat_matrix.json`, row `screen_rich`). Any other answer: the same tick edits HTML, then
+plain, as above, and the verdict follows the HTML rule. The next edit landed, so rich was
+refused: `screen_format` names the form that landed, `rich_error` the exception class, one
+warning goes to the journal, and rich is asked again twelve ticks later; without the call the
+record says `rich_error: no rich call (adapter without _bot.do_api_request)`. One exception keeps
+the message single: a timeout or a network error on a message the record says is rich ends the
+tick (`edit_failed`) without an HTML or plain edit, because an edit of a rich message in another
+form may come back in the words of a lost message and the tick would send a second one; the next
+tick asks rich again. A new message is sent rich (`sendRichMessage` into the topic, none for
+General, as the engine routes a send), since the engine notes that Telegram refuses a rich edit
+of a plain message (its streamed previews in private topics): Telegram's refusal sends plain in
+the same tick, a timeout sends nothing more. A message created before 0.12.0 is therefore likely to
+stay HTML, with `rich_error` saying why; a new one, after a loss or in a new chat, is rich. Over
+Telegram's ceilings for one rich message (32,768 characters, 500 blocks) the tick edits the HTML
+form. A screen that could not be built goes to a rich message as one rich paragraph of the same
+loud notice.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -316,7 +354,9 @@ Cron: not observed                  no cron directory on this installation
 
 The sources are the engine's own files under `HERMES_HOME/cron/`, read only: `jobs.json`
 (every job with the outcome of its last run: `last_status`, `last_error`, `last_delivery_error`,
-`failure_streak`, `next_run_at`, `last_run_at`, `state`, `paused_at`), the ticker's stamps
+`failure_streak`, `next_run_at`, `last_run_at`, `state`, `paused_at`; since 0.12.0 also its
+schedule in the engine's own words, `schedule_display`, else the stored schedule's own words in
+the order `hermes cron list` falls back to them), the ticker's stamps
 (`ticker_heartbeat`, `ticker_last_success`, `ticker_last_error`; the first token of each is the
 epoch, which is why main's `<epoch> <pid>` heartbeat reads the same), and `executions.db`, the
 run history, opened `mode=ro` with `PRAGMA query_only` in a worker under the tick's deadline
@@ -371,6 +411,19 @@ for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The l
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
 [itpartypattaya/hermes-cron](https://github.com/itpartypattaya/hermes-cron) (MIT); no code is
 taken from it. `python -m telegram_dashboard --demo 3`, `21`, `22` and `24` show the forms.
+
+**The cron section of the rich screen** (0.12.0) lists every job under the line's counts
+(`⏱ Cron · 27 active · 3 paused · 2 done`), after the details lines of the text form. The active
+ones are a compact table (job, schedule, next run, last run): what fails now first, ⚠️ on its
+name, then by the next run; ⚠️ on an overdue next run and on a failed last run, ✓ on the others.
+The paused ones are a block of their own under ⏸. A paused job whose next run is already behind
+says when it was due, and one line says why that is no alarm: a paused job does not fire, its
+date is the one set before the pause (decision of 22.10: a mark, never a failure; the line and
+the status do not change). The completed ones are collapsed once more, the latest run first. The
+schedule is set in `<code>` whole, so `*/30 * * * *` is never a command; a name and a schedule
+pass the shared sanitizer and are cut at 24, and a word that opens with `@` or `#` goes to
+`<code>` too, never a mention or a hashtag. A long list is cut with how many are left out (60
+active, 30 paused, 20 completed).
 
 ### Connected but deaf: the Telegram line
 

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-08",
+  "updated": "2026-10-22",
   "note": "Per source: how it is probed at runtime, and on which Hermes versions it was verified and how. 'read-by-code' means the engine source was read, not executed; 'live' means observed on a running installation. Missing version = not verified, the dashboard still runs and reports reduced coverage.",
   "floors": {
     "delivery_plugin": {
@@ -60,6 +60,15 @@
         "0.21.6": "read-by-code, tag v0.21.6: _edit_text (plugins/platforms/telegram/adapter.py:3801) and edit_message without parse_mode (:3821) identical; the signature check picks _edit_text"
       },
       "caveat": "a future adapter that renames or removes _edit_text while its public edit_message still takes no parse mode degrades the screen to plain text without breaking: upper-case headings, the details shown in full (tests/test_probe_screen.py, PlainOnlyAdapter). A public edit_message that grows a parse_mode parameter is taken from the next tick on, with no release (PublicHtmlAdapter). The first message of all (creation and re-creation after a loss) goes through the public send as plain text; the next tick edits it into the HTML form"
+    },
+    "screen_rich": {
+      "probe": "every tick reads the call off the live adapter, never a version number (_rich_api): adapter._bot.do_api_request when inspect.iscoroutinefunction says it is a coroutine function, the engine's own test (_bot_supports_rich); none = no rich attempt, rich_error 'no rich call (adapter without _bot.do_api_request)', the HTML chain as before (row screen_html). The rich form goes first: editMessageText with chat_id and message_id as numbers and rich_message {html}, no text, no parse_mode, no message_thread_id, a 30 s deadline; 'not modified' = confirmed. Any other failure: the same tick edits HTML, then plain; the next edit landed = rich refused: rich_error (the exception class), rich tried again after RICH_RETRY_TICKS (12). A failure other than a refusal (BadRequest) on a message the record says is rich = the tick fails (edit_failed), no HTML or plain edit in it. A new message: sendRichMessage with chat_id and message_thread_id (none without a topic and for General, '1'); a refusal = a plain send in the same tick, any other failure = send_failed and no plain send. screen_format 'rich'",
+      "contract": "Bot.do_api_request(endpoint, api_kwargs=payload) of python-telegram-bot 22.8, awaited, the raw answer back (no return_type, as the engine calls it: PTB does not model the 10.1 shapes); sendRichMessage answers the message (message_id read from the dict, or from its result, or as an attribute). The markup is Bot API 10.1+ rich HTML (p, br, b, i, code, details, summary, table compact bordered|striped, tr, th, td colspan), within 32,768 characters and 500 blocks (rich.py); over either, the tick sends the HTML form",
+      "verified": {
+        "0.21.6": "read-by-code, tag v0.21.6: TelegramAdapter._bot (plugins/platforms/telegram/adapter.py:595, the PTB Application's bot from :3075 and :3198, None after a disconnect at :3427), _bot_supports_rich (:1292), the engine's own rich send and edit through _bot.do_api_request('sendRichMessage' | 'editMessageText', api_kwargs=...) (:1501, :1547, no topic on the edit), RICH_MESSAGE_MAX_CHARS 32768 (:523), _message_thread_id_for_send without General '1' (:1092); python-telegram-bot 22.8 (pyproject.toml:264)",
+        "0.22.2": "read-by-code, tag v0.22.2: the same at the same lines (:595, :1292, :1501, :1547, :523, :1092; the bot set at :3073 and :3196, cleared at :3425); executed in-process against a fake of that call (tests/test_probe_screen.py, tests/probe_fakes.py RichAdapter). NOT executed against live Telegram yet"
+      },
+      "caveat": "_bot is a PRIVATE attribute of the adapter and do_api_request PTB's raw call: a capability, never a promise; the bot is the engine's own, the token stays inside the engine and the plugin passes no credential. Telegram refuses to make a plain message rich by an edit (the engine's own note, adapter.py:1371-1378 at v0.22.2): a message created before 0.12.0 is likely to stay HTML, rich_error says so and the screen keeps working; a message sent rich from its first second is not affected"
     },
     "drift": {
       "probe": "configured report file exists, or configured argv is runnable",
