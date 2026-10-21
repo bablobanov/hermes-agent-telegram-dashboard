@@ -1851,3 +1851,28 @@ def test_the_rich_setting_off_keeps_a_rich_message_alive_with_its_plain_words(
     assert adapter.html_edits == [] and adapter.sent == []
     record = ctx.state.data["probe"]
     assert (record["screen_format"], record["rich_error"]) == ("rich", plugin.RICH_OFF)
+
+
+def test_a_full_form_refused_with_its_plain_words_too_is_said_once(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(
+        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
+        reject_html="Timed out",
+        fail_plain="Timed out",
+    )
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.rich_calls) >= 8)
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    said = [r for r in caplog.records if "plain words instead" in r.getMessage()]
+    assert len(said) == 1

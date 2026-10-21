@@ -579,6 +579,8 @@ class ProbeRuntime:
         self.rich: bool | None = None
         self.rich_retry_tick = 0
         self._rich_render_error: str | None = None
+        # The last reason a full form was refused on a rich message, said once in the journal.
+        self._rich_form_refused: str | None = None
         # The adapter's own counters, read as attributes before each screen is composed.
         self.traffic_probe: Any = None
 
@@ -747,12 +749,15 @@ class ProbeRuntime:
         outcome = await self._edit_rich(api, chat, message_id, markup)
         plain = _rich_plain(screen.plain)
         if rich_message and markup != plain and outcome.refused:
-            if self.record.get("rich_error") != outcome.reason:
+            if self._rich_form_refused != outcome.reason:
                 logger.warning(
                     "probe: rich form refused on a rich message (%s); its plain words instead",
                     outcome.reason,
                 )
+            self._rich_form_refused = outcome.reason
             outcome, why = await self._edit_rich(api, chat, message_id, plain), outcome.reason
+        elif markup == screen.rich and outcome.reason is None:
+            self._rich_form_refused = None
         if outcome.reason is None:
             self._rich_verdict(True, None)
             # The full form, or the plain words and why: the setting off, a refused form.
