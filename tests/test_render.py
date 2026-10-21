@@ -446,6 +446,9 @@ def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> Non
         ("backup-@ilya", "backup-@ilya"),
         ("deploy/#ops", "deploy/#ops"),
         ("watch $BTC", "$BTC"),
+        # Second round: a mark right after another mark.
+        ("ping $@user", "$@user"),
+        ("to @#alerts", "@#alerts"),
     ],
 )
 def test_html_form_codes_what_telegram_finds_inside_a_word(line: str, coded: str) -> None:

@@ -179,9 +179,10 @@ class TimedOut(Exception):
 class FakeBot:
     """The engine bot's raw Bot API call as PTB 22 has it (``do_api_request``, a coroutine): the
     method's name and ``api_kwargs`` in, the raw answer out. ``refuse`` maps a method to what it
-    raises on every call. Every call is kept with the number of HTML edits made before it."""
+    raises on every call, or to a rule that picks it from the payload (``None`` passes). Every call
+    is kept with the number of HTML edits made before it."""
 
-    def __init__(self, adapter: FakeAdapter, refuse: dict[str, BaseException] | None) -> None:
+    def __init__(self, adapter: FakeAdapter, refuse: dict[str, Any] | None) -> None:
         self.adapter = adapter
         self.refuse = refuse or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -195,6 +196,8 @@ class FakeBot:
         self.calls.append((endpoint, payload))
         self.html_before.append(len(self.adapter.html_edits))
         refusal = self.refuse.get(endpoint)
+        if callable(refusal):  # a rule on the payload; an exception instance is not callable
+            refusal = refusal(payload)
         if refusal is not None:
             raise refusal
         self.adapter.texts.append(payload["rich_message"]["html"])
@@ -207,7 +210,7 @@ class FakeBot:
 class RichAdapter(FakeAdapter):
     """An adapter whose bot has the raw call the engine sends its rich messages with."""
 
-    def __init__(self, *, refuse: dict[str, BaseException] | None = None, **kwargs: Any) -> None:
+    def __init__(self, *, refuse: dict[str, Any] | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._bot = FakeBot(self, refuse)
 

@@ -1577,8 +1577,9 @@ def test_a_package_copy_without_the_rich_form_is_refused_at_load(tmp_path: Path)
 def test_a_refused_rich_edit_of_a_rich_message_never_sends_a_second_message(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The rich edit of the rich message is refused for its content, and the HTML and plain edits
-    come back in the words of a lost message: the tick fails, no message is sent."""
+    """The rich edit of the rich message is refused, its plain words as one rich paragraph too,
+    and the HTML and plain edits come back in the words of a lost message: the tick fails and no
+    message is sent. A frozen screen, which the watchdog reports, over a second pinned message."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     _rich_record(ctx)
@@ -1786,3 +1787,67 @@ def test_a_rich_message_gone_is_sent_anew_even_without_the_rich_call(
     record = ctx.state.data["probe"]
     assert record["message_id"] == "101" and record["lost_at"] and record["recreated_at"]
     assert record["rich_error"] == plugin.NO_RICH_CALL
+
+
+def test_a_refused_full_form_on_a_rich_message_sends_its_plain_words_in_the_same_tick(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of 0.12.0: the full form refused for its content keeps the screen alive with the
+    plain words as one rich paragraph; the record says why, the journal once."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+
+    def full_form(payload: dict[str, Any]) -> BaseException | None:
+        markup = payload["rich_message"]["html"]
+        return (
+            BadRequest("Bad Request: can't parse rich message") if "<details>" in markup else None
+        )
+
+    adapter = RichAdapter(refuse={"editMessageText": full_form})
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.rich_calls) >= 4)
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    first, second = (payload["rich_message"]["html"] for _, payload in adapter.rich_calls[:2])
+    assert "<details>" in first and second.startswith("<p>") and "<details>" not in second
+    assert adapter.html_edits == [] and adapter.edits == [] and adapter.sent == []
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["screen_format"], record["rich_error"]) == (
+        "edited",
+        "rich",
+        "BadRequest",
+    )
+    said = [r for r in caplog.records if "plain words instead" in r.getMessage()]
+    assert len(said) == 1, "once per reason, not once per tick"
+
+
+def test_the_rich_setting_off_keeps_a_rich_message_alive_with_its_plain_words(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An HTML or plain edit of a rich message may be refused for good: with the setting off a
+    message that is rich already gets its plain words as one rich paragraph; new ones are plain."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich="off"))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.rich_calls) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    markup = adapter.rich_calls[0][1]["rich_message"]["html"]
+    assert markup.startswith("<p>") and "<details>" not in markup
+    assert adapter.html_edits == [] and adapter.sent == []
+    record = ctx.state.data["probe"]
+    assert (record["screen_format"], record["rich_error"]) == ("rich", plugin.RICH_OFF)

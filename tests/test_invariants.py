@@ -354,7 +354,7 @@ def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hash
     ]
     forms = ("send /new-session", "x ./new", "-/new", "/2fa", "see x.com/y", "2.ai")
     forms += ("AGENTS.md/", "state.db.", "https://api.example.org/b", "@someone", "#tag x")
-    forms += ("report-#weekly", "backup-@ilya", "deploy/#ops", "watch $BTC")
+    forms += ("report-#weekly", "backup-@ilya", "deploy/#ops", "watch $BTC", "$@user", "@#alerts")
     last = states[-1]
     past = (last.now - timedelta(days=2)).isoformat()
     places = ("active", "paused", "done")
@@ -380,4 +380,4 @@ def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hash
         for name, pattern in _ENTITIES.items():
             assert not pattern.findall(shown), (number, name, pattern.findall(shown))
     # Every name; the schedules of the table and the paused block (the done block shows none).
-    assert markups[-1].count("<code>") == len(forms) + 10
+    assert markups[-1].count("<code>") == len(forms) + 12

@@ -243,6 +243,11 @@ class _RichOutcome:
     transient: bool = False
     lost: str | None = None
 
+    @property
+    def refused(self) -> bool:
+        """Telegram said no to this markup: not a loss, not a failure that may have reached it."""
+        return self.reason is not None and not self.transient and self.lost is None
+
 
 @dataclass(frozen=True)
 class _EditResult:
@@ -728,21 +733,45 @@ class ProbeRuntime:
     async def _try_rich_edit(
         self, live: Any, chat: str, message_id: str, screen: Screen, rich_message: bool
     ) -> _RichOutcome | None:
-        """The rich edit when this tick has one, else ``None``: the setting off, rich refused
-        lately on a message that is not rich, no call for it (the record says why), no form. A
-        rich message without a rich form gets the plain words as one rich paragraph."""
-        if not self.settings.rich:
-            self.record["rich_error"] = RICH_OFF
+        """The rich edit when this tick has one, else ``None`` (no markup for it, or no call for
+        it, which the record says). On a rich message whose full form is refused, the same tick
+        sends its plain words as one rich paragraph, which leaves Telegram nothing to refuse in
+        the markup: an HTML or plain edit of a rich message may be refused for good."""
+        markup, why = self._rich_markup(screen, rich_message)
+        if markup is None:
             return None
-        if not rich_message and not self._rich_wanted():
-            return None
-        markup = screen.rich or (_rich_plain(screen.plain) if rich_message else None)
         api = _rich_api(live)
         if api is None:
             self.record["rich_error"] = NO_RICH_CALL
-        if api is None or markup is None:
             return None
-        return await self._edit_rich(api, chat, message_id, markup)
+        outcome = await self._edit_rich(api, chat, message_id, markup)
+        plain = _rich_plain(screen.plain)
+        if rich_message and markup != plain and outcome.refused:
+            if self.record.get("rich_error") != outcome.reason:
+                logger.warning(
+                    "probe: rich form refused on a rich message (%s); its plain words instead",
+                    outcome.reason,
+                )
+            outcome, why = await self._edit_rich(api, chat, message_id, plain), outcome.reason
+        if outcome.reason is None:
+            self._rich_verdict(True, None)
+            # The full form, or the plain words and why: the setting off, a refused form.
+            self.record["rich_error"] = why
+        return outcome
+
+    def _rich_markup(self, screen: Screen, rich_message: bool) -> tuple[str | None, str | None]:
+        """What a rich edit sends this tick and why it is not the full form: the rich form; on a
+        message that is rich already, its plain words as one rich paragraph when there is no
+        form (the notice, the ceilings, a build failure) or the setting is off. ``None`` when
+        this tick has no rich edit: the setting off or rich refused lately, on a message that is
+        not rich."""
+        plain = _rich_plain(screen.plain) if rich_message else None
+        if not self.settings.rich:
+            self.record["rich_error"] = RICH_OFF
+            return plain, RICH_OFF
+        if not rich_message and not self._rich_wanted():
+            return None, None
+        return screen.rich or plain, None
 
     async def _edit_rich(self, api: Any, chat: str, message_id: str, markup: str) -> _RichOutcome:
         """As the engine edits rich (``_try_edit_rich``, v0.22.2): no topic on an edit, and "not
@@ -768,7 +797,6 @@ class ProbeRuntime:
                 # Class name and a known marker only: the text may carry chat ids.
                 lost = next((marker for marker in LOST_MARKERS if marker in text), None)
                 return _RichOutcome(type(exc).__name__, not _rich_refused(exc), lost)
-        self._rich_verdict(True, None)
         return _RichOutcome()
 
     async def _send_rich(self, live: Any, chat: str, screen: Screen) -> _EditResult | None:

@@ -272,9 +272,11 @@ therefore likely to stay HTML, with `rich_error` saying why; a new one, after a 
 chat, is rich. Over Telegram's ceilings for one rich message (32,768 characters, 500 blocks), or
 when the rich form fails to build, the tick edits the HTML form, and a message that is rich
 already gets the plain words as one rich paragraph, the loud notice too; the record says why
-(`rich_render_error`), the journal once. The setting `rich` turns the form off; on a message that
-is rich already the HTML and plain edits may then be refused, and a new message comes after the
-old one is deleted.
+(`rich_render_error`), the journal once. A full form Telegram refuses on a rich message is followed
+in the same tick by its plain words as one rich paragraph (`rich_error` says why, the journal
+once), since an HTML or plain edit of a rich message may be refused for good. The setting `rich`
+turns the form off: new messages are plain, and a message that is rich already keeps getting its
+plain words as one rich paragraph.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -310,7 +312,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
-   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default on; `0`/`false`/`no`/`off` turns the rich form off, the screen is HTML or plain as before 0.12.0 (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
+   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default on; `0`/`false`/`no`/`off` turns the rich form off, the screen is HTML or plain as before 0.12.0, a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.

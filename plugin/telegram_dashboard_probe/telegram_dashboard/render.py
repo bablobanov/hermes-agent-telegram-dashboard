@@ -1131,10 +1131,10 @@ _FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
 # domain before the word's end or a slash (``x.com/y``, ``2.ai``, ``AGENTS.md/``).
 _ENTITY_INSIDE = re.compile(r"(?:^|[.-])/\w|\.[^\W\d_]{2,}(?=$|/)")
 # A mention, a hashtag or a cashtag where Telegram finds one (0.12.0: the rich screen lists every
-# cron job by name, and a name is whatever the owner typed): ``@``, ``#`` or ``$`` that opens the
-# word or follows a dot, a slash or a dash (``#weekly``, ``report-#weekly``, ``deploy/@ops``,
-# ``$BTC``). ``C#`` and ``a@b`` are none of them.
-_MARK_START = re.compile(r"(?:^|[./-])(?:[@#]\w|\$[^\W\d_])")
+# cron job by name, and a name is whatever the owner typed): ``@``, ``#`` or ``$`` after no word
+# character (``#weekly``, ``report-#weekly``, ``deploy/@ops``, ``$BTC``, ``$@user``). ``C#`` and
+# ``a@b`` are none of them.
+_MARK_START = re.compile(r"(?<!\w)(?:[@#]\w|\$[^\W\d_])")
 
 
 def _code_spans(escaped: str) -> str:
