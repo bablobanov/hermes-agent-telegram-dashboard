@@ -249,23 +249,32 @@ first: `editMessageText` with `rich_message: {html}`, the chat and the id as num
 no text and no parse mode, a 30 s deadline; "not modified" confirms. No verb of the adapter
 carries it, and the public `edit_message(finalize=True)` splits into new messages, so the call is
 the engine's bot itself: the bot token stays inside the engine and the plugin passes no
-credential. A private attribute, read as a capability on every tick, never a promise
+credential. The message asks Telegram to find no entity in it (`skip_entity_detection`), a second
+line behind `<code>`. A private attribute, read as a capability on every tick, never a promise
 (`compat_matrix.json`, row `screen_rich`). Any other answer: the same tick edits HTML, then
 plain, as above, and the verdict follows the HTML rule. The next edit landed, so rich was
 refused: `screen_format` names the form that landed, `rich_error` the exception class, one
 warning goes to the journal, and rich is asked again twelve ticks later; without the call the
-record says `rich_error: no rich call (adapter without _bot.do_api_request)`. One exception keeps
-the message single: a timeout or a network error on a message the record says is rich ends the
-tick (`edit_failed`) without an HTML or plain edit, because an edit of a rich message in another
-form may come back in the words of a lost message and the tick would send a second one; the next
+record says `rich_error: no rich call (adapter without _bot.do_api_request)`. A call that could
+not be made (a method the Bot API server or the library lacks, a wrong argument) never reached
+Telegram and counts as a refusal, as the engine counts it. Two rules keep the message single. On
+a message the record says is rich, only the rich call's own answer may say the message is lost:
+an edit of a rich message in another form may be refused in the words of a lost one, so an HTML
+or plain answer counts as a loss only when it says the message is not there at all
+(`message to edit not found`), and any other failure ends the tick as `edit_failed`. And a timeout
+or a network error of the rich edit there ends the tick without an HTML or plain edit; the next
 tick asks rich again. A new message is sent rich (`sendRichMessage` into the topic, none for
 General, as the engine routes a send), since the engine notes that Telegram refuses a rich edit
 of a plain message (its streamed previews in private topics): Telegram's refusal sends plain in
-the same tick, a timeout sends nothing more. A message created before 0.12.0 is therefore likely to
-stay HTML, with `rich_error` saying why; a new one, after a loss or in a new chat, is rich. Over
-Telegram's ceilings for one rich message (32,768 characters, 500 blocks) the tick edits the HTML
-form. A screen that could not be built goes to a rich message as one rich paragraph of the same
-loud notice.
+the same tick, a timeout sends nothing more in this tick; the next tick sends again, the same risk of
+a second message as after a plain send that timed out. A message created before 0.12.0 is
+therefore likely to stay HTML, with `rich_error` saying why; a new one, after a loss or in a new
+chat, is rich. Over Telegram's ceilings for one rich message (32,768 characters, 500 blocks), or
+when the rich form fails to build, the tick edits the HTML form, and a message that is rich
+already gets the plain words as one rich paragraph, the loud notice too; the record says why
+(`rich_render_error`), the journal once. The setting `rich` turns the form off; on a message that
+is rich already the HTML and plain edits may then be refused, and a new message comes after the
+old one is deleted.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -301,6 +310,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
+   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default on; `0`/`false`/`no`/`off` turns the rich form off, the screen is HTML or plain as before 0.12.0 (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.
@@ -421,8 +431,8 @@ says when it was due, and one line says why that is no alarm: a paused job does 
 date is the one set before the pause (decision of 22.10: a mark, never a failure; the line and
 the status do not change). The completed ones are collapsed once more, the latest run first. The
 schedule is set in `<code>` whole, so `*/30 * * * *` is never a command; a name and a schedule
-pass the shared sanitizer and are cut at 24, and a word that opens with `@` or `#` goes to
-`<code>` too, never a mention or a hashtag. A long list is cut with how many are left out (60
+pass the shared sanitizer and are cut at 24, and a word where Telegram would find a mention, a
+hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>` too. A long list is cut with how many are left out (60
 active, 30 paused, 20 completed).
 
 ### Connected but deaf: the Telegram line

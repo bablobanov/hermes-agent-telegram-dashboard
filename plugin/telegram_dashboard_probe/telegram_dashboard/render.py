@@ -1118,8 +1118,9 @@ def _html_line(line: str) -> str:
     return _code_spans(html.escape(line))
 
 
-# A run of the characters a file name, a path, a command, a mention or a hashtag is made of.
-_WORD = re.compile(r"[\w./@#-]+")
+# A run of the characters a file name, a path, a command, a mention, a hashtag or a cashtag is
+# made of.
+_WORD = re.compile(r"[\w./@#$-]+")
 # A name with a letter in it, or nothing (a dotfile), then a dot and an extension of two or more
 # characters that starts with a letter: ``AGENTS.md``, ``.hermes.md``, ``.cursorrules``,
 # ``state.db``, a config key ``display.platforms.max.cleanup_progress``. A version (``0.21.3``,
@@ -1129,9 +1130,11 @@ _FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
 # dash (``/new``, ``/2fa``, ``./new``, ``/new-session``; a fraction ``1/1`` is not one), and a
 # domain before the word's end or a slash (``x.com/y``, ``2.ai``, ``AGENTS.md/``).
 _ENTITY_INSIDE = re.compile(r"(?:^|[.-])/\w|\.[^\W\d_]{2,}(?=$|/)")
-# A mention or a hashtag: ``@`` or ``#`` that opens the word (0.12.0: the rich screen lists every
-# cron job by name, and a name is whatever the owner typed). ``C#`` is neither.
-_MARK_START = re.compile(r"[@#]\w")
+# A mention, a hashtag or a cashtag where Telegram finds one (0.12.0: the rich screen lists every
+# cron job by name, and a name is whatever the owner typed): ``@``, ``#`` or ``$`` that opens the
+# word or follows a dot, a slash or a dash (``#weekly``, ``report-#weekly``, ``deploy/@ops``,
+# ``$BTC``). ``C#`` and ``a@b`` are none of them.
+_MARK_START = re.compile(r"(?:^|[./-])(?:[@#]\w|\$[^\W\d_])")
 
 
 def _code_spans(escaped: str) -> str:
@@ -1149,6 +1152,6 @@ def _code_word(match: re.Match[str]) -> str:
     if match.start() and match.string[match.start() - 1] == "&":
         return word  # the inside of an entity (``&#x27;``), never a hashtag
     core = word.rstrip(".")
-    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core) or _MARK_START.match(core):
+    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core) or _MARK_START.search(core):
         return f"<code>{core}</code>{word[len(core) :]}"
     return word

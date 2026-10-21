@@ -441,6 +441,11 @@ def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> Non
         ("watch @someone", "@someone"),
         ("daily #digest", "#digest"),
         ("mail a@b.com", "a@b.com"),
+        # Review of 0.12.0: a mark after a dash, a slash or a dot, and a cashtag.
+        ("report-#weekly", "report-#weekly"),
+        ("backup-@ilya", "backup-@ilya"),
+        ("deploy/#ops", "deploy/#ops"),
+        ("watch $BTC", "$BTC"),
     ],
 )
 def test_html_form_codes_what_telegram_finds_inside_a_word(line: str, coded: str) -> None:
