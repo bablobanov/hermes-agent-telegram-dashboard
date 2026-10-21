@@ -99,6 +99,31 @@ class CronFailure:
     recovered_at: str | None = None
 
 
+# Where a job stands in the cron section (``cron_jobs.job_rows``), as the counts on the line
+# count it: ``active`` the ticker may fire it, ``done`` completed, ``paused`` every other one.
+CronJobState = Literal["active", "paused", "done"]
+
+
+@dataclass(frozen=True, slots=True)
+class CronJob:
+    """One job as the cron section lists it: the name, the schedule in the engine's own words,
+    the next and the last run, what the line counts against it now. Never the prompt, the
+    script, the delivery target, the skills or the model."""
+
+    job_id: str
+    name: str
+    state: CronJobState
+    # ``schedule_display`` (``0 9 * * *``, ``every 30m``), sanitized and cut.
+    schedule: str | None = None
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    # The kind of its current failure (``CronSummary.failing``); ``None`` is nothing wrong now.
+    failure: CronFailureKind | None = None
+    # Paused with its ``next_run_at`` already behind: a mark of its own, never an alarm and never
+    # a failure (decision of 22.10).
+    paused_past_due: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class CronSummary:
     state: CronState = "unknown"
@@ -116,6 +141,9 @@ class CronSummary:
     # The kind of the ticker's last error in a word, never its text.
     ticker_error: str | None = None
     detail: str | None = None
+    # Every job for the cron section of the rich screen, in the order it lists them; the text
+    # screen does not show them.
+    jobs: tuple[CronJob, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

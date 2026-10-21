@@ -10,6 +10,8 @@ status``): a heartbeat older than three ticks plus slack is a dead ticker, a ``n
 than fifteen minutes in the past is a job that is not firing.
 
 Read only. Never read: ``prompt``, ``script``, ``deliver`` (chat ids), ``skills``, the model.
+The schedule is read in the engine's own words (``schedule_display``) for the cron section of the
+rich screen, sanitized like the name.
 The engine's error texts (``last_error``, ``last_delivery_error``, ``ticker_last_error``) never
 reach the screen or the record: each is reduced to the KIND of the error in a word
 (``error_kind``), in the order the engine's own health projection uses (decision of 01.10); the
@@ -21,6 +23,7 @@ cron-doctor (MIT); no code is taken from it.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -34,6 +37,8 @@ from .policy import sanitize_public_text
 from .schema import (
     CronFailure,
     CronFailureKind,
+    CronJob,
+    CronJobState,
     CronState,
     CronSummary,
     Incident,
@@ -59,6 +64,11 @@ HOLD_TICKS = 2
 HELD_LIMIT = 50
 MAX_EVENTS = 3
 NAME_LIMIT = 24
+# ``0 9 * * 1-5``, ``every 30m``, ``once at 2026-10-22 13:00``: whole up to here.
+SCHEDULE_LIMIT = 24
+# The stored schedule's keys the engine falls back to without ``schedule_display``, in its order
+# (``cron/jobs.py`` ``_schedule_display_for_job``, v0.22.2).
+_SCHEDULE_KEYS = ("display", "value", "expr", "run_at")
 # Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns. A name
 # with any character beyond ASCII is cut at eight (decision of 01.10, from Ilya's phone): Cyrillic
 # glyphs are wider in a proportional font, and an event of the same count with a Cyrillic name
@@ -137,6 +147,8 @@ class RunHistory(Protocol):
 class Job:
     job_id: str
     name: str
+    # The schedule in the engine's own words, sanitized; ``None`` when the record has none.
+    schedule: str | None
     enabled: bool
     state: str
     # The engine's pause stamp: with ``state`` one of its two pause markers (``enabled`` gates).
@@ -216,6 +228,7 @@ def job_of(raw: object) -> Job | None:
     return Job(
         job_id=raw["id"],
         name=_name(raw.get("name") or raw["id"]),
+        schedule=_schedule(raw),
         enabled=bool(raw.get("enabled", True)),
         state=_text(raw.get("state")) or "scheduled",
         paused_at=str(stamp) if stamp else None,
@@ -236,6 +249,20 @@ def _name(value: object) -> str:
     """The job's name for the screen: the shared sanitizer (secrets, paths, chat ids and
     delivery targets), cut to ``NAME_LIMIT``."""
     return sanitize_public_text(str(value), limit=NAME_LIMIT) or "?"
+
+
+def _schedule(raw: Mapping[str, object]) -> str | None:
+    """The schedule as ``hermes cron list`` words it (``cron/jobs.py``
+    ``_schedule_display_for_job``, v0.22.2): ``schedule_display``, else the first of the stored
+    schedule's own words, else a schedule stored as text; through the shared sanitizer, cut to
+    ``SCHEDULE_LIMIT``. The engine's ``?`` for none is ``None`` here."""
+    text = _text(raw.get("schedule_display"))
+    stored = raw.get("schedule")
+    if text is None and isinstance(stored, Mapping):
+        text = next((word for word in map(_text, map(stored.get, _SCHEDULE_KEYS)) if word), None)
+    elif text is None:
+        text = _text(stored)
+    return sanitize_public_text(text, limit=SCHEDULE_LIMIT) or None if text else None
 
 
 def error_kind(text: object, *, default: str = "error") -> str:
@@ -323,6 +350,62 @@ def classify(job: Job, *, now: datetime, ticker_alive: bool) -> CronFailure | No
         if late is not None and late > OVERDUE_SECONDS:
             return CronFailure(job.job_id, job.name, "overdue", at=job.next_run_at)
     return None
+
+
+# ----------------------------------------------------------------------------- the list
+
+
+def job_rows(
+    jobs: Sequence[Job], failing: Sequence[CronFailure], *, now: datetime
+) -> tuple[CronJob, ...]:
+    """Every job for the cron section, in the order a reader looks: what fails now in the order
+    the line counts it, the active by their next run, the paused by theirs, the completed with
+    the latest run first. A paused job whose next run is behind is marked, not failed: the
+    ticker does not fire it, so nothing is missed until someone resumes it (decision of 22.10)."""
+    position = {failure.job_id: index for index, failure in enumerate(failing)}
+    kinds = {failure.job_id: failure.kind for failure in failing}
+    rows = (_row(job, kinds.get(job.job_id), now=now) for job in jobs)
+    return tuple(sorted(rows, key=lambda row: _order(row, position)))
+
+
+def _row(job: Job, failure: CronFailureKind | None, *, now: datetime) -> CronJob:
+    state: CronJobState = "active"
+    if not job.active:
+        state = "done" if job.state == "completed" else "paused"
+    behind = False
+    if state == "paused":
+        due = parse_timestamp(job.next_run_at)
+        late = age_seconds(due, now) if due is not None else None
+        behind = late is not None and late > 0
+    return CronJob(
+        job.job_id,
+        job.name,
+        state,
+        schedule=job.schedule,
+        next_run_at=job.next_run_at,
+        last_run_at=job.last_run_at,
+        failure=failure,
+        paused_past_due=behind,
+    )
+
+
+def _order(row: CronJob, position: Mapping[str, int]) -> tuple[int, float, str]:
+    if row.job_id in position:
+        return 0, float(position[row.job_id]), row.name
+    if row.state == "done":
+        last = _epoch(row.last_run_at)
+        return 3, -last if last is not None else math.inf, row.name
+    upcoming = _epoch(row.next_run_at)
+    return (
+        (1 if row.state == "active" else 2),
+        upcoming if upcoming is not None else math.inf,
+        row.name,
+    )
+
+
+def _epoch(stamp: str | None) -> float | None:
+    moment = parse_timestamp(stamp)
+    return moment.timestamp() if moment is not None else None
 
 
 # ----------------------------------------------------------------------------- the scan
@@ -464,6 +547,7 @@ def assemble_cron(
         ticker_ok_at=scan.ticker.success_at,
         ticker_error=scan.ticker.error,
         detail=scan.detail,
+        jobs=job_rows(scan.jobs, current, now=now),
     )
     source = SourceObservation(
         SOURCE_NAME, "official", "fresh", observed_at=scan.ticker.heartbeat_at or now.isoformat()

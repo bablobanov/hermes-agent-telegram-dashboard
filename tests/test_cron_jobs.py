@@ -88,6 +88,30 @@ def test_job_of_refuses_a_record_that_is_not_a_job(raw) -> None:
     assert job_of(raw) is None
 
 
+@pytest.mark.parametrize(
+    "over, schedule",
+    [
+        ({"schedule_display": "0 9 * * 1-5"}, "0 9 * * 1-5"),
+        ({"schedule_display": " every 30m "}, "every 30m"),
+        # Without ``schedule_display`` the engine's own fallbacks, in its order (v0.22.2).
+        ({"schedule": {"kind": "cron", "expr": "*/30 * * * *", "display": ""}}, "*/30 * * * *"),
+        ({"schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"}}, "every 30m"),
+        ({"schedule": "every 2h"}, "every 2h"),
+        ({"schedule_display": "", "schedule": None}, None),
+        ({}, None),
+        # The engine's one-shot form is 24 characters: whole.
+        ({"schedule_display": "once at 2026-10-22 13:00"}, "once at 2026-10-22 13:00"),
+        (
+            {"schedule_display": "once at 2026-10-22 13:00 and then some"},
+            "once at 2026-10-22 13:0…",
+        ),
+        ({"schedule_display": "deliver telegram:-1001234567890"}, "deliver [target]"),
+    ],
+)
+def test_job_of_reads_the_schedule_in_the_engine_s_words(over, schedule) -> None:
+    assert job_of(_job(**over)).schedule == schedule
+
+
 def test_an_ok_job_is_no_failure() -> None:
     assert classify(job_of(_job()), now=NOW, ticker_alive=True) is None
 
@@ -191,7 +215,13 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
             last_status="delivery_failed",
             last_delivery_error=f"Chat not found: {PLANTED}",
         ),
-        _job(id="b3", name=f"watch {PLANTED}", last_status="blocked_config", last_error=PLANTED),
+        _job(
+            id="b3",
+            name=f"watch {PLANTED}",
+            last_status="blocked_config",
+            last_error=PLANTED,
+            schedule_display=PLANTED,
+        ),
     ]
     env = _home(
         tmp_path,
@@ -365,6 +395,99 @@ def test_collect_cron_counts_active_and_paused_and_is_fresh(tmp_path: Path) -> N
     assert (summary.state, summary.active, summary.paused) == ("ok", 1, 1)
     assert (source.name, source.state) == ("cron", "fresh")
     assert incidents == ()
+
+
+def test_the_jobs_are_listed_failing_first_then_active_paused_and_done(tmp_path: Path) -> None:
+    """The cron section of the rich screen: what fails now first, the active by their next run,
+    the paused, the completed with the latest run first; every name and schedule as the screen
+    may show them, nothing else of the record."""
+    jobs = [
+        _job(
+            id="d1",
+            name="old-once",
+            state="completed",
+            enabled=False,
+            last_run_at=(NOW - timedelta(days=3)).isoformat(),
+        ),
+        _job(
+            id="a2",
+            name="later",
+            next_run_at=(NOW + timedelta(hours=2)).isoformat(),
+            schedule_display="0 15 * * *",
+        ),
+        _job(id="p1", name="paused", enabled=False, state="paused", next_run_at=None),
+        _job(id="f1", name="broken", last_status="error", last_error="timed out"),
+        _job(id="a1", name="sooner", next_run_at=(NOW + timedelta(minutes=5)).isoformat()),
+        _job(
+            id="d2",
+            name="new-once",
+            state="completed",
+            enabled=False,
+            last_run_at=(NOW - timedelta(hours=1)).isoformat(),
+        ),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    assert [job.job_id for job in summary.jobs] == ["f1", "a1", "a2", "p1", "d2", "d1"]
+    assert [job.state for job in summary.jobs] == [
+        "active",
+        "active",
+        "active",
+        "paused",
+        "done",
+        "done",
+    ]
+    assert [job.failure for job in summary.jobs] == ["run", None, None, None, None, None]
+    assert summary.jobs[2].schedule == "0 15 * * *"
+    assert not hasattr(summary.jobs[0], "prompt") and not hasattr(summary.jobs[0], "deliver")
+
+
+def test_a_paused_job_due_in_the_past_is_marked_and_the_status_stays_green(
+    tmp_path: Path,
+) -> None:
+    """Decision of 22.10: a paused job whose next run is behind (two of them on the live
+    installation, 17.10) is a mark in the list, not a failure: the ticker does not fire it."""
+    jobs = [
+        _job(id="a1"),
+        _job(
+            id="p1",
+            name="threads",
+            enabled=False,
+            state="paused",
+            next_run_at=(NOW - timedelta(days=6)).isoformat(),
+        ),
+        _job(
+            id="p2",
+            name="ahead",
+            enabled=False,
+            state="paused",
+            next_run_at=(NOW + timedelta(days=1)).isoformat(),
+        ),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert (summary.state, summary.failing, incidents) == ("ok", (), ())
+    marks = {job.job_id: job.paused_past_due for job in summary.jobs}
+    assert marks == {"a1": False, "p1": True, "p2": False}
+    assert [job.job_id for job in summary.jobs] == ["a1", "p1", "p2"]
+
+
+def test_a_stalled_ticker_still_lists_the_jobs(tmp_path: Path) -> None:
+    env = _home(
+        tmp_path,
+        [_job()],
+        heartbeat=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 60)),
+        success=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 60)),
+    )
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    assert summary.state == "stalled"
+    assert [(job.job_id, job.failure) for job in summary.jobs] == [("b1", None)]
 
 
 def test_a_stale_heartbeat_is_stalled_and_critical(tmp_path: Path) -> None:
