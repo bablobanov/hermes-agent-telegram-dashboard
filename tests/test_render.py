@@ -437,6 +437,10 @@ def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> Non
         ("2.ai", "2.ai"),
         ("AGENTS.md/", "AGENTS.md/"),
         ("https://api.example.org/bot/x", "//api.example.org/bot/x"),
+        # 0.12.0: a mention and a hashtag, as a cron job's name may carry them.
+        ("watch @someone", "@someone"),
+        ("daily #digest", "#digest"),
+        ("mail a@b.com", "a@b.com"),
     ],
 )
 def test_html_form_codes_what_telegram_finds_inside_a_word(line: str, coded: str) -> None:
@@ -446,6 +450,8 @@ def test_html_form_codes_what_telegram_finds_inside_a_word(line: str, coded: str
     assert to_telegram_html("1/1 · 12/12 · e.g. i.e. 17:29 v0.10.1") == (
         "1/1 · 12/12 · e.g. i.e. 17:29 v0.10.1"
     )
+    # The inside of an entity is no hashtag, and ``C#`` is none either.
+    assert to_telegram_html("the gateway's C# job") == "the gateway&#x27;s C# job"
 
 
 def test_drift_that_could_not_be_checked_shows_why_and_no_check_time() -> None:

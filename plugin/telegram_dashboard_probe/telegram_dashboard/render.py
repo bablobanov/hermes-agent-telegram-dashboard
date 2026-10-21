@@ -11,7 +11,8 @@ details. Work and automation blocks render only when the snapshot carries them; 
 the block is not observed on this installation and nothing is invented for it.
 
 The text is transport-neutral: ``## `` marks a bold line, ``> `` marks a details line, and
-``to_telegram_html``/``to_telegram_plain`` turn it into what a transport accepts.
+``to_telegram_html``/``to_telegram_plain`` turn it into what a transport accepts. The rich form
+(``rich.py``) is built from the same parts (``render_parts``), the details kept by source.
 """
 
 from __future__ import annotations
@@ -152,6 +153,16 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 @dataclass
+class _Group:
+    """One source's lines in the details, under the key the rich form titles it by. ``joined``:
+    the text form keeps it in the group before it, with no blank line between them."""
+
+    key: str
+    lines: list[str] = field(default_factory=list)
+    joined: bool = False
+
+
+@dataclass
 class _Details:
     """What the collapsed block says, grouped: the screen itself, one group per source, reasons
     for every "no data", the dashboard's own version last."""
@@ -165,24 +176,41 @@ class _Details:
     version: str | None = None
     # A blank line between the sources (Ilya, 09.10, 0.11.0): Telegram; backup, drift and cron;
     # the rules; the memory; the plans; the Hermes version. A source writes into the last group.
-    groups: list[list[str]] = field(default_factory=lambda: [[]])
+    groups: list[_Group] = field(default_factory=lambda: [_Group("telegram")])
     missing: list[str] = field(default_factory=list)
 
     @property
     def state(self) -> list[str]:
-        return self.groups[-1]
+        return self.groups[-1].lines
 
-    def section(self) -> None:
-        """Start the next source's group; a source that wrote nothing leaves no blank line."""
-        if self.groups[-1]:
-            self.groups.append([])
+    def section(self, key: str, *, joined: bool = False) -> None:
+        """Start the next source's group; a source that wrote nothing leaves no blank line and no
+        section: the next one takes its place, under its own key. A joined source joins the
+        group it follows in the text; one that takes an empty place joins only what that place
+        joined (cron after no backup and no drift starts a group, as it always did)."""
+        current = self.groups[-1]
+        if current.lines:
+            self.groups.append(_Group(key, joined=joined))
+        else:
+            current.key = key
+            current.joined = current.joined and joined
+
+    def text_groups(self) -> list[list[str]]:
+        """The groups as the text form separates them: a joined one stays in the one before."""
+        merged: list[list[str]] = []
+        for group in self.groups:
+            if group.joined and merged:
+                merged[-1] = [*merged[-1], *group.lines]
+            else:
+                merged.append(list(group.lines))
+        return merged
 
     def lines(self) -> list[str]:
         parts = (self.confirmed, self.data, self.period, self.coverage)
         screen = [part for part in parts if part]
         groups = [
             screen,
-            *self.groups,
+            *self.text_groups(),
             ["## No data", *self.missing] if self.missing else [],
             [self.version] if self.version else [],
         ]
@@ -201,6 +229,16 @@ class _Details:
         ]
 
 
+@dataclass(frozen=True)
+class ScreenParts:
+    """One screen before a transport form: the main lines (``## `` a bold line, ``""`` a blank
+    one) and the details by source. ``reference`` is the time the ages are counted to."""
+
+    lines: tuple[str, ...]
+    details: _Details
+    reference: datetime | None
+
+
 def render_dashboard(
     snapshot: DashboardSnapshot,
     *,
@@ -209,6 +247,33 @@ def render_dashboard(
     period_seconds: int | None = None,
     zone: tzinfo = UTC,
 ) -> str:
+    parts = render_parts(
+        snapshot, now=now, delivery=delivery, period_seconds=period_seconds, zone=zone
+    )
+    details = parts.details
+    text = "\n".join([*parts.lines, *details.lines()])
+    # The version closes the details (0.9.2): a cut takes the lines before it, never the version.
+    closing = f"\n>\n{_DETAILS_PREFIX}{details.version}"
+    if len(text) <= _SAFE_LIMIT or not text.endswith(closing):
+        return bound_text(text)
+    # A cut at a blank line of the block leaves ``>…``, a line outside the quote that splits it
+    # in two (review of 0.11.0): the ellipsis keeps the details prefix, in the one place kept.
+    cut = bound_text(text.removesuffix(closing), _SAFE_LIMIT - len(closing) - 1)
+    if cut.endswith("\n>…"):
+        cut = cut.removesuffix(">…") + _DETAILS_PREFIX + "…"
+    return cut + closing
+
+
+def render_parts(
+    snapshot: DashboardSnapshot,
+    *,
+    now: datetime | None = None,
+    delivery: DeliveryRecord | None = None,
+    period_seconds: int | None = None,
+    zone: tzinfo = UTC,
+) -> ScreenParts:
+    """The lines of the screen and its details, for any form: the text (``render_dashboard``)
+    and the rich message (``rich.to_telegram_rich``) say the same."""
     details = _Details()
     reference = now if now is not None else parse_timestamp(snapshot.observed_at)
     banner = _freshness(details, delivery, now, period_seconds, zone)
@@ -220,20 +285,22 @@ def render_dashboard(
         lines.append(_gateway_line(snapshot.gateway, snapshot.traffic))
     if snapshot.traffic is not None:
         details.state.extend(_traffic_words(snapshot.traffic, zone))
-    details.section()
+    details.section("backup")
     if snapshot.backup is not None:
         lines.append(_backup_line(snapshot.backup, reference, zone, details))
     if snapshot.drift is not None:
         lines.append(_drift_line(snapshot.drift, zone, details))
+    # A section of its own in the rich form; one group with backup and drift in the text.
+    details.section("cron", joined=True)
     if snapshot.cron is not None:
         lines.append(_cron_line(snapshot.cron, reference, zone, details))
-    details.section()
+    details.section("rules")
     if snapshot.rules is not None:
         _rules_in_details(snapshot.rules, zone, details)
-    details.section()
+    details.section("memory")
     if snapshot.memory is not None:
         _memory_in_details(snapshot.memory, zone, details)
-    details.section()
+    details.section("limits")
     lines.extend(_coverage_lines(snapshot, details))
     details.version = f"Dashboard {__version__}"
     if snapshot.incidents:
@@ -248,7 +315,7 @@ def render_dashboard(
         details.data = _data_stamps(snapshot, zone)
         details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
         details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
-    details.section()
+    details.section("hermes")
     if snapshot.version is not None:
         lines.extend(["", _version_line(snapshot.version, details, zone, reference)])
     if snapshot.work is not None:
@@ -265,17 +332,7 @@ def render_dashboard(
                 f"- Failed: {work.failed} · Unknown: {work.unknown}",
             ]
         )
-    text = "\n".join([*lines, *details.lines()])
-    # The version closes the details (0.9.2): a cut takes the lines before it, never the version.
-    closing = f"\n>\n{_DETAILS_PREFIX}{details.version}"
-    if len(text) <= _SAFE_LIMIT or not text.endswith(closing):
-        return bound_text(text)
-    # A cut at a blank line of the block leaves ``>…``, a line outside the quote that splits it
-    # in two (review of 0.11.0): the ellipsis keeps the details prefix, in the one place kept.
-    cut = bound_text(text.removesuffix(closing), _SAFE_LIMIT - len(closing) - 1)
-    if cut.endswith("\n>…"):
-        cut = cut.removesuffix(">…") + _DETAILS_PREFIX + "…"
-    return cut + closing
+    return ScreenParts(tuple(lines), details, reference)
 
 
 def _freshness(
@@ -1061,8 +1118,8 @@ def _html_line(line: str) -> str:
     return _code_spans(html.escape(line))
 
 
-# A run of the characters a file name, a path or a command is made of.
-_WORD = re.compile(r"[\w./-]+")
+# A run of the characters a file name, a path, a command, a mention or a hashtag is made of.
+_WORD = re.compile(r"[\w./@#-]+")
 # A name with a letter in it, or nothing (a dotfile), then a dot and an extension of two or more
 # characters that starts with a letter: ``AGENTS.md``, ``.hermes.md``, ``.cursorrules``,
 # ``state.db``, a config key ``display.platforms.max.cleanup_progress``. A version (``0.21.3``,
@@ -1072,6 +1129,9 @@ _FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
 # dash (``/new``, ``/2fa``, ``./new``, ``/new-session``; a fraction ``1/1`` is not one), and a
 # domain before the word's end or a slash (``x.com/y``, ``2.ai``, ``AGENTS.md/``).
 _ENTITY_INSIDE = re.compile(r"(?:^|[.-])/\w|\.[^\W\d_]{2,}(?=$|/)")
+# A mention or a hashtag: ``@`` or ``#`` that opens the word (0.12.0: the rich screen lists every
+# cron job by name, and a name is whatever the owner typed). ``C#`` is neither.
+_MARK_START = re.compile(r"[@#]\w")
 
 
 def _code_spans(escaped: str) -> str:
@@ -1086,7 +1146,9 @@ def _code_spans(escaped: str) -> str:
 
 def _code_word(match: re.Match[str]) -> str:
     word = match.group()
+    if match.start() and match.string[match.start() - 1] == "&":
+        return word  # the inside of an entity (``&#x27;``), never a hashtag
     core = word.rstrip(".")
-    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core):
+    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core) or _MARK_START.match(core):
         return f"<code>{core}</code>{word[len(core) :]}"
     return word

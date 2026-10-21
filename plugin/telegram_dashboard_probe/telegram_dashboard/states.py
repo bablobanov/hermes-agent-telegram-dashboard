@@ -14,12 +14,14 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .cron_jobs import job_of, job_rows
 from .freshness import DeliveryRecord
 from .schema import (
     BackupSummary,
     CapacitySummary,
     Coverage,
     CronFailure,
+    CronJob,
     CronSummary,
     DashboardSnapshot,
     DriftSummary,
@@ -201,6 +203,81 @@ def _showcase_limits() -> CapacitySummary:
     )
 
 
+# The showcase installation's jobs (0.12.0, the cron section of the rich screen): the 27 active
+# and 3 paused its line counts, two of the paused due in the past, two one-off jobs done. Generic
+# names, the schedules in the engine's own forms (``schedule_display``); the minutes are the next
+# and the last run from SHOWCASE_NOW. The text screen does not show them.
+_SHOWCASE_ACTIVE = (
+    ("daily-digest", "0 21 * * *", 1440, -55),
+    ("inbox-triage", "every 30m", 12, -18),
+    ("uptime-ping", "*/15 * * * *", 15, 0),
+    ("feed-watch", "every 120m", 47, -73),
+    ("price-check", "0 */6 * * *", 180, -180),
+    ("backup-verify", "30 3 * * *", 390, -1050),
+    ("news-brief", "0 7 * * 1-5", 2040, -2280),
+    ("standup-notes", "45 8 * * 1-5", 2145, -2175),
+    ("repo-sync", "every 60m", 25, -35),
+    ("cert-expiry", "0 9 * * *", 720, -720),
+    ("disk-usage", "every 240m", 95, -145),
+    ("rss-roundup", "0 18 * * *", 1260, -180),
+    ("calendar-brief", "30 7 * * *", 630, -810),
+    ("mail-cleanup", "0 2 * * 0", 300, -9780),
+    ("metrics-rollup", "every 360m", 140, -220),
+    ("weather-brief", "0 6 * * *", 540, -900),
+    ("todo-review", "0 20 * * *", 1380, -60),
+    ("release-watch", "every 180m", 70, -110),
+    ("stock-alert", "*/30 9-17 * * 1-5", 2160, -1680),
+    ("birthday-reminder", "0 10 * * *", 780, -660),
+    ("habit-check", "0 22 * * *", 60, -1380),
+    ("reading-list", "0 12 * * 6", 9540, -540),
+    ("expense-sync", "every 720m", 300, -420),
+    ("journal-prompt", "30 21 * * *", 30, -1410),
+    ("log-check", "every 45m", 33, -12),
+    ("invoice-reminder", "0 9 1 * *", 6480, -36720),
+    ("weekly-report", "0 17 * * 5", 8400, -1680),
+)
+_SHOWCASE_PAUSED = (
+    ("threads-deliver", "0 10 * * *", -10740, -12180),
+    ("survey-replies", "every 120m", -3300, -3420),
+    ("old-campaign", "0 12 * * 1", None, -20000),
+)
+_SHOWCASE_DONE = (
+    ("once-migration", "once at 2026-09-20 10:00", None, -9300),
+    ("once-reminder", "once at 2026-09-26 15:00", None, -360),
+)
+
+
+def _job_record(number: int, job: tuple[str, str, int | None, int], state: str) -> dict[str, Any]:
+    """One record with the engine's own field names, as ``jobs.json`` keeps it."""
+    name, schedule, next_in, last_in = job
+
+    def at(minutes: int | None) -> str | None:
+        return None if minutes is None else (SHOWCASE_NOW + timedelta(minutes=minutes)).isoformat()
+
+    return {
+        "id": f"b{number}",
+        "name": name,
+        "schedule_display": schedule,
+        "enabled": state == "scheduled",
+        "state": state,
+        "next_run_at": at(next_in),
+        "last_run_at": at(last_in),
+        "last_status": "ok",
+    }
+
+
+def _showcase_jobs(failing: tuple[CronFailure, ...] = ()) -> tuple[CronJob, ...]:
+    """The list as ``cron_jobs`` builds it from those records; ``b1`` is daily-digest."""
+    kinds = (
+        *(("scheduled", job) for job in _SHOWCASE_ACTIVE),
+        *(("paused", job) for job in _SHOWCASE_PAUSED),
+        *(("completed", job) for job in _SHOWCASE_DONE),
+    )
+    records = (_job_record(i, job, state) for i, (state, job) in enumerate(kinds, start=1))
+    jobs = [job for job in map(job_of, records) if job is not None]
+    return job_rows(jobs, failing, now=SHOWCASE_NOW)
+
+
 def _showcase_snapshot(
     overall: Severity,
     *,
@@ -254,7 +331,14 @@ def _showcase_snapshot(
             checked_at=_S,
         ),
         cron=cron
-        or CronSummary("ok", active=27, paused=3, ticker_at=_S_MINUS_2M, ticker_ok_at=_S_MINUS_2M),
+        or CronSummary(
+            "ok",
+            active=27,
+            paused=3,
+            ticker_at=_S_MINUS_2M,
+            ticker_ok_at=_S_MINUS_2M,
+            jobs=_showcase_jobs(),
+        ),
         traffic=traffic
         or TrafficSummary("ok", last_update_seen_at=_S_LAST_UPDATE, polling_at=_S_MINUS_2M),
         rules=rules,
@@ -462,6 +546,7 @@ def _cron_states() -> tuple[State, ...]:
                     failing=(failed_run,),
                     ticker_at=_S_MINUS_2M,
                     ticker_ok_at=_S_MINUS_2M,
+                    jobs=_showcase_jobs((failed_run,)),
                 ),
             ),
             _delivery_ok(_S_MINUS_2M),
@@ -480,6 +565,7 @@ def _cron_states() -> tuple[State, ...]:
                     paused=3,
                     ticker_at=_S_TICKER_SILENT,
                     ticker_ok_at=_S_TICKER_SILENT,
+                    jobs=_showcase_jobs(),
                 ),
             ),
             _delivery_ok(_S_MINUS_2M),

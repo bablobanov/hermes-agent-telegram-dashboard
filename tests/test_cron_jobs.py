@@ -199,6 +199,7 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
     planted reaches the text, the record, the block or the events, in any form the message
     takes. The sanitizer's own masks (task 0) are the second line, not the first."""
     from telegram_dashboard.render import render_dashboard, to_telegram_html, to_telegram_plain
+    from telegram_dashboard.rich import to_telegram_rich
     from telegram_dashboard.schema import DashboardSnapshot
 
     jobs = [
@@ -237,11 +238,14 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         overall="warning", observed_at=NOW.isoformat(), cron=summary, incidents=incidents
     )
     text = render_dashboard(snapshot, now=NOW)
+    rich = to_telegram_rich(snapshot, now=NOW)
+    assert rich is not None and "<table compact striped>" in rich
 
     forms = (
         text,
         to_telegram_plain(text),
         to_telegram_html(text),
+        rich,
         json.dumps(cache),
         repr(summary),
         repr(incidents),
