@@ -34,6 +34,15 @@ verb carries the HTML when one does (``html_verb``), and HTML is tried again aft
 could not be built is replaced by a loud one-screen plain notice with the time, never left as
 yesterday's text.
 
+Before HTML comes the rich form (0.12.0, Bot API 10.1+ Rich Messages, ``rich.py``): the same
+first lines and a collapsed section per source. No verb of the adapter carries it; the call is the
+engine bot's own raw Bot API call, ``adapter._bot.do_api_request``, the way the engine sends its
+own rich messages, read off the object on every tick like the HTML verb (``_rich_api``). A
+refused rich edit falls back to HTML, then plain, in the same tick, and gets its verdict by the
+same rule (``screen_format: rich``, ``rich_error``, tried again after ``RICH_RETRY_TICKS``). A
+new message is sent rich (``sendRichMessage``) when it can be: Telegram refuses to make a plain
+message rich by an edit (the engine's own note, telegram adapter, v0.22.2).
+
 The ``telegram_dashboard`` package is looked up beside this file first (the deployment copies
 both directories into the same plugin folder), then in the interpreter. Settings come from the
 plugin's config entry (``plugins.entries.telegram_dashboard_probe.settings``) or environment
@@ -52,6 +61,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
+from html import escape
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -106,7 +116,7 @@ TRAFFIC_CACHE_KEY = "traffic_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
-DASHBOARD_MODULES = ("collect", "compat", "freshness", "render", "telegram_traffic")
+DASHBOARD_MODULES = ("collect", "compat", "freshness", "render", "rich", "telegram_traffic")
 # What the tick calls; a copy of the package that lacks any of it is refused at import time.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
     # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
@@ -129,6 +139,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     "compat": ("Environment",),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
+    # The rich form came with 0.12.0, the module with it.
+    "rich": ("to_telegram_rich",),
     "telegram_traffic": ("probe_adapter",),
 }
 # The Bot API name of the parse mode, passed as a string: ``telegram.constants.ParseMode.HTML``
@@ -146,6 +158,20 @@ NO_HTML_VERB = "no HTML verb (edit_message without parse_mode, no _edit_text)"
 # After a refused HTML edit the screen is plain for this many ticks, then HTML is tried once
 # more: an hour at the pilot's period, so a transient failure does not lock plain in for good.
 HTML_RETRY_TICKS = 12
+# The rich form (0.12.0): the engine bot's raw Bot API call, the way the engine sends its own rich
+# messages (telegram adapter ``_bot_supports_rich``, v0.22.2); no verb of the adapter carries it.
+RICH_BOT_ATTRIBUTE = "_bot"
+RICH_CALL = "do_api_request"
+NO_RICH_CALL = "no rich call (adapter without _bot.do_api_request)"
+RICH_DEADLINE_SECONDS = 30.0
+# After a refused rich edit the screen is HTML (or plain) for this many ticks, as for HTML.
+RICH_RETRY_TICKS = 12
+# The forum's General topic: Telegram rejects its id on a send, which goes without a topic there
+# (the engine's own ``_message_thread_id_for_send``, v0.22.2).
+GENERAL_TOPIC_ID = "1"
+# Words of an answer that says Telegram refused the request and sent nothing, as the engine tells
+# them from a failure that may have reached Telegram (``_is_rich_fallback_error``, v0.22.2).
+_RICH_REFUSED_WORDS = ("bad request", "unsupported", "not implemented")
 
 Collector = Callable[[datetime], Awaitable[Any]]
 
@@ -178,26 +204,32 @@ class Dashboard:
     compat: Any
     freshness: Any
     render: Any
+    rich: Any
     telegram_traffic: Any
     origin: str
 
 
 @dataclass(frozen=True)
 class Screen:
-    """One tick's text in both forms. ``html`` is ``None`` for the notice: the loud path stays
-    plain so that nothing can be refused on the way to the chat."""
+    """One tick's text in every form. ``html`` is ``None`` for the notice: the loud path stays
+    plain so that nothing can be refused on the way to the chat; its ``rich`` is the same words
+    as one paragraph, for a message that is rich already. ``rich`` is ``None`` when the rich form
+    was not built (over Telegram's ceilings, or a failure of its own)."""
 
     plain: str
     html: str | None = None
+    rich: str | None = None
 
 
 @dataclass(frozen=True)
 class _EditResult:
-    """What ``_edit`` answers when the HTML verb took the text: the public verb's ``SendResult``
-    is not constructed by the plugin, so a shape with the two fields the tick reads."""
+    """What ``_edit`` and ``_send_rich`` answer when the plugin itself made the call: the public
+    verb's ``SendResult`` is not constructed by the plugin, so a shape with the fields the tick
+    reads."""
 
     success: bool
     error: str | None = None
+    message_id: str | None = None
 
 
 def read_settings(ctx: Any) -> Settings | None:
@@ -418,6 +450,57 @@ def _html_verb(live: Any) -> tuple[str, Any] | None:
     return None
 
 
+def _rich_api(live: Any) -> Any | None:
+    """The engine bot's raw Bot API call when it is a coroutine function, the engine's own test
+    (``_bot_supports_rich``); ``None`` without a bot (a disconnected adapter) or without the call.
+    A capability read off the object on every tick, never a version number."""
+    call = getattr(getattr(live, RICH_BOT_ATTRIBUTE, None), RICH_CALL, None)
+    return call if inspect.iscoroutinefunction(call) else None
+
+
+def _chat_id(chat: str) -> int | str:
+    """The chat as the engine passes it to the Bot API: a number as a number (``-100…``)."""
+    try:
+        return int(chat)
+    except ValueError:
+        return chat.strip()
+
+
+def _thread_for_send(thread_id: str | None) -> int | None:
+    """``message_thread_id`` for a send: none without a topic and for General."""
+    if not thread_id or thread_id == GENERAL_TOPIC_ID:
+        return None
+    try:
+        return int(thread_id)
+    except ValueError:
+        return None
+
+
+def _rich_refused(exc: BaseException) -> bool:
+    """Telegram answered no and sent nothing (``BadRequest``), rather than a timeout or the network,
+    after which the request may have reached it."""
+    if type(exc).__name__ == "BadRequest":
+        return True
+    text = str(exc).lower()
+    return any(word in text for word in _RICH_REFUSED_WORDS)
+
+
+def _message_id_of(answer: Any) -> str | None:
+    """The new message's id from the raw answer, in the shapes the engine reads it in."""
+    if isinstance(answer, dict):
+        found = answer.get("message_id")
+        if found is None and isinstance(answer.get("result"), dict):
+            found = answer["result"].get("message_id")
+    else:
+        found = getattr(answer, "message_id", None)
+    return str(found) if found is not None else None
+
+
+def _rich_notice(text: str) -> str:
+    """The plain notice as one rich paragraph, the words escaped and nothing else."""
+    return "<p>" + "<br>".join(escape(line) for line in text.split("\n")) + "</p>"
+
+
 class ProbeRuntime:
     """One per ``register()``; survives adapter replacement, owns exactly one task."""
 
@@ -443,6 +526,10 @@ class ProbeRuntime:
         # from which it is worth trying again.
         self.html: bool | None = None
         self.html_retry_tick = 0
+        # The same for the rich form, which is tried before HTML.
+        self.rich: bool | None = None
+        self.rich_retry_tick = 0
+        self._rich_render_error: str | None = None
         # The adapter's own counters, read as attributes before each screen is composed.
         self.traffic_probe: Any = None
 
@@ -544,10 +631,13 @@ class ProbeRuntime:
             else:
                 self._note(status="edit_failed", error=error, generation=generation)
                 return
-        # Creation goes through the public verb as plain text (the adapter's own markdown
-        # conversion, which the screen has no constructs for); the next tick edits it as HTML.
-        metadata = {"thread_id": self.settings.thread_id} if self.settings.thread_id else None
-        result = await live.send(chat, screen.plain, metadata=metadata)
+        # Creation is rich when the adapter's bot can send it (``_send_rich``). Otherwise the public
+        # verb as plain text (the adapter's own markdown conversion, which the screen has no
+        # constructs for); the next tick edits it as HTML.
+        result = await self._send_rich(live, chat, screen)
+        if result is None:
+            metadata = {"thread_id": self.settings.thread_id} if self.settings.thread_id else None
+            result = await live.send(chat, screen.plain, metadata=metadata)
         if result.success and result.message_id:
             if self.record.get("lost_at"):
                 self.record["recreated_at"] = now.isoformat()
@@ -563,6 +653,110 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ the edit
 
     async def _edit(self, live: Any, chat: str, message_id: str, screen: Screen) -> Any:
+        """Rich first when the adapter's bot has the call for it (``_rich_api``), then HTML, then
+        plain (``_edit_html_or_plain``), all in this tick. A refused rich edit gets its verdict
+        by the HTML rule: only when the edit right after it landed."""
+        refused: str | None = None
+        if screen.rich is not None and self._rich_wanted():
+            api = _rich_api(live)
+            if api is None:
+                self.record["rich_error"] = NO_RICH_CALL
+            else:
+                reason, transient = await self._edit_rich(api, chat, message_id, screen.rich)
+                if reason is None:
+                    return _EditResult(success=True)
+                if transient and self.record.get("screen_format") == "rich":
+                    # The message is rich and the call may have reached Telegram: an HTML or plain
+                    # edit of a rich message may come back in the words of a lost one
+                    # (LOST_MARKERS), and the tick would send a second message. Rich next tick.
+                    return _EditResult(success=False, error=f"rich edit: {reason}")
+                refused = reason
+        result = await self._edit_html_or_plain(live, chat, message_id, screen)
+        if refused is not None and result.success:
+            self._rich_verdict(False, refused)
+        return result
+
+    async def _edit_rich(
+        self, api: Any, chat: str, message_id: str, markup: str
+    ) -> tuple[str | None, bool]:
+        """``(None, False)`` when the message shows the rich form now; else why not in a word,
+        and whether the call may have reached Telegram (a timeout, the network) rather than been
+        refused. As the engine edits rich (``_try_edit_rich``, v0.22.2): no topic on an edit,
+        and "not modified" is the message already saying this."""
+        try:
+            payload = {
+                "chat_id": _chat_id(chat),
+                "message_id": int(message_id),
+                "rich_message": {"html": markup},
+            }
+            await asyncio.wait_for(
+                api("editMessageText", api_kwargs=payload), RICH_DEADLINE_SECONDS
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            if "not modified" not in str(exc).lower():
+                # Class name only: the message may carry chat ids.
+                return type(exc).__name__, not _rich_refused(exc)
+        self._rich_verdict(True, None)
+        return None, False
+
+    async def _send_rich(self, live: Any, chat: str, screen: Screen) -> _EditResult | None:
+        """A new message sent rich (``sendRichMessage``, into the topic as the engine routes a
+        send), or ``None`` for plain: no rich form, no call for it, or Telegram refused it. A call
+        that may have reached Telegram is a failed send and no plain one follows it: that would be
+        a second message."""
+        api = _rich_api(live)
+        if screen.rich is None or api is None or not self._rich_wanted():
+            return None
+        payload: dict[str, Any] = {"chat_id": _chat_id(chat), "rich_message": {"html": screen.rich}}
+        thread = _thread_for_send(self.settings.thread_id)
+        if thread is not None:
+            payload["message_thread_id"] = thread
+        try:
+            answer = await asyncio.wait_for(
+                api("sendRichMessage", api_kwargs=payload), RICH_DEADLINE_SECONDS
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            if _rich_refused(exc):
+                self._rich_verdict(False, type(exc).__name__)
+                return None
+            return _EditResult(success=False, error=f"sendRichMessage: {type(exc).__name__}")
+        message_id = _message_id_of(answer)
+        if message_id is None:
+            return _EditResult(success=False, error="sendRichMessage: no message id")
+        self._rich_verdict(True, None)
+        return _EditResult(success=True, message_id=message_id)
+
+    def _rich_wanted(self) -> bool:
+        return self.rich is not False or self.ticks >= self.rich_retry_tick
+
+    def _rich_verdict(self, ok: bool, reason: str | None) -> None:
+        if ok:
+            if self.rich is not True:
+                logger.info("probe: the screen is edited as rich")
+            self.rich = True
+            self.record["screen_format"] = "rich"
+        else:
+            if self.rich is not False:
+                logger.warning(
+                    "probe: rich refused (%s); HTML or plain, rich tried again in %d ticks",
+                    reason,
+                    RICH_RETRY_TICKS,
+                )
+            self.rich = False
+            self.rich_retry_tick = self.ticks + RICH_RETRY_TICKS
+            if self.record.get("screen_format") == "rich":
+                # No HTML verdict came after it: the edit that landed was plain.
+                self.record["screen_format"] = "plain"
+        # Saved with the tick's own note, right after this edit.
+        self.record["rich_error"] = reason
+
+    async def _edit_html_or_plain(
+        self, live: Any, chat: str, message_id: str, screen: Screen
+    ) -> Any:
         """HTML through the verb the adapter has for it (``_html_verb``), plain through the
         public ``edit_message`` otherwise; the record says which form is on the screen and
         which verb carried it.
@@ -636,9 +830,10 @@ class ProbeRuntime:
         dashboard = self.dashboard
         if dashboard is None:
             self.record["last_render_error"] = "ImportError"
-            return Screen(
-                self._notice(now, "package telegram_dashboard not importable, screen not built")
+            notice = self._notice(
+                now, "package telegram_dashboard not importable, screen not built"
             )
+            return Screen(notice, rich=_rich_notice(notice))
         try:
             snapshot = await self.collector(now)
             record = dashboard.freshness.record_from_plugin_state(
@@ -665,9 +860,36 @@ class ProbeRuntime:
             else:
                 logger.exception("probe: screen not composed; the message gets a notice instead")
             self.record["last_render_error"] = reason
-            return Screen(self._notice(now, f"screen not built: {reason}"))
+            notice = self._notice(now, f"screen not built: {reason}")
+            return Screen(notice, rich=_rich_notice(notice))
         self.record["last_render_error"] = None
-        return Screen(plain=plain, html=html)
+        return Screen(
+            plain=plain, html=html, rich=self._rich_form(dashboard, snapshot, record, now)
+        )
+
+    def _rich_form(
+        self, dashboard: Dashboard, snapshot: Any, record: Any, now: datetime
+    ) -> str | None:
+        """The rich form, or ``None``: over Telegram's ceilings, or a failure of its own, which
+        leaves the HTML and plain forms as they are (one traceback per failure class)."""
+        try:
+            markup = dashboard.rich.to_telegram_rich(
+                snapshot,
+                now=now,
+                delivery=record,
+                period_seconds=self._render_period(),
+                zone=self.zone,
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            reason = type(exc).__name__
+            if self._rich_render_error != reason:
+                logger.exception("probe: rich form not built; HTML this tick")
+            self._rich_render_error = reason
+            return None
+        self._rich_render_error = None
+        return markup if isinstance(markup, str) else None
 
     def _record_as_delivered(self, now: datetime) -> dict[str, Any]:
         """The record as it will be once this text lands.
