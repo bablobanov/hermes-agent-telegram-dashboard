@@ -76,6 +76,7 @@ def _settings(monkeypatch: pytest.MonkeyPatch, home: Path, **overrides: Any) -> 
         "HERMES_DASHBOARD_PROBE_LIMITS",
         "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH",
         "HERMES_DASHBOARD_PROBE_TZ",
+        "HERMES_DASHBOARD_PROBE_RICH",
         "HERMES_HOME",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -1243,7 +1244,8 @@ def test_a_package_copy_from_before_the_cron_line_is_refused_at_load(tmp_path: P
 # ----------------------------------------------------------------------------- the rich form
 #
 # 0.12.0: the rich form first, through the engine bot's raw call (``_bot.do_api_request``), then
-# HTML, then plain, in the same tick; a new message rich from its first second.
+# HTML, then plain, in the same tick; a new message rich from its first second. Only with the
+# setting ``rich`` true: off by default, so these tests turn it on.
 
 
 def _rich_record(ctx: FakeContext, message_id: str = "4242") -> None:
@@ -1263,7 +1265,7 @@ def test_the_screen_is_edited_as_rich_when_the_bot_has_the_call(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _remembered(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1296,7 +1298,7 @@ def test_a_refused_rich_edit_falls_back_to_html_in_the_same_tick_and_probes_agai
     """Telegram refuses to make the HTML message rich (the engine's own note on a plain one): the
     same tick edits HTML, the record says why, rich is not asked again for RICH_RETRY_TICKS."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _remembered(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1322,7 +1324,7 @@ def test_a_refused_rich_edit_falls_back_to_html_in_the_same_tick_and_probes_agai
 
 def test_not_modified_from_the_rich_call_is_a_confirmation(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1347,7 +1349,7 @@ def test_a_timeout_on_a_rich_message_waits_for_the_next_tick_instead_of_html(
     back in the words of a lost one and the tick would send a second message: none of that, the
     tick fails and the next one asks rich again."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1368,7 +1370,7 @@ def test_a_timeout_on_a_rich_message_waits_for_the_next_tick_instead_of_html(
 
 def test_when_html_and_plain_fail_too_there_is_no_rich_verdict(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _remembered(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1393,7 +1395,7 @@ def test_a_new_message_is_sent_rich_into_the_topic_and_then_edited(
     monkeypatch, tmp_path: Path
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), thread_id="17"))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, thread_id="17"))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1425,7 +1427,7 @@ def test_a_rich_message_for_general_or_no_topic_goes_without_a_thread(
     engine's own routing)."""
     plugin = load_plugin()
     overrides = {"thread_id": thread} if thread else {}
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), **overrides))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, **overrides))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1442,7 +1444,7 @@ def test_a_rich_message_for_general_or_no_topic_goes_without_a_thread(
 
 def test_a_refused_rich_send_sends_plain_in_the_same_tick(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1463,7 +1465,7 @@ def test_a_rich_send_that_may_have_reached_telegram_is_not_followed_by_a_plain_o
     monkeypatch, tmp_path: Path
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1485,7 +1487,7 @@ def test_without_the_bot_call_the_chain_is_as_before_and_the_record_says_why(
     monkeypatch, tmp_path: Path
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _remembered(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1506,7 +1508,7 @@ def test_a_rich_form_that_fails_to_build_leaves_the_html_form(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _remembered(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1535,7 +1537,7 @@ def test_the_notice_reaches_a_rich_message_as_rich(monkeypatch, tmp_path: Path) 
     """A rich message may refuse a plain edit: the loud notice goes out as one rich paragraph of
     the same words first."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1581,7 +1583,7 @@ def test_a_refused_rich_edit_of_a_rich_message_never_sends_a_second_message(
     and the HTML and plain edits come back in the words of a lost message: the tick fails and no
     message is sent. A frozen screen, which the watchdog reports, over a second pinned message."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1607,7 +1609,7 @@ def test_a_refused_rich_edit_of_a_rich_message_never_sends_a_second_message(
 
 def test_a_rich_message_the_rich_call_finds_gone_is_sent_anew(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1635,7 +1637,7 @@ def test_a_rich_call_that_could_not_be_made_is_a_refusal_and_plain_follows(
     """A call the library or the Bot API server cannot make never reached Telegram: the same
     tick sends plain, the message is created (the engine's own capability errors)."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1654,7 +1656,7 @@ def test_a_plain_creation_says_plain_whatever_the_record_said_before(
     monkeypatch, tmp_path: Path
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, period_seconds=60))
     ctx.state.set("probe", {"chat_id": CHAT, "message_id": None, "screen_format": "rich"})
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1673,7 +1675,7 @@ def test_a_plain_creation_says_plain_whatever_the_record_said_before(
 
 def test_a_plain_notice_on_an_html_message_says_plain(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, period_seconds=60))
     ctx.state.set(
         "probe",
         {"message_id": "4242", "chat_id": CHAT, "screen_format": "html", "html_verb": "_edit_text"},
@@ -1700,7 +1702,7 @@ def test_a_screen_over_the_ceilings_goes_to_a_rich_message_as_plain_words(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1744,11 +1746,69 @@ def test_the_rich_setting_off_keeps_the_html_chain(monkeypatch, tmp_path: Path) 
     assert (record["screen_format"], record["rich_error"]) == ("html", plugin.RICH_OFF)
 
 
+@pytest.mark.parametrize(
+    ("value", "on"),
+    [
+        (None, False),
+        ("", False),
+        ("false", False),
+        ("off", False),
+        ("maybe", False),
+        (True, True),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("ON", True),
+    ],
+)
+def test_the_rich_form_is_off_unless_the_setting_says_true(
+    monkeypatch, tmp_path: Path, value: Any, on: bool
+) -> None:
+    """A rich message carries no fallback text (``InputRichMessage`` has no field for one): an app
+    without Rich Messages may not show the screen at all, so the form waits for an explicit yes."""
+    plugin = load_plugin()
+    runtime = plugin.register(FakeContext(_settings(monkeypatch, _home(tmp_path), rich=value)))
+    assert runtime is not None
+    assert runtime.settings.rich is on
+
+
+def test_the_rich_form_turns_on_from_the_environment_too(monkeypatch, tmp_path: Path) -> None:
+    plugin = load_plugin()
+    settings = _settings(monkeypatch, _home(tmp_path))
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_RICH", "1")
+    runtime = plugin.register(FakeContext(settings))
+    assert runtime is not None
+    assert runtime.settings.rich is True
+
+
+def test_by_default_a_new_message_is_plain_then_html_and_rich_is_never_asked(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The bot has the rich call, the setting says nothing: the message is created by the public
+    verb and edited as HTML, as before 0.12.0."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 2)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.rich_calls == []
+    assert len(adapter.sent) == 1
+    record = ctx.state.data["probe"]
+    assert (record["screen_format"], record["rich_error"]) == ("html", plugin.RICH_OFF)
+
+
 def test_the_rich_message_asks_telegram_to_find_no_entity(monkeypatch, tmp_path: Path) -> None:
     """``skip_entity_detection`` (``InputRichMessage``, Bot API 10.1+): the second line behind
     ``<code>`` for a word Telegram would make a link, a command, a mention or a hashtag."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
@@ -1770,7 +1830,7 @@ def test_a_rich_message_gone_is_sent_anew_even_without_the_rich_call(
     """An HTML or plain answer that says the message is not there at all is a loss on a rich
     message too; "can't be edited" would not be (the test above)."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1795,7 +1855,7 @@ def test_a_refused_full_form_on_a_rich_message_sends_its_plain_words_in_the_same
     """Review of 0.12.0: the full form refused for its content keeps the screen alive with the
     plain words as one rich paragraph; the record says why, the journal once."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -1857,7 +1917,7 @@ def test_a_full_form_refused_with_its_plain_words_too_is_said_once(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None

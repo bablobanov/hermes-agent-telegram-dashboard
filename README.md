@@ -107,8 +107,13 @@ only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale:
 close with the dashboard's own version (`Dashboard 0.12.0`) after a blank line, so the installed
 copy can be told from the pinned message at a glance.
 
-Where Telegram takes Rich Messages (Bot API 10.1+), the same message is a rich one (0.12.0): the
-first lines stay as above, and the details are a collapsed section per source instead of one
+**Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
+API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
+the setting or set `rich: false` to turn it off. Telegram documents no fallback text for a rich
+message, so an app without Rich Messages may not show the screen at all.
+
+With it on, where Telegram takes Rich Messages (Bot API 10.1+), the same message is a rich one
+(0.12.0): the first lines stay as above, and the details are a collapsed section per source instead of one
 quote, opened one at a time. The limits come with a compact table of every window, how much is
 spent, the time to its reset and the moment; the cron jobs with their schedules, what fails now
 first, the paused ones under ⏸ (see "The cron line"); then the agent's rules, its memory, the
@@ -198,8 +203,9 @@ register(ctx) → ctx.register_platform_handler("telegram", wire)
                collect_all_async → render_dashboard → to_telegram_html,
                to_telegram_plain and to_telegram_rich, then adapter =
                runner.adapters["telegram"] if connected, the message created once
-               (sendRichMessage through the engine's bot, else adapter.send(plain)), then
-               every tick the rich form (_bot.do_api_request("editMessageText", ...)), on a
+               (with rich: true sendRichMessage through the engine's bot, else
+               adapter.send(plain)), then every tick, with rich: true, the rich form
+               (_bot.do_api_request("editMessageText", ...)), and without it or on a
                refusal the HTML form through the verb the adapter has for it:
                edit_message(html, parse_mode="HTML") when its signature takes a parse mode,
                else the adapter's own _edit_text(html, "HTML"), and
@@ -238,14 +244,15 @@ headings, the details shown in full), the record says `screen_format: plain` wit
 journal, and HTML is tried again twelve ticks later. The record also names the verb that carries
 the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
 private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`).
-Without the rich call (below), the one `send` that creates the message (and a recreation after a
-loss) goes through the adapter's own markdown conversion as plain text; the next tick edits it
-into the HTML form. The cron path sends the HTML form with its own bot.
+Without the rich form (below: off by default), the one `send` that creates the message (and a
+recreation after a loss) goes through the adapter's own markdown conversion as plain text; the
+next tick edits it into the HTML form. The cron path sends the HTML form with its own bot, rich
+or not.
 
-**Before HTML, the rich form** (0.12.0). Where the engine's bot has the raw Bot API call the
-engine sends its own rich messages with (`adapter._bot.do_api_request`, a coroutine function:
-the engine's own test, `_bot_supports_rich`), every tick edits the message as a Rich Message
-first: `editMessageText` with `rich_message: {html}`, the chat and the id as numbers, no topic,
+**Before HTML, the rich form** (0.12.0, only with `rich: true`). Where the engine's bot has the
+raw Bot API call the engine sends its own rich messages with (`adapter._bot.do_api_request`, a
+coroutine function: the engine's own test, `_bot_supports_rich`), every tick edits the message as
+a Rich Message first: `editMessageText` with `rich_message: {html}`, the chat and the id as numbers, no topic,
 no text and no parse mode, a 30 s deadline; "not modified" confirms. No verb of the adapter
 carries it, and the public `edit_message(finalize=True)` splits into new messages, so the call is
 the engine's bot itself: the bot token stays inside the engine and the plugin passes no
@@ -274,9 +281,11 @@ when the rich form fails to build, the tick edits the HTML form, and a message t
 already gets the plain words as one rich paragraph, the loud notice too; the record says why
 (`rich_render_error`), the journal once. A full form Telegram refuses on a rich message is followed
 in the same tick by its plain words as one rich paragraph (`rich_error` says why, the journal
-once), since an HTML or plain edit of a rich message may be refused for good. The setting `rich`
-turns the form off: new messages are plain, and a message that is rich already keeps getting its
-plain words as one rich paragraph.
+once), since an HTML or plain edit of a rich message may be refused for good. Without
+`rich: true` (the default) the form is off: new messages are plain, then HTML, and a message that
+is rich already keeps getting its plain words as one rich paragraph (delete it, and the next one
+is HTML). A rich message carries no fallback text (`InputRichMessage` has no field for one), so
+the form waits for an explicit yes.
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -312,7 +321,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
-   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default on; `0`/`false`/`no`/`off` turns the rich form off, the screen is HTML or plain as before 0.12.0, a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
+   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is HTML or plain as before 0.12.0, a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
 
    Neither drift source configured means drift is `unsupported` on the screen, never zero.

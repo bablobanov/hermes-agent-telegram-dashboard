@@ -41,7 +41,9 @@ own rich messages, read off the object on every tick like the HTML verb (``_rich
 refused rich edit falls back to HTML, then plain, in the same tick, and gets its verdict by the
 same rule (``screen_format: rich``, ``rich_error``, tried again after ``RICH_RETRY_TICKS``). A
 new message is sent rich (``sendRichMessage``) when it can be: Telegram refuses to make a plain
-message rich by an edit (the engine's own note, telegram adapter, v0.22.2).
+message rich by an edit (the engine's own note, telegram adapter, v0.22.2). The form is off
+unless the setting ``rich`` says true: Telegram documents no fallback text for a rich message,
+so an app without Rich Messages may not show the screen at all.
 
 The ``telegram_dashboard`` package is looked up beside this file first (the deployment copies
 both directories into the same plugin folder), then in the interpreter. Settings come from the
@@ -115,6 +117,8 @@ CRON_CACHE_KEY = "cron_cache"
 # first sighting of a blocked send path, the last send error.
 TRAFFIC_CACHE_KEY = "traffic_cache"
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+# For a setting that is off unless it says yes (``rich``).
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 # Bot API wording for "the message you want to edit is gone"; anything else keeps the id.
 LOST_MARKERS = ("message to edit not found", "message can't be edited", "message_id_invalid")
 # The two of them that say the message is not there at all; "can't be edited" is also how an edit
@@ -204,8 +208,10 @@ class Settings:
     context_files: bool = True
     # The memory section (notebooks, the approval queue, a provider); on unless turned off.
     memory: bool = True
-    # The rich form of the screen (0.12.0); on unless turned off.
-    rich: bool = True
+    # The rich form of the screen (0.12.0); off unless turned on. A rich message carries no
+    # fallback text (``InputRichMessage`` has no field for one), so an app without Rich Messages
+    # may not show the screen at all.
+    rich: bool = False
 
 
 @dataclass(frozen=True)
@@ -285,7 +291,7 @@ def read_settings(ctx: Any) -> Settings | None:
         limits_sources=_entries(_raw_setting(ctx, "limits_sources")),
         context_files=_setting(ctx, "context_files", ENV_CONTEXT_FILES).lower() not in _FALSE_WORDS,
         memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
-        rich=_setting(ctx, "rich", ENV_RICH).lower() not in _FALSE_WORDS,
+        rich=_setting(ctx, "rich", ENV_RICH).lower() in _TRUE_WORDS,
     )
 
 
@@ -682,9 +688,9 @@ class ProbeRuntime:
             else:
                 self._note(status="edit_failed", error=error, generation=generation)
                 return
-        # Creation is rich when the adapter's bot can send it (``_send_rich``). Otherwise the public
-        # verb as plain text (the adapter's own markdown conversion, which the screen has no
-        # constructs for); the next tick edits it as HTML.
+        # Creation is rich when the setting is on and the adapter's bot can send it
+        # (``_send_rich``). Otherwise the public verb as plain text (the adapter's own markdown
+        # conversion, which the screen has no constructs for); the next tick edits it as HTML.
         result = await self._send_rich(live, chat, screen)
         if result is None:
             metadata = {"thread_id": self.settings.thread_id} if self.settings.thread_id else None

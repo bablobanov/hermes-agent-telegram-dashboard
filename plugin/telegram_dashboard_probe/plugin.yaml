@@ -9,8 +9,8 @@ description: >-
   whether its memory works (the notebooks against their limits, the writes waiting for
   approval, a configured provider's errors; numbers only), the Hermes version against the
   latest upstream release with a new release marked for a day, up to five events on one phone
-  screen, the reasons and stamps in a collapsed details block. A Rich Message with a collapsed
-  section per source and the cron jobs with their schedules when the engine's bot can send one,
-  else HTML when the adapter takes it, else plain text; a tick that cannot build the screen still
-  edits the message.
+  screen, the reasons and stamps in a collapsed details block. With the setting rich true, a
+  Rich Message with a collapsed section per source and the cron jobs with their schedules when
+  the engine's bot can send one; else HTML when the adapter takes it, else plain text; a tick
+  that cannot build the screen still edits the message.
 author: Ilya Balobanov
