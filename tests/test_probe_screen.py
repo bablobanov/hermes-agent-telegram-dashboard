@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import replace
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from probe_fakes import (
 )
 
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
+from telegram_dashboard.schema import CronJob, CronSummary
 from telegram_dashboard.states import all_states
 
 _STATUS_LABELS = {
@@ -1826,6 +1828,46 @@ def test_a_screen_over_the_ceilings_goes_to_a_rich_message_as_plain_words(
     )
     said = [r for r in caplog.records if "ceilings" in r.getMessage()]
     assert len(said) == 1, "once per reason, not once per tick"
+
+
+def test_a_cron_list_over_the_ceilings_leaves_the_html_form(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """1.0.0, review of Task 3: names full of ``&`` and ``"`` grow under escaping until the rich
+    form passes Telegram's ceilings. The real builder answers ``None``, and the tick edits the
+    HTML form without asking rich: the intended answer, said once in the journal."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    _remembered(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    name = '&"' * 40
+    jobs = tuple(CronJob(f"a{i}", name, "active") for i in range(60))
+    jobs += tuple(CronJob(f"p{i}", name, "paused") for i in range(30))
+    jobs += tuple(CronJob(f"d{i}", name, "done") for i in range(20))
+    big = replace(STATES[0].snapshot, cron=CronSummary("ok", active=60, paused=30, jobs=jobs))
+
+    async def snapshot(now: Any) -> Any:
+        return big
+
+    runtime.collector = snapshot
+    adapter = RichAdapter()
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.html_edits) >= 3)
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    assert adapter.rich_calls == []
+    assert adapter.html_edits[-1][1] == "HTML"
+    record = ctx.state.data["probe"]
+    assert (record["screen_format"], record["rich_render_error"]) == (
+        "html",
+        plugin.RICH_CEILINGS,
+    )
+    said = [r for r in caplog.records if "ceilings" in r.getMessage()]
+    assert len(said) == 1
 
 
 def test_the_rich_setting_off_keeps_the_html_chain(monkeypatch, tmp_path: Path) -> None:

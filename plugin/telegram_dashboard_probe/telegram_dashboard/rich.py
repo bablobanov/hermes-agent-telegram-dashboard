@@ -88,6 +88,9 @@ def to_telegram_rich(
     )
     body = _main(parts, snapshot, zone) + _cron_fold(parts, snapshot, zone)
     body += _details_fold(parts.details)
+    # Over a ceiling there is no rich form, and that is the answer, not a fault: the tick edits
+    # the HTML form instead. A long list of names full of ``&`` or ``"``, which escaping grows
+    # five or six times, gets there (review of Task 3, 24.10).
     if (
         len(body) > RICH_MESSAGE_MAX_CHARS
         or len(_BLOCK_TAG.findall(body)) > RICH_MESSAGE_MAX_BLOCKS

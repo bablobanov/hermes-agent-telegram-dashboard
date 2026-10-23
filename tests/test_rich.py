@@ -470,6 +470,26 @@ def test_each_note_under_the_table_only_when_it_applies(failing, past_due, notes
     assert after == (f"<p>{'<br>'.join(notes)}</p>" if notes else "") + "</details>"
 
 
+def test_labels_that_escaping_grows_take_the_rich_form_over_a_ceiling() -> None:
+    """``&``, ``"``, ``'``, ``<`` and ``>`` grow four to six times under escaping, and a label is
+    whole up to 80: every set full of such labels passes 32,768 characters. Then there is no
+    rich form, and the tick edits the HTML form instead (``test_probe_screen``)."""
+    label = ("&\"'<>" * 16)[:80]
+    jobs = (
+        *(_active(f"a{i}", note=label) for i in range(rich.JOB_ROWS_LIMIT)),
+        *(CronJob(f"p{i}", label, "paused") for i in range(rich.PAUSED_LIMIT)),
+        *(CronJob(f"d{i}", label, "done") for i in range(rich.DONE_LIMIT)),
+    )
+    state = _state(14)
+    cron = CronSummary("ok", active=rich.JOB_ROWS_LIMIT, paused=rich.PAUSED_LIMIT, jobs=jobs)
+    plain = tuple(replace(job, name="x" * 80, note=None) for job in jobs)
+
+    assert to_telegram_rich(replace(state.snapshot, cron=cron), now=state.now) is None
+    # The same list in words escaping leaves as they are fits: the escaping passed the ceiling.
+    fits = replace(state.snapshot, cron=replace(cron, jobs=plain))
+    assert to_telegram_rich(fits, now=state.now) is not None
+
+
 def test_each_cut_set_ends_with_how_many_are_left_out_in_its_own_part() -> None:
     """The limits keep their values: the active, the paused and the done are each cut at their
     own, the row that says how many are left out closing that set's part of the table."""
