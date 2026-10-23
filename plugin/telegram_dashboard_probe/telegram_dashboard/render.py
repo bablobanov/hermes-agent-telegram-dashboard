@@ -124,6 +124,8 @@ _SCOPE_LABELS = {"Opus week": "Opus", "Sonnet week": "Sonnet"}
 # incidents come from the collectors, not from this number.
 QUOTA_WARN_PERCENT = 90
 _LOUD_SEVERITIES = ("warning", "critical")
+# An expired login is an answer, not "no data": the line and the rich table say it in these words.
+_LOGIN_EXPIRED = "login expired"
 # One-minute resolution on the screen: a stamp within a minute of the data time is the same.
 _STAMP_SLACK_SECONDS = 60.0
 _DETAILS_PREFIX = "> "
@@ -924,7 +926,7 @@ def _quota_lines(
     an answer, not "no data"."""
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "expired":
-        return [f"{provider} · login expired"]
+        return [f"{provider} · {_LOGIN_EXPIRED}"]
     if quota.kind != "official" or not quota.windows:
         return [_quota_line(quota, reference, details, zone)]
     own = tuple(window for window in quota.windows if window.scope is None)
@@ -949,7 +951,7 @@ def _quota_rows(
     line leaves it to the account's line above. Nothing is written to the details."""
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "expired":
-        return [(provider, ["login expired"])]
+        return [(provider, [_LOGIN_EXPIRED])]
     if quota.kind != "official" or not quota.windows:
         return [(provider, [_state_cell(quota, reference, zone)])]
     own = tuple(window for window in quota.windows if window.scope is None)
@@ -994,11 +996,10 @@ def _window_cells(
 def _state_cell(quota: QuotaMetric, reference: datetime | None, zone: tzinfo) -> str:
     """The cell of a provider without windows: the words ``_quota_line`` writes after its name."""
     if quota.kind == "local":
-        return f"locally {_plural(quota.used or 0, 'token', 'tokens')}"
-    if quota.kind == "official" and quota.used is not None and quota.limit:
-        percent = round((quota.used / quota.limit) * 100)
-        reset = _reset_words(quota.reset_at, reference)
-        return f"{_warn(percent)}{percent}%" + (f" · {reset}" if reset else "")
+        return _local_words(quota)
+    counted = _counted_window(quota) if quota.kind == "official" else None
+    if counted is not None:
+        return _line_cells((counted,), reference)[0]
     words, loud = _no_data_words(quota.refusal, reference, zone)
     return f"{WARN_MARK} {words}" if loud else words
 
@@ -1046,7 +1047,7 @@ def _quota_line(
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
         details.missing.append(f"{provider}: remaining unknown, counted locally")
-        return f"{provider} · locally {_plural(quota.used or 0, 'token', 'tokens')}"
+        return f"{provider} · {_local_words(quota)}"
     # "no data" always names its reason: the collector's own words, never a default that
     # reads as "we did not finish" when the truth is "the installation has no credential".
     if quota.kind == "unsupported":
@@ -1059,11 +1060,25 @@ def _quota_line(
         return _no_data(provider, quota.refusal, reference, zone)
     if quota.windows:
         return _windows_line(provider, quota.windows, reference)
-    if quota.used is not None and quota.limit:
-        percent = round((quota.used / quota.limit) * 100)
-        return f"{_warn(percent)}{provider} {percent}%{_reset_suffix(quota.reset_at, reference)}"
+    counted = _counted_window(quota)
+    if counted is not None:
+        return _windows_line(provider, (counted,), reference)
     details.missing.append(f"{provider}: windows not received")
     return _no_data(provider, quota.refusal, reference, zone)
+
+
+def _local_words(quota: QuotaMetric) -> str:
+    """``locally 120,000 tokens``: a count kept on this installation, never a share."""
+    return f"locally {_plural(quota.used or 0, 'token', 'tokens')}"
+
+
+def _counted_window(quota: QuotaMetric) -> QuotaWindow | None:
+    """A limit given as used of a limit, as the one window it is: the share to a whole percent
+    and the quota's reset, so its line and its cell come from the windows' own helpers;
+    ``None`` without both numbers."""
+    if quota.used is None or not quota.limit:
+        return None
+    return QuotaWindow("", float(round((quota.used / quota.limit) * 100)), quota.reset_at)
 
 
 def _no_data(
@@ -1175,11 +1190,6 @@ def _share_words(
     if window.used_percent is not None:
         return f"{head}{window.used_percent:.0f}%", _reset_words(window.reset_at, reference)
     return f"{head}{window.note or '?'}", None
-
-
-def _warn(percent: float) -> str:
-    """The mark from ``QUOTA_WARN_PERCENT`` on, for the most spent window of the line."""
-    return f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
 
 
 def _reset_suffix(value: object, reference: datetime | None) -> str:

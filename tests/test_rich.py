@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 import pytest
 
 from telegram_dashboard import __version__, rich
-from telegram_dashboard.render import _html_line, render_parts
+from telegram_dashboard.render import _html_line, render_dashboard, render_parts
 from telegram_dashboard.rich import to_telegram_rich
 from telegram_dashboard.schema import (
     CapacitySummary,
@@ -213,12 +213,14 @@ def test_a_table_of_single_windows_spans_nothing_and_a_word_state_stays_a_word()
         QuotaMetric("Kimi", "official", windows=(QuotaWindow("5h", 33.0, at),)),
         QuotaMetric("OpenAI", "local", used=120_000),
         QuotaMetric("Claude", "expired"),
+        QuotaMetric("Mistral", "official", used=95, limit=100, reset_at=at),
     )
     snapshot = replace(state.snapshot, capacity=CapacitySummary(quotas))
 
     markup = to_telegram_rich(snapshot, now=state.now)
     assert markup is not None
     table = markup.split("<table compact bordered>")[1].split("</table>")[0]
+    text = render_dashboard(snapshot, now=state.now).splitlines()
 
     assert table.split("</tr>")[:-1] == [
         "<tr><th>Provider</th><th>Used · resets in</th>",
@@ -226,7 +228,17 @@ def test_a_table_of_single_windows_spans_nothing_and_a_word_state_stays_a_word()
         "<tr><td>Kimi</td><td>33% · 2h</td>",
         "<tr><td>OpenAI</td><td>locally 120,000 tokens</td>",
         "<tr><td>Claude</td><td>login expired</td>",
+        "<tr><td>Mistral</td><td>⚠️ 95% · 2h</td>",
     ]
+    # The same words as the text lines, from the same helpers.
+    for line in (
+        "Grok · usage not started",
+        "Kimi 33% (2h)",
+        "OpenAI · locally 120,000 tokens",
+        "Claude · login expired",
+        "⚠️ Mistral 95% (2h)",
+    ):
+        assert line in text
 
 
 def test_the_cron_table_lists_the_failing_job_first_with_its_marks() -> None:
