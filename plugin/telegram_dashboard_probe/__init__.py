@@ -1023,11 +1023,16 @@ class ProbeRuntime:
         except Exception as exc:
             reason = type(exc).__name__
             if self._rich_render_error != reason:
-                logger.exception("probe: rich form not built; HTML this tick")
+                logger.exception(
+                    "probe: rich form not built; fallback this tick (HTML or plain words)"
+                )
             return self._rich_built(None, reason)
         if not isinstance(markup, str):
             if self._rich_render_error != RICH_CEILINGS:
-                logger.warning("probe: rich form over Telegram's ceilings; HTML this tick")
+                logger.warning(
+                    "probe: rich form over Telegram's ceilings; fallback this tick "
+                    "(HTML, or plain words on a rich message)"
+                )
             return self._rich_built(None, RICH_CEILINGS)
         return self._rich_built(markup, None)
 

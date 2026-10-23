@@ -12,7 +12,8 @@ they come from the same snapshot.
 
 Every word goes through the HTML form's escaping and its ``<code>`` rule (``render._html_line``),
 so a file name or a ``/command`` is never a tap target. A message over Telegram's ceilings is not
-built: ``None``, and the tick edits the HTML form instead.
+built: ``None``, and the tick sends the fallback: the HTML form on an HTML message, the plain
+words as one rich paragraph on a message that is rich already.
 """
 
 from __future__ import annotations
@@ -91,8 +92,9 @@ def to_telegram_rich(
     )
     body = _main(parts, snapshot, zone) + _cron_fold(parts, snapshot, zone)
     body += _details_fold(parts.details)
-    # Over a ceiling there is no rich form, and that is the answer, not a fault: the tick edits
-    # the HTML form instead. A long list of names full of ``&`` or ``"``, which escaping grows
+    # Over a ceiling there is no rich form, and that is the answer, not a fault: the tick falls
+    # back (HTML on an HTML message, the plain words as one rich paragraph on a message that is
+    # rich already). A long list of names full of ``&`` or ``"``, which escaping grows
     # five or six times, gets there (review of Task 3, 24.10).
     if (
         len(body) > RICH_MESSAGE_MAX_CHARS
