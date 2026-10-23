@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from telegram_dashboard import __version__
+from telegram_dashboard.cron_jobs import NAME_LIMIT as CRON_NAME_LIMIT
 from telegram_dashboard.freshness import DeliveryRecord
 from telegram_dashboard.gemini_log import incidents_for
 from telegram_dashboard.render import (
@@ -1250,6 +1251,24 @@ def test_an_overdue_job_names_the_missed_moment() -> None:
     text = render_dashboard(_cron_snapshot(cron), now=NOW)
 
     assert "> Cron daily-digest: overdue since Sep 25 06:50" in text.splitlines()
+
+
+def test_the_failure_line_in_the_details_names_the_job_in_full() -> None:
+    """1.0.0: the failure carries the owner's label, which "Needs attention" and the cron table
+    show whole up to ``cron_jobs.NAME_LIMIT``; the details line takes the same limit, not 24.
+    The reason keeps its own cut."""
+    label = "Sends Threads topics to SMM every morning"
+    longer = "x" * (CRON_NAME_LIMIT + 5)
+    failing = (
+        CronFailure("b1", label, "run", at="2026-09-25T07:05:00Z", streak=1, reason="r" * 40),
+        CronFailure("b2", longer, "overdue", at="2026-09-25T06:50:00Z"),
+    )
+    cron = replace(CRON_OK, state="failing", failing=failing)
+
+    lines = render_dashboard(_cron_snapshot(cron), now=NOW).splitlines()
+
+    assert f"> Cron {label}: run failed Sep 25 07:05, 1 run ({'r' * 23}…)" in lines
+    assert f"> Cron {'x' * (CRON_NAME_LIMIT - 1)}…: overdue since Sep 25 06:50" in lines
 
 
 def test_a_held_failure_is_in_the_details_only_with_the_run_that_replaced_it() -> None:

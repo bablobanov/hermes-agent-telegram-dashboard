@@ -34,6 +34,7 @@ from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .context_files import platform_label
+from .cron_jobs import NAME_LIMIT as CRON_NAME_LIMIT
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
@@ -677,7 +678,8 @@ def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
 
 
 def _failure_words(failure: CronFailure, zone: tzinfo) -> str:
-    name = sanitize_public_text(failure.name, limit=24)
+    # The job's label in full, as "Needs attention" and the cron table name it (1.0.0).
+    name = sanitize_public_text(failure.name, limit=CRON_NAME_LIMIT)
     when = format_day_time(failure.at, zone) or "time unknown"
     text = f"Cron {name}: {_FAILURE_WORDS[failure.kind]} {when}"
     if failure.recovered_at:
