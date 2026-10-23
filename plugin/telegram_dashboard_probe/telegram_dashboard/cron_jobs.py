@@ -10,8 +10,9 @@ status``): a heartbeat older than three ticks plus slack is a dead ticker, a ``n
 than fifteen minutes in the past is a job that is not firing.
 
 Read only. Never read: ``prompt``, ``script``, ``deliver`` (chat ids), ``skills``, the model.
-The schedule is read in the engine's own words (``schedule_display``) for the cron section of the
-rich screen, sanitized like the name.
+The schedule is read twice for the cron section of the rich screen: in the engine's own words
+(``schedule_display``), sanitized like the name, and as how often the job runs, from the stored
+schedule's ``kind`` and ``expr`` or ``minutes`` (``cron_frequency``), never from its display.
 The engine's error texts (``last_error``, ``last_delivery_error``, ``ticker_last_error``) never
 reach the screen or the record: each is reduced to the KIND of the error in a word
 (``error_kind``), in the order the engine's own health projection uses (decision of 01.10); the
@@ -33,6 +34,7 @@ from typing import Any, Protocol
 
 from .backup import describe_age
 from .compat import Environment
+from .cron_frequency import frequency_of
 from .policy import sanitize_public_text
 from .schema import (
     CronFailure,
@@ -41,6 +43,7 @@ from .schema import (
     CronJobState,
     CronState,
     CronSummary,
+    Frequency,
     Incident,
     SourceObservation,
     SourceState,
@@ -149,6 +152,8 @@ class Job:
     name: str
     # The schedule in the engine's own words, sanitized; ``None`` when the record has none.
     schedule: str | None
+    # How often it runs, from the stored schedule (``cron_frequency.frequency_of``).
+    frequency: Frequency
     enabled: bool
     state: str
     # The engine's pause stamp: with ``state`` one of its two pause markers (``enabled`` gates).
@@ -229,6 +234,7 @@ def job_of(raw: object) -> Job | None:
         job_id=raw["id"],
         name=_name(raw.get("name") or raw["id"]),
         schedule=_schedule(raw),
+        frequency=frequency_of(raw.get("schedule")),
         enabled=bool(raw.get("enabled", True)),
         state=_text(raw.get("state")) or "scheduled",
         paused_at=str(stamp) if stamp else None,
@@ -386,6 +392,7 @@ def _row(job: Job, failure: CronFailureKind | None, *, now: datetime) -> CronJob
         last_run_at=job.last_run_at,
         failure=failure,
         paused_past_due=behind,
+        frequency=job.frequency,
     )
 
 

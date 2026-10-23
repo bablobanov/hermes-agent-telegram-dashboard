@@ -6,6 +6,7 @@ never reach the screen. The chat ids are made up.
 """
 
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,14 +24,30 @@ from telegram_dashboard.cron_jobs import (
     job_of,
     read_ticker,
 )
+from telegram_dashboard.schema import Frequency
 
 NOW = datetime(2026, 9, 30, 12, 30, tzinfo=UTC)
+# The engine's stored schedule, one per kind (``cron/jobs.py`` at v0.22.2: :780, :783-784,
+# :829-833), each with the display the engine writes beside it as ``schedule_display``.
+CRON = {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}
+INTERVAL = {"kind": "interval", "minutes": 30, "display": "every 30m"}
+ONCE = {
+    "kind": "once",
+    "run_at": "2026-10-01T10:00:00+00:00",
+    "display": "once at 2026-10-01 10:00",
+}
+
+
+def _scheduled(schedule: dict) -> dict:
+    """The two schedule fields of a record, as the engine writes them together."""
+    return {"schedule": schedule, "schedule_display": schedule["display"]}
 
 
 def _job(**over):
     base = {
         "id": "b1",
         "name": "daily-digest",
+        **_scheduled(CRON),
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -94,11 +111,17 @@ def test_job_of_refuses_a_record_that_is_not_a_job(raw) -> None:
         ({"schedule_display": "0 9 * * 1-5"}, "0 9 * * 1-5"),
         ({"schedule_display": " every 30m "}, "every 30m"),
         # Without ``schedule_display`` the engine's own fallbacks, in its order (v0.22.2).
-        ({"schedule": {"kind": "cron", "expr": "*/30 * * * *", "display": ""}}, "*/30 * * * *"),
-        ({"schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"}}, "every 30m"),
-        ({"schedule": "every 2h"}, "every 2h"),
+        (
+            {
+                "schedule_display": None,
+                "schedule": {"kind": "cron", "expr": "*/30 * * * *", "display": ""},
+            },
+            "*/30 * * * *",
+        ),
+        ({"schedule_display": None, "schedule": INTERVAL}, "every 30m"),
+        ({"schedule_display": None, "schedule": "every 2h"}, "every 2h"),
         ({"schedule_display": "", "schedule": None}, None),
-        ({}, None),
+        ({"schedule_display": None, "schedule": {"kind": "cron"}}, None),
         # The engine's one-shot form is 24 characters: whole.
         ({"schedule_display": "once at 2026-10-22 13:00"}, "once at 2026-10-22 13:00"),
         (
@@ -110,6 +133,32 @@ def test_job_of_refuses_a_record_that_is_not_a_job(raw) -> None:
 )
 def test_job_of_reads_the_schedule_in_the_engine_s_words(over, schedule) -> None:
     assert job_of(_job(**over)).schedule == schedule
+
+
+@pytest.mark.parametrize(
+    ("over", "label", "period"),
+    [
+        (_scheduled(CRON), "Daily", 1440),
+        (_scheduled(INTERVAL), "Every 30 min", 30),
+        (_scheduled(ONCE), "Once", 0),
+        # The owner's job: the display says one thing, the expression another; the expression.
+        (
+            {
+                "schedule": {"kind": "cron", "expr": "0 6 * * 1", "display": "every monday 6am"},
+                "schedule_display": "every monday 6am",
+            },
+            "Weekly",
+            10080,
+        ),
+        ({"schedule": None, "schedule_display": "0 9 * * *"}, "Other", math.inf),
+        ({"schedule": "0 9 * * *"}, "Other", math.inf),
+    ],
+)
+def test_job_of_reads_how_often_the_job_runs_from_the_stored_schedule(over, label, period) -> None:
+    job = job_of(_job(**over))
+
+    assert job is not None
+    assert job.frequency == Frequency(label, period)
 
 
 def test_an_ok_job_is_no_failure() -> None:
@@ -412,14 +461,22 @@ def test_the_jobs_are_listed_failing_first_then_active_paused_and_done(tmp_path:
             state="completed",
             enabled=False,
             last_run_at=(NOW - timedelta(days=3)).isoformat(),
+            **_scheduled(ONCE),
         ),
         _job(
             id="a2",
             name="later",
             next_run_at=(NOW + timedelta(hours=2)).isoformat(),
-            schedule_display="0 15 * * *",
+            **_scheduled({"kind": "cron", "expr": "0 15 * * 1", "display": "0 15 * * 1"}),
         ),
-        _job(id="p1", name="paused", enabled=False, state="paused", next_run_at=None),
+        _job(
+            id="p1",
+            name="paused",
+            enabled=False,
+            state="paused",
+            next_run_at=None,
+            **_scheduled(INTERVAL),
+        ),
         _job(id="f1", name="broken", last_status="error", last_error="timed out"),
         _job(id="a1", name="sooner", next_run_at=(NOW + timedelta(minutes=5)).isoformat()),
         _job(
@@ -444,7 +501,16 @@ def test_the_jobs_are_listed_failing_first_then_active_paused_and_done(tmp_path:
         "done",
     ]
     assert [job.failure for job in summary.jobs] == ["run", None, None, None, None, None]
-    assert summary.jobs[2].schedule == "0 15 * * *"
+    assert summary.jobs[2].schedule == "0 15 * * 1"
+    # How often each runs, for the table to group by; the order above does not follow it.
+    assert [job.frequency.label for job in summary.jobs] == [
+        "Daily",
+        "Daily",
+        "Weekly",
+        "Every 30 min",
+        "Daily",
+        "Once",
+    ]
     assert not hasattr(summary.jobs[0], "prompt") and not hasattr(summary.jobs[0], "deliver")
 
 

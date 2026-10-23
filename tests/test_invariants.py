@@ -167,7 +167,7 @@ def test_a_bot_token_variable_is_never_a_source_key(monkeypatch) -> None:
 # registers nothing but the platform handler and the one task, and the traffic probe reads
 # the adapter's counters without calling anything on it.
 
-CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py", "telegram_traffic.py")
+CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_frequency.py", "cron_runs.py", "telegram_traffic.py")
 
 
 def test_the_runs_database_is_opened_read_only_and_query_only() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -105,6 +106,17 @@ CronJobState = Literal["active", "paused", "done"]
 
 
 @dataclass(frozen=True, slots=True)
+class Frequency:
+    """How often a job runs, from its stored schedule (``cron_frequency.frequency_of``): the
+    words the cron section groups the jobs by (``Every 30 min``, ``Twice a day``, ``Weekly``)
+    and the minutes between two runs it orders the groups by. ``Once`` is 0, first; ``Other``,
+    a schedule the plugin does not name, is infinity, last."""
+
+    label: str = "Other"
+    period: float = math.inf
+
+
+@dataclass(frozen=True, slots=True)
 class CronJob:
     """One job as the cron section lists it: the name, the schedule in the engine's own words,
     the next and the last run, what the line counts against it now. Never the prompt, the
@@ -122,6 +134,9 @@ class CronJob:
     # Paused with its ``next_run_at`` already behind: a mark of its own, never an alarm and never
     # a failure (decision of 22.10).
     paused_past_due: bool = False
+    # How often it runs, read from ``kind`` and ``expr``/``minutes`` of the stored schedule;
+    # ``schedule`` above stays the engine's own words.
+    frequency: Frequency = Frequency()
 
 
 @dataclass(frozen=True, slots=True)
