@@ -60,7 +60,7 @@ import inspect
 import logging
 import math
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from html import escape
@@ -132,8 +132,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
     # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
-    # with ``Environment.cron_notes`` (1.0.0): a copy without them would reject the tick's
-    # arguments every time.
+    # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0): a copy without them would
+    # reject the tick's arguments every time.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -146,7 +146,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "TRAFFIC",
         "RULES",
     ),
-    "compat": ("Environment", "CRON_NOTES"),
+    "compat": ("Environment", "CRON_NOTES", "parse_cron_notes"),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
     # The rich form came with 0.12.0, the module with it.
@@ -310,17 +310,18 @@ def _entries(raw: object) -> tuple[Any, ...]:
 
 
 def _notes(raw: object) -> tuple[tuple[str, str], ...]:
-    """``cron_notes`` as a mapping of job id to label in the config entry; anything else is
-    "none configured". An entry whose id or label is not a non-empty string is skipped."""
-    if isinstance(raw, Mapping):
-        return tuple(
-            (job_id.strip(), label.strip())
-            for job_id, label in raw.items()
-            if isinstance(job_id, str) and isinstance(label, str)
-            if job_id.strip() and label.strip()
-        )
-    if raw not in (None, ""):
-        logger.warning("probe: cron_notes must be a mapping; ignoring %r", type(raw))
+    """``cron_notes`` read by the package's own parser (``compat.parse_cron_notes``), so the
+    plugin and the cron tick agree; none when no package can be imported (``import_dashboard``
+    says so)."""
+    for base in (f"{__package__}.telegram_dashboard" if __package__ else "", "telegram_dashboard"):
+        if not base:
+            continue
+        try:
+            parse = importlib.import_module(f"{base}.compat").parse_cron_notes
+        except (ImportError, AttributeError):
+            continue
+        notes: tuple[tuple[str, str], ...] = parse(raw, logger, "probe: ")
+        return notes
     return ()
 
 

@@ -11,13 +11,12 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Mapping
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .collect import SubprocessRunner, collect_all
-from .compat import CRON_NOTES, Environment
+from .compat import CRON_NOTES, Environment, parse_cron_notes
 from .delivery import DeliveryStore, deliver
 from .freshness import check_exit_code, classify_message_freshness, load_plugin_record
 from .render import render_dashboard, to_telegram_html, to_telegram_plain
@@ -56,27 +55,12 @@ def _environment(config: dict[str, object]) -> Environment:
         limits_sources=tuple(sources) if isinstance(sources, list) else (),
         context_files_enabled=_enabled(config.get("context_files", True)),
         memory_enabled=_enabled(config.get("memory", True)),
-        cron_notes=_notes(config.get(CRON_NOTES)),
+        cron_notes=parse_cron_notes(config.get(CRON_NOTES), logger),
         # The cron tick runs in a directory of its own: the gateway's comes from the config.
         gateway_dir=Path(str(gateway_dir)).expanduser()
         if isinstance(gateway_dir, str) and gateway_dir
         else None,
     )
-
-
-def _notes(raw: object) -> tuple[tuple[str, str], ...]:
-    """``cron_notes``, job id to label, as the plugin reads it: a mapping, an entry whose id or
-    label is not a non-empty string skipped; anything else is none, with a warning."""
-    if isinstance(raw, Mapping):
-        return tuple(
-            (job_id.strip(), label.strip())
-            for job_id, label in raw.items()
-            if isinstance(job_id, str) and isinstance(label, str)
-            if job_id.strip() and label.strip()
-        )
-    if raw not in (None, ""):
-        logger.warning("cron_notes must be a mapping; ignoring %r", type(raw))
-    return ()
 
 
 def _enabled(value: object) -> bool:

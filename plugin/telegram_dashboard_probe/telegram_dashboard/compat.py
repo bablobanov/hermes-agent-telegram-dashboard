@@ -13,6 +13,7 @@ coverage and names what is missing until someone adds a row.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,36 @@ MATRIX_SCHEMA = 1
 # requires the name (``REQUIRED_API``): a copy without the field would reject the tick's
 # ``Environment`` arguments every time.
 CRON_NOTES = "cron_notes"
+
+
+def parse_cron_notes(
+    raw: object, log: logging.Logger, prefix: str = ""
+) -> tuple[tuple[str, str], ...]:
+    """``cron_notes``, job id to label, as an immutable tuple of pairs: a mapping, an entry whose
+    id or label is not a non-empty string skipped (YAML reads an unquoted all-digit id as a
+    number). One warning per parse says how many were skipped, never which: a key or a value
+    may carry text from the config. Anything but a mapping is "none configured", with its own
+    warning. The plugin and the package's own tick both read the setting with this."""
+    if not isinstance(raw, Mapping):
+        if raw not in (None, ""):
+            log.warning("%scron_notes must be a mapping; ignoring %r", prefix, type(raw))
+        return ()
+    pairs = tuple(
+        (job_id.strip(), label.strip())
+        for job_id, label in raw.items()
+        if isinstance(job_id, str) and isinstance(label, str)
+        if job_id.strip() and label.strip()
+    )
+    skipped = len(raw) - len(pairs)
+    if skipped:
+        log.warning(
+            "%scron_notes: %d %s skipped (id and label must be non-empty strings; "
+            "quote numeric ids)",
+            prefix,
+            skipped,
+            "entry" if skipped == 1 else "entries",
+        )
+    return pairs
 
 
 @dataclass(frozen=True, slots=True)

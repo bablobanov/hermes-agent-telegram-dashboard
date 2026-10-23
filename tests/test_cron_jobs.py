@@ -905,3 +905,17 @@ def test_a_failure_recorded_again_moves_to_the_end_of_the_record() -> None:
     hold(cache, (again,), {}, now=NOW)
 
     assert list(cache["held"]) == ["b", "a"]
+
+
+def test_the_fallback_tick_counts_the_skipped_cron_notes_without_their_text(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from telegram_dashboard.__main__ import _environment
+
+    notes = {"a1": "Morning brief", 424242: "Secret label", "a2": ""}
+    with caplog.at_level("WARNING", logger="telegram_dashboard"):
+        env = _environment({"hermes_home": str(tmp_path), "cron_notes": notes})
+
+    assert env.cron_notes == (("a1", "Morning brief"),)
+    assert caplog.text.count("cron_notes: 2 entries skipped") == 1
+    assert "Secret label" not in caplog.text and "424242" not in caplog.text

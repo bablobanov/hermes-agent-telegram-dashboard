@@ -414,6 +414,29 @@ def test_cron_notes_that_are_not_a_mapping_are_ignored_with_one_warning(
     assert len(warnings) == 1 and "cron_notes must be a mapping" in warnings[0]
 
 
+def test_cron_notes_entries_skipped_are_counted_in_one_warning_without_their_text(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A numeric id (YAML reads an unquoted ``123456`` as an int) is skipped; the journal says
+    how many, once, and never which: a key or a value may carry text from the config."""
+    plugin = load_plugin()
+    notes = {"a1b2c3": "Morning brief", 123456: "Secret label", "d4": 7, "": "Hidden text"}
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        settings = plugin.read_settings(
+            FakeContext(_settings(monkeypatch, tmp_path, cron_notes=notes))
+        )
+
+    assert settings is not None and settings.cron_notes == (("a1b2c3", "Morning brief"),)
+    warnings = [r.getMessage() for r in caplog.records if "cron_notes" in r.getMessage()]
+    assert warnings == [
+        "probe: cron_notes: 3 entries skipped (id and label must be non-empty strings; "
+        "quote numeric ids)"
+    ]
+    for text in ("123456", "Secret label", "Hidden text", "d4", "a1b2c3", "Morning brief"):
+        assert text not in warnings[0]
+
+
 def test_cron_notes_come_from_the_config_only(monkeypatch, tmp_path: Path) -> None:
     """No environment fallback: without the config entry there are no notes, whatever the
     environment holds."""
