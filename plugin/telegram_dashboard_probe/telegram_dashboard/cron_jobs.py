@@ -270,8 +270,11 @@ def _name(value: object) -> str:
 
 def _note(value: str | None) -> str | None:
     """The owner's label for a job, through the same sanitizer and cut as the name: a secret,
-    a path or a chat id typed into ``cron_notes`` never reaches the screen or the record."""
-    return sanitize_public_text(value, limit=NAME_LIMIT) or None if value else None
+    a path or a chat id typed into ``cron_notes`` never reaches the screen or the record. ``None``
+    without a note, or for one the sanitizer leaves empty: the name is shown then."""
+    if not value:
+        return None
+    return sanitize_public_text(value, limit=NAME_LIMIT) or None
 
 
 def _schedule(raw: Mapping[str, object]) -> str | None:
