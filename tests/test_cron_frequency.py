@@ -83,14 +83,17 @@ def test_an_interval_is_named_in_the_largest_unit_that_divides_it(minutes: int, 
 @pytest.mark.parametrize(
     ("expr", "label", "period"),
     [
-        # The minute ``*/N``, every other field open.
+        # The minute ``*/N`` with N a divisor of 60, every other field open.
         ("*/15 * * * *", "Every 15 min", 15),
         ("*/30 * * * *", "Every 30 min", 30),
+        ("*/20 * * * *", "Every 20 min", 20),
         ("*/1 * * * *", "Every 1 min", 1),
         # A fixed minute: every hour, every N hours.
         ("0 * * * *", "Every hour", 60),
         ("17 * * * *", "Every hour", 60),
         ("0 */2 * * *", "Every 2 h", 120),
+        ("0 */8 * * *", "Every 8 h", 480),
+        ("0 */12 * * *", "Every 12 h", 720),
         ("0 */1 * * *", "Every hour", 60),  # the same group as ``0 * * * *``
         # A fixed minute at k listed hours of every day.
         ("0 5 * * *", "Daily", 1440),
@@ -135,6 +138,13 @@ def test_a_cron_expression_is_named_by_its_shape(expr: str, label: str, period: 
         "0 9 * * */2",  # a step in the day of the week
         "0 9 * * 5-1",  # a range backwards
         "0 9 * * 1-",
+        # A step that does not divide its cycle: the runs do not come evenly.
+        "*/45 * * * *",  # :00 and :45
+        "*/7 * * * *",
+        "*/59 * * * *",
+        "0 */23 * * *",  # 00:00 and 23:00
+        "0 */5 * * *",
+        "0 */7 * * *",
     ],
 )
 def test_any_other_cron_expression_is_other(expr: str) -> None:
@@ -149,6 +159,7 @@ def test_any_other_cron_expression_is_other(expr: str) -> None:
         _cron("*/0 * * * *"),
         _cron("0 */0 * * *"),
         _cron("*/60 * * * *"),
+        _cron("0 */24 * * *"),
         _cron("60 9 * * *"),
         _cron("0 24 * * *"),
         _cron("0 9 32 * *"),
@@ -184,6 +195,14 @@ def test_a_malformed_or_missing_schedule_is_other_and_orders_last(schedule: obje
 
     assert frequency == OTHER
     assert (frequency.label, frequency.period) == ("Other", math.inf)
+
+
+def test_an_interval_need_not_divide_anything() -> None:
+    """The engine's interval runs every ``minutes`` from the last run, so 45 is every 45 minutes;
+    only a cron step has to divide its cycle."""
+    assert frequency_of(_interval(45)) == Frequency("Every 45 min", 45)
+    assert frequency_of(_interval(1380)) == Frequency("Every 23 h", 1380)
+    assert frequency_of(_cron("*/45 * * * *")) == OTHER
 
 
 def test_the_display_never_names_the_frequency() -> None:

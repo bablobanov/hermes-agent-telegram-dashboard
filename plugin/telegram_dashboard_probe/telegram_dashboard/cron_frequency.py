@@ -76,7 +76,7 @@ def _cron(expr: object) -> Frequency:
     minute, hour, day, month, weekday = fields
     if month != "*":
         return OTHER
-    step = _step(minute, 59)
+    step = _step(minute, HOUR)
     if step is not None:
         every_field_open = hour == day == weekday == "*"
         return _every(step) if every_field_open else OTHER
@@ -91,7 +91,7 @@ def _at_a_minute(hour: str, day: str, weekday: str) -> Frequency:
     if day == weekday == "*":
         if hour == "*":
             return _every(HOUR)
-        step = _step(hour, 23)
+        step = _step(hour, DAY // HOUR)
         if step is not None:
             return _every(step * HOUR)
         if hours:
@@ -139,9 +139,13 @@ def _numbers(text: str, low: int, high: int) -> frozenset[int]:
     return frozenset(numbers) if len(numbers) == len(values) else frozenset()
 
 
-def _step(text: str, high: int) -> int | None:
-    """``*/N`` with ``N`` in ``[1, high]``; ``None`` for anything else (``*/0`` among them)."""
-    return _number(text[2:], 1, high) if text.startswith("*/") else None
+def _step(text: str, cycle: int) -> int | None:
+    """``*/N`` with ``N`` a divisor of ``cycle`` below it (``*/15`` of the hour's 60 minutes,
+    ``*/6`` of the day's 24 hours), so the runs come evenly. ``None`` for anything else:
+    ``*/0``, or a step that does not divide its cycle (``*/45`` fires at :00 and :45, ``*/23``
+    of the hours at 00:00 and 23:00)."""
+    step = _number(text[2:], 1, cycle - 1) if text.startswith("*/") else None
+    return step if step is not None and cycle % step == 0 else None
 
 
 def _weekdays(text: str) -> frozenset[int]:
