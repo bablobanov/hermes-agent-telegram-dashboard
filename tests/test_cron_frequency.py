@@ -69,6 +69,7 @@ def test_the_owner_s_and_the_showcase_s_schedules_land_as_named(
         (1440, "Daily"),
         (4320, "Every 3 days"),
         (10080, "Every 7 days"),
+        (525600, "Every 365 days"),  # a year: the longest named
         # Not a whole number of hours or days: the minutes.
         (90, "Every 90 min"),
         (1500, "Every 1500 min"),
@@ -167,6 +168,9 @@ def test_any_other_cron_expression_is_other(expr: str) -> None:
         _interval(30.0),
         _interval("30"),
         _interval(True),
+        _interval(525601),  # over a year
+        _interval(10**400),  # past a float's range: no OverflowError
+        _cron("0 " + "9" * 5000 + " * * *"),  # past int's digit limit: no ValueError
         {"kind": "monthly", "expr": "0 9 1 * *"},  # an unknown kind
         {"expr": "0 9 * * *"},  # no kind
         {},

@@ -21,6 +21,8 @@ DAY = 24 * HOUR
 WEEK = 7 * DAY
 # A month for the order only: thirty days.
 MONTH = 30 * DAY
+# The longest interval named: 525,600 minutes.
+YEAR = 365 * DAY
 ONCE = Frequency("Once", 0.0)
 OTHER = Frequency("Other", math.inf)
 _WEEKDAYS = frozenset(range(1, 6))
@@ -41,8 +43,9 @@ def frequency_of(schedule: object) -> Frequency:
 
 
 def _interval(minutes: object) -> Frequency:
-    """``every {m}m`` as the engine stores it: whole positive minutes."""
-    if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0:
+    """``every {m}m`` as the engine stores it: whole positive minutes, at most a year. A longer
+    one is ``Other``: no rhythm to name, and past a float's range the period would raise."""
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or not 0 < minutes <= YEAR:
         return OTHER
     return _every(minutes)
 
@@ -121,8 +124,9 @@ def _days_of_the_week(days: frozenset[int]) -> Frequency:
 
 
 def _number(text: str, low: int, high: int) -> int | None:
-    """One field value in ``[low, high]``; ``None`` for anything else."""
-    if not text.isdecimal() or not text.isascii():
+    """One field value in ``[low, high]``; ``None`` for anything else. Every field's values have
+    at most two digits: a longer run is refused before ``int``, which raises past 4300 digits."""
+    if not text.isdecimal() or not text.isascii() or len(text) > 2:
         return None
     value = int(text)
     return value if low <= value <= high else None
