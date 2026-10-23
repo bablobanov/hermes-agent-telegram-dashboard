@@ -789,16 +789,25 @@ def _no_data(
     until a daily quota's reset, in the screen's zone, and ``⚠️ Gemini hit limit 5 min ago`` for
     any other. Only the line: the status and the events come from the collectors, a daily
     refusal's event among them."""
+    words, loud = _no_data_words(refusal, reference, zone)
+    return f"{WARN_MARK} {provider} {words}" if loud else f"{provider} · {words}"
+
+
+def _no_data_words(
+    refusal: Refusal | None, reference: datetime | None, zone: tzinfo
+) -> tuple[str, bool]:
+    """``("paused till 23:00", True)``: what ``_no_data`` says after the provider's name, and
+    whether the line carries the mark."""
     if refusal is None or reference is None or not is_active(refusal, reference):
-        return f"{provider} · no data"
+        return "no data", False
     back = format_in_zone(refusal.active_until, zone, "%H:%M") if refusal.daily else None
     if back is not None:
-        return f"{WARN_MARK} {provider} paused till {back}"
+        return f"paused till {back}", True
     moment = parse_timestamp(refusal.at)
     age = age_seconds(moment, reference) if moment is not None else None
     if age is None:
-        return f"{provider} · no data"
-    return f"{WARN_MARK} {provider} hit limit {hit_words(max(0.0, age))}"
+        return "no data", False
+    return f"hit limit {hit_words(max(0.0, age))}", True
 
 
 def _refusal_words(quotas: tuple[QuotaMetric, ...], zone: tzinfo) -> list[str]:
@@ -866,12 +875,19 @@ def _mark(windows: tuple[QuotaWindow, ...]) -> str:
 def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
     """``37% (3h)``, ``Opus 5% (4d)``, ``Fable 100% (4h)``; the provider's state in words when
     it gave no number; ``?`` otherwise. A state in words never becomes a number."""
+    share, reset = _share_words(window, reference)
+    return f"{share} ({reset})" if reset else share
+
+
+def _share_words(window: QuotaWindow, reference: datetime | None) -> tuple[str, str | None]:
+    """``("Opus 37%", "3h")``: the spent share with the scope that narrows it, and the time to
+    its reset (``_reset_words``); the provider's state in words and no time when it gave no
+    number."""
     scope = window.scope or _SCOPE_LABELS.get(window.label)
     head = f"{scope} " if scope else ""
     if window.used_percent is not None:
-        suffix = _reset_suffix(window.reset_at, reference)
-        return f"{head}{window.used_percent:.0f}%{suffix}"
-    return f"{head}{window.note or '?'}"
+        return f"{head}{window.used_percent:.0f}%", _reset_words(window.reset_at, reference)
+    return f"{head}{window.note or '?'}", None
 
 
 def _warn(percent: float) -> str:
@@ -882,11 +898,17 @@ def _warn(percent: float) -> str:
 def _reset_suffix(value: object, reference: datetime | None) -> str:
     """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
     reset date at all."""
+    words = _reset_words(value, reference)
+    return f" ({words})" if words else ""
+
+
+def _reset_words(value: object, reference: datetime | None) -> str | None:
+    """``3h``: the time to the reset; ``?`` when it cannot be counted; ``None`` without a reset
+    date at all."""
     if not value:
-        return ""
+        return None
     minutes = _minutes_until(value, reference)
-    words = _duration_words(minutes) if minutes is not None else "?"
-    return f" ({words})"
+    return _duration_words(minutes) if minutes is not None else "?"
 
 
 def _minutes_until(value: object, reference: datetime | None) -> int | None:
