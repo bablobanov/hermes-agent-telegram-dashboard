@@ -48,6 +48,11 @@ _STATUS_LABELS = {
     "unknown": "⚪ Unknown",
 }
 STATUS_MARKS = ("🟢", "🟡", "🔴", "⚪")
+# The HTML form opens on the top line, bold (1.0.0).
+TOP_HTML = tuple(f"<b>{mark}" for mark in STATUS_MARKS)
+# Its time as Telegram gets it: a tag that counts "N minutes ago" and the date for an app
+# without it (the demo states' moment).
+TOP_TIME = '<tg-time unix="1788987600" format="r">Sep 9 21:00 UTC</tg-time></b>'
 STATES = all_states()
 
 
@@ -119,7 +124,8 @@ def test_the_tick_delivers_the_screen_not_a_counter(monkeypatch, tmp_path: Path)
 
     text, parse_mode = adapter.html_edits[-1]
     assert parse_mode == "HTML"
-    assert text.splitlines()[0].startswith(STATUS_MARKS) and " · " in text.splitlines()[0]
+    first = text.splitlines()[0]
+    assert first.startswith(TOP_HTML) and " · updated <tg-time unix=" in first
     assert (
         "<b>🧠 Limits used</b>" in text and "no data" in text
     )  # limits disabled: named, never zero
@@ -177,7 +183,7 @@ def test_a_failed_stage_still_edits_the_message_with_a_loud_stamp(
         assert ctx.state.data["probe"]["last_render_error"] == "RuntimeError"
 
         mend_it()
-        await until(lambda: adapter.texts[-1].startswith(STATUS_MARKS))
+        await until(lambda: adapter.texts[-1].startswith(TOP_HTML))
         assert ctx.state.data["probe"]["last_render_error"] is None
 
     _run(runtime, adapter, scenario)
@@ -231,8 +237,7 @@ def test_each_research_state_reaches_telegram_through_the_tick(
     text, parse_mode = adapter.html_edits[-1]
     lines = text.splitlines()
     assert parse_mode == "HTML"
-    assert lines[0].startswith(_STATUS_LABELS[state.expect_overall] + " · ")
-    assert lines[0].endswith("Sep 9 21:00 UTC")
+    assert lines[0] == f"<b>{_STATUS_LABELS[state.expect_overall]} · updated {TOP_TIME}"
     # A file name in a title (``state.db``) reaches the chat as ``<code>``, see test_render.
     plain = text.replace("<code>", "").replace("</code>", "")
     for incident in state.snapshot.incidents:
@@ -274,7 +279,7 @@ def test_state_11_a_record_not_confirmed_for_two_periods_banners_the_first_line(
     _run(runtime, adapter, scenario)
 
     text = adapter.texts[-1]
-    assert text.startswith("🔴 DASHBOARD STALE")
+    assert text.startswith("⚠️ DASHBOARD STALE")  # 1.0.0: one coloured circle, the status's
     assert "🟢 Healthy" in text  # the data is fine; the message is the problem, and both are said
     assert not adapter.sent  # the remembered message was edited, not replaced
 
@@ -314,7 +319,7 @@ def test_state_12_a_lost_record_is_announced_and_the_message_is_sent_anew(
     _run(runtime, adapter, scenario)
 
     text = adapter.sent[0]
-    assert text.startswith("🔴 Pinned message lost (21:00 UTC), recreated")
+    assert text.startswith("⚠️ Pinned message lost (21:00 UTC), recreated")
     assert "<b>" not in text and "DETAILS" in text  # the plain form, headings upper-case
     assert runtime.record["message_id"] == "101"
     assert runtime.record["recreated_at"]
@@ -438,7 +443,7 @@ def test_a_healthy_cadence_never_shows_the_lagging_banner(monkeypatch, tmp_path:
 
     # The edits, not the creation: the first message of all is never confirmed yet and says so.
     first_lines = [text.splitlines()[0] for text, _ in adapter.html_edits]
-    assert first_lines == ["🟢 Healthy · Sep 9 21:00 UTC"] * len(first_lines), first_lines
+    assert first_lines == [f"<b>🟢 Healthy · updated {TOP_TIME}"] * len(first_lines), first_lines
 
 
 def test_the_first_screen_comes_soon_after_the_adapter_connects_whatever_the_period(
@@ -1000,7 +1005,7 @@ def test_an_adapter_without_the_verb_gets_plain_text_and_the_record_says_why(
 
     assert adapter.html_edits == []
     # A record without a confirmation banners the first edit; the status line follows it.
-    assert "🟢 Healthy · Sep 9 21:00 UTC" in adapter.edits[0].splitlines()[:2]
+    assert "🟢 Healthy · updated Sep 9 21:00 UTC" in adapter.edits[0].splitlines()[:2]
     assert "DETAILS" in adapter.edits[0] and "<" not in adapter.edits[0]
     assert ctx.state.data["probe"]["screen_format"] == "plain"
     assert ctx.state.data["probe"]["html_error"] == (
@@ -1130,7 +1135,7 @@ def test_the_tick_reads_the_traffic_counters_off_the_live_adapter_and_records_th
     assert record["traffic_cache"]["received_total"] == 7
     assert record["traffic_cache"]["last_update_seen_at"]
     assert "cron_cache" in record and record["cron_cache"]["checked_at"]
-    assert "Gateway ✓ · Telegram ✓" in html.unescape(adapter.last_text)
+    assert "✓\xa0Gateway ✓\xa0Telegram" in html.unescape(adapter.last_text)
 
 
 def test_a_degraded_send_path_on_an_old_generation_is_the_word_on_the_line(
@@ -1150,7 +1155,7 @@ def test_a_degraded_send_path_on_an_old_generation_is_the_word_on_the_line(
     _run(runtime, adapter, scenario)
 
     text = html.unescape(adapter.last_text)
-    assert "Gateway ✓ · Telegram ⚠️ no sends" in text
+    assert "\nTelegram ⚠️ no sends\n" in text and "✓\xa0Gateway" in text
     assert "🔴" in text.splitlines()[0]
 
 
@@ -1170,7 +1175,7 @@ def test_an_adapter_without_counters_is_no_data_on_the_traffic_source(
 
     text = html.unescape(adapter.last_text)
     assert "Telegram traffic: adapter has no traffic counters" in text
-    assert "Gateway ✓ · Telegram ✓" in text
+    assert "✓\xa0Gateway ✓\xa0Telegram" in text
 
 
 PLANTED = (

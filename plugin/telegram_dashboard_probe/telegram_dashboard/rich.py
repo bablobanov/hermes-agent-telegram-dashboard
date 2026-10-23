@@ -1,13 +1,14 @@
 """The pinned message as a Rich Message (Bot API 10.1+, ``rich_message: {"html": ...}``).
 
-The first lines are the text screen's own (``render.render_parts``): the status with the data
-stamp, gateway, backup, drift and cron, the events, the limits, the Hermes version. What the text
-screen folds into one quote is here a collapsed ``<details>`` per source, so the reader opens the
-one they need: the limits with a compact table of every window and its reset, the cron jobs with
-their schedules, the agent's rules, its memory, the Telegram channel, backup and drift, the Hermes
-version, every "no data" with its reason; the screen's own stamps and the dashboard's version
-close it, as in the text. The two tables are the only words the text does not carry, and they
-come from the same snapshot.
+The main screen is the text screen's own blocks (``render.render_parts``), a section each with a
+thin line between two (1.0.0, the look Ilya accepted in a live probe): the status with the time
+of the data, what needs attention, the ✓ row, what was not checked, the limits as a table of
+every window and its reset, the Hermes version. Then two collapsed ``<details>``: the cron jobs
+with their schedules, and one Details with a section per source (the plans and logins, the
+agent's rules, its memory, the Telegram channel, backup and drift, the Hermes version, every
+"no data" with its reason), the screen's own stamps and the dashboard's version closing it, as
+in the text. The two tables are the only words the text does not carry, and they come from the
+same snapshot.
 
 Every word goes through the HTML form's escaping and its ``<code>`` rule (``render._html_line``),
 so a file name or a ``/command`` is never a tap target. A message over Telegram's ceilings is not
@@ -24,24 +25,21 @@ from datetime import UTC, datetime, tzinfo
 from .freshness import DeliveryRecord
 from .policy import sanitize_public_text
 from .render import (
-    _LOUD_SEVERITIES,
-    _SCOPE_LABELS,
     OK_MARK,
-    QUOTA_WARN_PERCENT,
     WARN_MARK,
     ScreenParts,
     _code_spans,
-    _duration_words,
+    _Details,
     _html_line,
-    _minutes_until,
+    _quota_rows,
     render_parts,
 )
-from .schema import CronJob, CronSummary, DashboardSnapshot, QuotaMetric, QuotaWindow
+from .schema import CronJob, CronSummary, DashboardSnapshot, QuotaMetric
 from .timeparse import format_day_time, format_in_zone, parse_timestamp, to_zone
 
 # Telegram's ceilings for one rich message (Bot API 10.1, "Rich Messages"): 32,768 characters of
-# text and 500 blocks, a table row, a paragraph and a details block each one. The engine counts
-# the source the same way (``RICH_MESSAGE_MAX_CHARS``, telegram adapter, v0.22.2).
+# text and 500 blocks, a table row, a paragraph, a thin line and a details block each one. The
+# engine counts the source the same way (``RICH_MESSAGE_MAX_CHARS``, telegram adapter, v0.22.2).
 RICH_MESSAGE_MAX_CHARS = 32_768
 RICH_MESSAGE_MAX_BLOCKS = 500
 # A long list is cut with a line that says how many are left out, never silently.
@@ -49,18 +47,23 @@ JOB_ROWS_LIMIT = 60
 PAUSED_LIMIT = 30
 DONE_LIMIT = 20
 PAUSED_MARK = "⏸"
-# The sections in the order a reader acts on them (the layout Ilya saw on 22.10): what is spent,
-# what runs, what the agent sees, then the plumbing.
+# The thin line between two sections (1.0.0): the probe's message 2, the one Ilya accepted.
+_HR = "<hr/>"
+# The titles of the cron fold and of the sections of Details. Details takes them in the order a
+# reader acts on them (1.0.0, ``_DETAILS_ORDER``): what is spent, what the agent sees, then the
+# plumbing; cron is a fold of its own before Details.
 _TITLES = {
-    "limits": "🧠 Limits · windows and resets",
-    "cron": "⏱ Cron",
+    "limits": "🧠 Limits",
+    "cron": "🕒 Cron",
     "rules": "📜 Agent rules",
     "memory": "🗂 Memory",
     "telegram": "📡 Telegram channel",
     "backup": "💾 Backup · Drift",
     "hermes": "🤖 Hermes version",
 }
-_BLOCK_TAG = re.compile(r"<(?:p|tr|table|details|blockquote|li|h[1-6])\b")
+_DETAILS_ORDER = ("limits", "rules", "memory", "telegram", "backup", "hermes")
+_NO_DATA_TITLE = "❔ No data"
+_BLOCK_TAG = re.compile(r"<(?:p|tr|table|details|blockquote|li|h[1-6]|hr)\b")
 _RUN_FAILURES = ("run", "delivery", "blocked")
 
 
@@ -76,7 +79,8 @@ def to_telegram_rich(
     parts = render_parts(
         snapshot, now=now, delivery=delivery, period_seconds=period_seconds, zone=zone
     )
-    body = _main(parts.lines) + "".join(_sections(parts, snapshot, zone))
+    body = _main(parts, snapshot, zone) + _cron_fold(parts, snapshot, zone)
+    body += _details_fold(parts.details)
     if (
         len(body) > RICH_MESSAGE_MAX_CHARS
         or len(_BLOCK_TAG.findall(body)) > RICH_MESSAGE_MAX_BLOCKS
@@ -88,15 +92,17 @@ def to_telegram_rich(
 # ----------------------------------------------------------------------------- the frame
 
 
-def _main(lines: Sequence[str]) -> str:
-    """The text screen's lines, a paragraph between two blank lines, ``## `` bold."""
-    paragraphs: list[list[str]] = [[]]
-    for line in lines:
-        if line:
-            paragraphs[-1].append(_html_line(line))
-        elif paragraphs[-1]:
-            paragraphs.append([])
-    return "".join(_paragraph(paragraph) for paragraph in paragraphs if paragraph)
+def _main(parts: ScreenParts, snapshot: DashboardSnapshot, zone: tzinfo) -> str:
+    """The main screen: a section per block of the text form, ``## `` bold, a thin line between
+    two and none around them; the limits block its heading and a table."""
+    sections = []
+    for block in parts.blocks:
+        if block.key == "limits":
+            table = _limits_table(snapshot.capacity.quotas, parts.reference, zone)
+            sections.append(_text(block.lines[:1]) + table)
+        else:
+            sections.append(_text(block.lines))
+    return _HR.join(sections)
 
 
 def _paragraph(lines: Iterable[str]) -> str:
@@ -106,7 +112,7 @@ def _paragraph(lines: Iterable[str]) -> str:
 
 
 def _text(lines: Iterable[str]) -> str:
-    """The details lines of the text form, one paragraph."""
+    """Lines of the text form, one paragraph."""
     return _paragraph(_html_line(line) for line in lines)
 
 
@@ -126,72 +132,64 @@ def _cell(text: str, *, header: bool = False, span: int = 1) -> str:
     return f"<{tag}{wide}>{_words(text)}</{tag}>"
 
 
-def _sections(parts: ScreenParts, snapshot: DashboardSnapshot, zone: tzinfo) -> list[str]:
-    details = parts.details
+def _cron_fold(parts: ScreenParts, snapshot: DashboardSnapshot, zone: tzinfo) -> str:
+    """The cron jobs, collapsed, after the main screen: the cron group's details lines and the
+    jobs with their schedules."""
+    if snapshot.cron is None:
+        return ""
+    lines = next((group.lines for group in parts.details.groups if group.key == "cron"), [])
+    body = _text(lines) + _cron_body(snapshot.cron, parts.reference, zone)
+    return _details(_cron_title(snapshot.cron), body)
+
+
+def _details_fold(details: _Details) -> str:
+    """One fold for everything that explains the screen (1.0.0): a section per source that wrote
+    something, every "no data" with its reason, then the screen's own stamps and the dashboard's
+    version, a thin line between two sections."""
     groups = {group.key: group.lines for group in details.groups}
-    out = []
-    for key, title in _TITLES.items():
-        lines = groups.get(key, [])
-        if key == "limits":
-            body = (_limits_table(snapshot.capacity.quotas, parts.reference, zone) or "") + _text(
-                lines
-            )
-        elif key == "cron" and snapshot.cron is not None:
-            body = _text(lines) + _cron_body(snapshot.cron, parts.reference, zone)
-            title = _cron_title(snapshot.cron)
-        else:
-            body = _text(lines)
-        out.append(_details(title, body))
+    sections = [_section(_TITLES[key], groups.get(key, [])) for key in _DETAILS_ORDER]
     if details.missing:
-        out.append(_details(f"⚪ No data · {len(details.missing)}", _text(details.missing)))
-    screen = [p for p in (details.confirmed, details.data, details.period, details.coverage) if p]
+        title = f"{_NO_DATA_TITLE} · {len(details.missing)}"
+        sections.append(_section(title, details.missing))
     version = [details.version] if details.version else []
-    out.append(_details("Details", _text(screen) + _text(version)))
-    return out
+    sections.append(_text([*details.stamps(), *version]))
+    return _details("Details", _HR.join(section for section in sections if section))
+
+
+def _section(title: str, lines: Sequence[str]) -> str:
+    """``<p><b>title</b><br>lines</p>``; nothing for no lines."""
+    return _text([f"## {title}", *lines]) if lines else ""
 
 
 # ----------------------------------------------------------------------------- the limits
 
 
-def _limits_table(
-    quotas: Sequence[QuotaMetric], reference: datetime | None, zone: tzinfo
-) -> str | None:
-    """Every window a provider gave a number or a word for, one row each: how much is spent,
-    the time to its reset and the moment, in the screen's zone. Windows carry no length label,
-    as on the screen (decision of 25.09); a model's own limit is named by its model."""
-    rows = [
-        _window_row(sanitize_public_text(quota.provider, limit=40), window, reference, zone)
-        for quota in quotas
-        if quota.kind == "official"
-        for window in quota.windows
-    ]
+def _limits_table(quotas: Sequence[QuotaMetric], reference: datetime | None, zone: tzinfo) -> str:
+    """Every line of the limits block as a row (1.0.0): the provider, then a cell per window,
+    the spent share and the time to its reset; a row with fewer cells than the widest spans its
+    last one, a state in words spans them all."""
+    rows = [row for quota in quotas for row in _quota_rows(quota, reference, zone)]
     if not rows:
-        return None
-    head = "".join(_cell(word, header=True) for word in ("Provider", "Used", "Resets in", "At"))
-    return f"<table compact bordered><tr>{head}</tr>{''.join(rows)}</table>"
+        return ""
+    width = max(len(cells) for _name, cells in rows)
+    head = _cell("Provider", header=True) + _cell("Used · resets in", header=True, span=width)
+    body = "".join(f"<tr>{_cell(name)}{_spread(cells, width)}</tr>" for name, cells in rows)
+    return f"<table compact bordered><tr>{head}</tr>{body}</table>"
 
 
-def _window_row(
-    provider: str, window: QuotaWindow, reference: datetime | None, zone: tzinfo
-) -> str:
-    scope = window.scope or _SCOPE_LABELS.get(window.label)
-    name = f"{provider} {sanitize_public_text(scope, limit=24)}" if scope else provider
-    if window.used_percent is None:
-        note = sanitize_public_text(window.note or "?", limit=40)
-        return f"<tr>{_cell(name)}{_cell(note, span=3)}</tr>"
-    loud = window.severity in _LOUD_SEVERITIES or window.used_percent >= QUOTA_WARN_PERCENT
-    used = (f"{WARN_MARK} " if loud else "") + f"{window.used_percent:.0f}%"
-    minutes = _minutes_until(window.reset_at, reference) if window.reset_at else None
-    left = _duration_words(minutes) if minutes is not None else ("?" if window.reset_at else "")
-    at = format_day_time(window.reset_at, zone) or ""
-    return f"<tr>{_cell(name)}{_cell(used)}{_cell(left)}{_cell(at)}</tr>"
+def _spread(cells: Sequence[str], width: int) -> str:
+    """A row's cells, the last one spanning what the row leaves of ``width``."""
+    last = len(cells) - 1
+    return "".join(
+        _cell(text, span=width - last if index == last else 1) for index, text in enumerate(cells)
+    )
 
 
 # ----------------------------------------------------------------------------- the cron jobs
 
 
 def _cron_title(cron: CronSummary) -> str:
-    """``⏱ Cron · 21 active · 2 paused · 4 done``: the counts the line and the list share."""
+    """``🕒 Cron · 21 active · 2 paused · 4 done``: the counts the line and the list share."""
     if cron.state in ("unknown", "unsupported"):
         return _TITLES["cron"]
     done = sum(job.state == "done" for job in cron.jobs)

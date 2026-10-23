@@ -709,7 +709,9 @@ def test_a_disabled_job_parked_in_error_is_no_failure_and_is_counted_paused(
     assert classify(job_of(off), now=NOW, ticker_alive=True) is None
     assert (summary.state, summary.active, summary.paused) == ("ok", 0, 1)
     assert summary.failing == () and incidents == ()
-    assert "Cron ✓ 0 jobs" in text.splitlines()
+    # Well: cron in the ✓ row (1.0.0), its counts in the details.
+    assert "✓\xa0Cron" in text.splitlines()
+    assert "> Cron 0 active · 1 paused · ticker 12:30" in text.splitlines()
 
 
 def test_a_completed_job_left_enabled_by_hand_is_no_failure(tmp_path: Path) -> None:

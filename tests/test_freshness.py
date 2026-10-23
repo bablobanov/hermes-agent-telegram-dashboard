@@ -59,8 +59,10 @@ def test_data_time_and_message_time_are_separate_lines() -> None:
     rendered = render_dashboard(snapshot, now=NOW, delivery=_record(11), period_seconds=PERIOD)
 
     lines = rendered.splitlines()
-    assert lines[0].startswith("🔴 DASHBOARD STALE")
-    assert lines[1] == "🟢 Healthy · Sep 9 21:00 UTC"  # the data stamp, with its date
+    # On the dashboard the banner's red is the warning mark (1.0.0); ``message_banner`` keeps it.
+    assert lines[0].startswith("⚠️ DASHBOARD STALE")
+    # The data stamp, with its date, on the top line.
+    assert lines[1] == "#@1788987600 🟢 Healthy · updated Sep 9 21:00 UTC"
     assert "> Confirmed 20:49" in lines
     assert "> Period 5 min" in lines
 

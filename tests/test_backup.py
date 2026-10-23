@@ -220,9 +220,10 @@ def test_the_line_carries_the_time_the_age_in_words_and_the_verdict() -> None:
 
     lines = _render(summary).splitlines()
 
-    # The verdict and the age on the screen; the absolute time and integrity in the details.
-    assert "Backup ✓ 6 h ago" in lines
-    assert "> Backup Sep 21 15:56 · integrity ok" in lines
+    # The verdict on the screen, in the ✓ row (1.0.0); the absolute time, the age and the
+    # integrity in the details, the mark in front.
+    assert "✓\xa0Backup" in lines
+    assert "> ✓ Backup Sep 21 15:56 · 6 h ago · integrity ok" in lines
 
 
 def test_the_line_is_in_the_reader_s_zone() -> None:
@@ -230,8 +231,8 @@ def test_the_line_is_in_the_reader_s_zone() -> None:
 
     lines = _render(summary, zone=ZoneInfo("Asia/Tokyo")).splitlines()
 
-    assert "Backup ✓ 6 h ago" in lines
-    assert "> Backup Sep 22 00:56 · integrity ok" in lines  # the zone is on the first line
+    assert "✓\xa0Backup" in lines
+    assert "> ✓ Backup Sep 22 00:56 · 6 h ago · integrity ok" in lines  # the zone of the top line
 
 
 def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
@@ -240,8 +241,10 @@ def test_a_stale_backup_is_marked_on_the_line_itself() -> None:
 
     lines = _render(summary).splitlines()
 
+    # Not well: the whole line under "Needs attention", no check mark in the row (1.0.0).
     assert "Backup ✓ 30 h ago ⚠️ older than 26 h" in lines
-    assert "> Backup Sep 20 15:56 · integrity ok" in lines
+    assert "> ⚠️ Backup Sep 20 15:56 · 30 h ago · integrity ok" in lines
+    assert not any(line.startswith("✓") for line in lines)
 
 
 def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> None:
@@ -250,7 +253,7 @@ def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> No
     lines = _render(summary).splitlines()
 
     assert "Backup ⚠️ failed 6 h ago" in lines
-    assert f"> Backup Sep 21 15:56 · snapshot: {FAILED_REASON}" in lines
+    assert f"> ⚠️ Backup Sep 21 15:56 · 6 h ago · snapshot: {FAILED_REASON}" in lines
 
 
 def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None:
@@ -268,7 +271,7 @@ def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None
     assert "> Backup: backup source not configured" in unconfigured_lines
 
 
-def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
+def test_the_backup_sits_in_the_row_beside_the_gateway() -> None:
     from telegram_dashboard.schema import GatewaySummary
 
     summary, _, _ = backup.summarize(_status(), now=NOW)
@@ -284,8 +287,7 @@ def test_the_line_sits_in_the_top_block_beside_the_gateway_line() -> None:
 
     lines = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300).splitlines()
 
-    gateway = next(i for i, line in enumerate(lines) if line.startswith("Gateway "))
-    assert lines[gateway + 1].startswith("Backup ")
+    assert "✓\xa0Gateway ✓\xa0Telegram ✓\xa0Backup" in lines
 
 
 # ----------------------------------------------------------------------------- the tick
@@ -307,9 +309,9 @@ def test_the_tick_reads_the_status_file_and_counts_the_source(tmp_path: Path) ->
     source = next(s for s in snapshot.sources if s.name == "backup")
     assert source.state == "fresh"
     text = render_dashboard(snapshot, now=NOW, zone=UTC, period_seconds=300)
-    assert "Backup ✓ 6 h ago" in text.splitlines()
-    assert "> Backup Sep 21 15:56 · integrity ok" in text.splitlines()
-    assert "backup" not in text.split("Not observed:")[-1].split("\n")[0]
+    assert "✓\xa0Backup" in text
+    assert "> ✓ Backup Sep 21 15:56 · 6 h ago · integrity ok" in text.splitlines()
+    assert "backup" not in text.split("Not checked:")[-1].split("\n")[0]
 
 
 def test_without_a_configured_source_the_tick_still_names_it(tmp_path: Path) -> None:

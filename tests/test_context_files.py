@@ -105,7 +105,7 @@ def test_1_loaded_whole_is_a_check_mark_in_the_details_and_nothing_on_the_screen
     assert rules.verdict == "loaded" and rules.files == ("AGENTS.md",)
     assert rules.chars == len(section("AGENTS.md", text))
     lines = _screen(env)
-    assert f"> Rules Telegram: ✓ AGENTS.md · {rules.chars:,} chars · session Oct 7 12:32" in lines
+    assert f"> ✓ Rules Telegram: AGENTS.md · {rules.chars:,} chars · session Oct 7 12:32" in lines
     assert not any(line.startswith("Rules") for line in lines)
     assert not any("rules" in line for line in _main(lines))
 
@@ -132,7 +132,7 @@ def test_2_no_section_while_the_file_is_in_the_service_directory_is_not_loaded(
         "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
         in lines
     )
-    assert lines[0].startswith("🟡 Warning")
+    assert lines[0].startswith("#@") and " 🟡 Warning · updated " in lines[0]
 
 
 def test_3_a_file_over_the_budget_is_truncated_with_what_was_kept(tmp_path: Path) -> None:

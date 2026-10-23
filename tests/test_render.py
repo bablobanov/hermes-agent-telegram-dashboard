@@ -32,12 +32,20 @@ from telegram_dashboard.schema import (
 )
 
 NOW = datetime(2026, 9, 25, 7, 21, tzinfo=UTC)
+# The top line of a screen of NOW as the neutral text carries it (1.0.0): the moment as a number
+# for the tag, then the status and the time of the data.
+TOP_HEALTHY = "#@1790320860 🟢 Healthy · updated Sep 25 07:21 UTC"
+NBSP = "\xa0"
 
 
 def _main_part(text: str) -> list[str]:
     """The lines a phone shows before the collapsed details."""
     lines = text.splitlines()
     return lines[: next((i for i, line in enumerate(lines) if line.startswith(">")), len(lines))]
+
+
+def _row(*names: str) -> str:
+    return " ".join(f"✓{NBSP}{name}" for name in names)
 
 
 def test_critical_incident_renders_before_normal_summary() -> None:
@@ -76,8 +84,7 @@ def test_partial_unknown_coverage_never_renders_as_healthy_or_zero() -> None:
 
     assert "⚪ Unknown" in rendered
     # Incomplete coverage is an exception and stays on the screen, not only in the details.
-    assert "Profile coverage 2/3" in _main_part(rendered)
-    assert "Sources unavailable: 1" in _main_part(rendered)
+    assert "❔ Not checked: profiles 2/3, 1 source unavailable" in _main_part(rendered)
     assert "🟢 Healthy" not in rendered
 
 
@@ -90,7 +97,7 @@ def test_complete_coverage_leaves_the_screen_and_stays_in_the_details() -> None:
 
     rendered = render_dashboard(snapshot)
 
-    assert not any("Profile coverage" in line for line in _main_part(rendered))
+    assert not any("Not checked" in line for line in _main_part(rendered))
     assert "> Profiles 1/1" in rendered.splitlines()
 
 
@@ -229,7 +236,7 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
     assert "Grok · usage not started" in lines  # the provider's words, no zero
     assert "Kimi 0% (4h13m) · 3% (29d17h)" in lines  # the provider's order
     assert "Claude · no data" in lines and "Gemini · no data" in lines
-    assert "🟡" not in rendered and lines[0] == "🟢 Healthy · Sep 25 07:21 UTC"
+    assert "🟡" not in rendered and lines[0] == TOP_HEALTHY
     # Reasons and the odd minute live in the details, grouped; the resets are on the lines.
     assert "> ## Resets" not in lines
     assert "> Data 07:21 · Kimi 07:16" in lines
@@ -325,27 +332,31 @@ def test_the_first_line_is_the_status_with_the_dated_stamp_and_the_details_follo
 
     rendered = render_dashboard(snapshot, now=NOW, delivery=delivery, period_seconds=300)
 
+    # 1.0.0: what works is one row; the ages and counts its lines carried are in the details,
+    # the mark in front of a verdict; the screen's own stamps close the block before the version.
     assert _main_part(rendered) == [
-        "🟢 Healthy · Sep 25 07:21 UTC",
-        "Gateway ✓ · Telegram ✓",
-        "Backup ✓ 6 h ago",
-        "Drift ✓ 0 of 481",
+        TOP_HEALTHY,
+        "",
+        _row("Gateway", "Telegram", "Backup", "Drift"),
         "",
     ]
-    assert rendered.splitlines()[5:] == [
+    assert rendered.splitlines()[4:] == [
         "> ## Details",
+        "> ✓ Backup Sep 25 00:31 · 6 h ago · integrity ok",
+        "> ✓ Drift 0 of 481 · checked 07:21",
+        ">",
+        "> Screen Sep 25 07:21 UTC",
         "> Confirmed 07:16",
         "> Period 5 min",
         "> Profiles 1/1",
-        ">",
-        "> Backup Sep 25 00:31 · integrity ok",
-        "> Drift checked 07:21",
         ">",
         f"> Dashboard {__version__}",
     ]
 
 
 def test_abnormal_gateway_and_drift_are_words_on_the_screen() -> None:
+    """1.0.0: an item that is not well leaves the ✓ row and stands under "Needs attention" in
+    its own words; no row at all when nothing is well."""
     snapshot = DashboardSnapshot(
         overall="critical",
         observed_at="2026-09-25T07:21:00Z",
@@ -353,10 +364,16 @@ def test_abnormal_gateway_and_drift_are_words_on_the_screen() -> None:
         drift=DriftSummary("drift", 3, 481, "2026-09-25T07:21:00Z"),
     )
 
-    lines = render_dashboard(snapshot).splitlines()
+    main = _main_part(render_dashboard(snapshot))
 
-    assert "Gateway stopped · Telegram disconnected" in lines
-    assert "Drift ⚠️ 3 of 481" in lines
+    assert main[2:] == [
+        "## 🛠 Needs attention",
+        "Gateway stopped",
+        "Telegram disconnected",
+        "Drift ⚠️ 3 of 481",
+        "",
+    ]
+    assert not any(line.startswith("✓") for line in main)
 
 
 def test_plain_form_uppercases_headings_unwraps_details_and_leaves_every_other_line_untouched() -> (
@@ -953,7 +970,7 @@ def test_a_recent_429_marks_the_gemini_line_and_leaves_the_status_alone() -> Non
 
     text = _limits_only(_gemini(refusal))
 
-    assert text.splitlines()[0] == "🟢 Healthy · Sep 25 07:21 UTC"
+    assert text.splitlines()[0] == TOP_HEALTHY
     assert _screen_lines(text, "Gemini") == ["⚠️ Gemini hit limit 5 min ago"]
     details = _details_lines(text)
     assert f"{_REFUSALS}last Sep 25 07:16, per-minute limit, model {_TTS}" in details
@@ -1123,7 +1140,7 @@ def test_a_gemini_log_that_is_not_there_is_named_as_such() -> None:
 
     main = _main_part(render_dashboard(snapshot, now=NOW))
 
-    assert "Not observed: Gemini log (not on this installation)" in main
+    assert "❔ Not checked: Gemini log (not on this installation)" in main
 
 
 # ----------------------------------------------------------------------------- private ids
@@ -1189,7 +1206,8 @@ def test_the_cron_line_counts_active_jobs_and_names_paused_in_the_details() -> N
     text = render_dashboard(_cron_snapshot(CRON_OK), now=NOW)
     lines = text.splitlines()
 
-    assert lines[2] == "Cron ✓ 27 jobs"
+    # 1.0.0: cron in the ✓ row, its count in the details.
+    assert lines[2] == _row("Gateway", "Telegram", "Cron")
     assert "> Cron 27 active · 3 paused · ticker 07:19" in lines
 
 
@@ -1248,7 +1266,7 @@ def test_a_held_failure_is_in_the_details_only_with_the_run_that_replaced_it() -
 
     text = render_dashboard(_cron_snapshot(cron), now=NOW)
 
-    assert "Cron ✓ 27 jobs" in _main_part(text)
+    assert _row("Gateway", "Telegram", "Cron") in _main_part(text)
     assert "> Cron daily-digest: run failed Sep 25 06:35, ok since 06:40" in text.splitlines()
 
 
@@ -1308,10 +1326,13 @@ def test_a_deaf_channel_is_a_word_on_the_telegram_line(state: str, word: str) ->
     )
 
     text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
+    main = _main_part(text)
 
-    line = next(item for item in _main_part(text) if item.startswith("Gateway"))
-    assert line == f"Gateway ✓ · Telegram {word}"
+    # 1.0.0: Telegram leaves the ✓ row and stands under "Needs attention" with the word.
+    line = next(item for item in main if item.startswith("Telegram"))
+    assert line == f"Telegram {word}"
     assert len(line) <= 32
+    assert _row("Gateway", "Cron") in main
 
 
 def test_traffic_times_are_always_in_the_details() -> None:
@@ -1324,8 +1345,8 @@ def test_traffic_times_are_always_in_the_details() -> None:
 
     text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
 
-    assert "Gateway ✓ · Telegram ✓" in _main_part(text)
-    assert "> Telegram last update seen Sep 25 07:00 · polling ok 07:20" in text.splitlines()
+    assert _row("Gateway", "Telegram", "Cron") in _main_part(text)
+    assert "> ✓ Telegram last update seen Sep 25 07:00 · polling ok 07:20" in text.splitlines()
     assert "> Telegram send errors: last Sep 25 06:58" in text.splitlines()
 
 
@@ -1335,9 +1356,10 @@ def test_the_deaf_word_never_hides_a_disconnected_adapter() -> None:
         gateway=GatewaySummary("running", "disconnected", None),
     )
 
-    text = render_dashboard(snapshot, now=NOW)
+    main = _main_part(render_dashboard(snapshot, now=NOW))
 
-    assert "Gateway ✓ · Telegram disconnected" in _main_part(text)
+    assert "Telegram disconnected" in main
+    assert _row("Gateway", "Cron") in main
 
 
 # ----------------------------------------------------------------------------- the dashboard's version
@@ -1358,7 +1380,8 @@ def test_the_details_name_the_dashboard_s_own_version() -> None:
 
 def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None:
     """Ilya, 01.10 (0.9.2): the version is the last line of the collapsed block, a blank line
-    before it, after the reasons of "No data" when there are any; alone it is the whole block."""
+    before it; 1.0.0: after the screen's own stamps, which come after the reasons of "No data"
+    and are there even when nothing else is."""
     from telegram_dashboard import __version__
     from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
@@ -1370,14 +1393,29 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
         DashboardSnapshot(overall="normal", observed_at=NOW.isoformat()), now=NOW
     ).splitlines()
 
-    assert full[-3:] == ["> Grok: source not confirmed", ">", f"> Dashboard {__version__}"]
+    assert full[-8:] == [
+        "> Grok: source not confirmed",
+        ">",
+        "> Screen Sep 9 21:00 UTC",
+        "> Confirmed 20:58",
+        "> Period 5 min",
+        "> Profiles 1/1 · sources 3/3",
+        ">",
+        f"> Dashboard {__version__}",
+    ]
     assert sum(line.startswith("> Dashboard") for line in full) == 1
-    assert bare[-2:] == ["> ## Details", f"> Dashboard {__version__}"]
+    assert bare[-4:] == [
+        "> ## Details",
+        "> Screen Sep 25 07:21 UTC",
+        ">",
+        f"> Dashboard {__version__}",
+    ]
 
 
 def test_a_message_cut_at_the_limit_keeps_the_dashboard_s_version_last() -> None:
     """Review of 0.9.2: an over-long message is cut from its end, and the version now closes the
-    details; the cut takes the lines before it, the version stays whole after a blank line."""
+    details; the cut takes the lines before it, the version stays whole after a blank line.
+    1.0.0: the screen's own stamps close the block before the version, and stay as well."""
     from telegram_dashboard import __version__
     from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
 
@@ -1397,8 +1435,8 @@ def test_a_message_cut_at_the_limit_keeps_the_dashboard_s_version_last() -> None
     lines = text.splitlines()
 
     assert len(text) <= TELEGRAM_TEXT_LIMIT
-    assert lines[-3].endswith("…")  # the cut, before the version
-    assert lines[-2:] == [">", f"> Dashboard {__version__}"]
+    assert lines[-5].endswith("…")  # the cut, before the stamps and the version
+    assert lines[-4:] == [">", "> Screen Sep 25 07:21 UTC", ">", f"> Dashboard {__version__}"]
 
 
 # ----------------------------------------------------------------------------- review of 01.10
@@ -1409,9 +1447,11 @@ def test_a_ticker_verdict_without_a_readable_stamp_fits_the_line() -> None:
     cron = replace(CRON_OK, state="stalled", ticker_at=None, ticker_ok_at=None)
 
     text = render_dashboard(_cron_snapshot(cron), now=NOW)
+    main = _main_part(text)
 
-    assert "Cron ⚠️ ticker silent" in _main_part(text)
-    assert all(len(line) <= 32 for line in _main_part(text))
+    assert "Cron ⚠️ ticker silent" in main
+    # The top line and the ✓ row are not held to the phone line (1.0.0, see test_states).
+    assert all(len(line) <= 32 for line in main if not line.startswith(("#@", "✓")))
 
 
 def test_a_quiet_channel_without_a_gap_history_names_no_usual_gap() -> None:
@@ -1426,7 +1466,7 @@ def test_a_quiet_channel_without_a_gap_history_names_no_usual_gap() -> None:
 
     text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
 
-    assert "> Telegram last update seen Sep 25 00:20 · polling ok 07:20 · quiet 7 h" in (
+    assert "> ⚠️ Telegram last update seen Sep 25 00:20 · polling ok 07:20 · quiet 7 h" in (
         text.splitlines()
     )
     assert "usual gap" not in text
@@ -1461,7 +1501,7 @@ def test_the_usual_gap_in_the_details_is_the_longest_gap_seen() -> None:
     text = render_dashboard(_cron_snapshot(CRON_OK, traffic), now=NOW)
 
     assert (
-        "> Telegram last update seen Sep 24 22:20 · polling ok 07:20 · quiet 9 h, usual gap up to 4 h"
+        "> ⚠️ Telegram last update seen Sep 24 22:20 · polling ok 07:20 · quiet 9 h, usual gap up to 4 h"
         in text.splitlines()
     )
 
@@ -1476,3 +1516,176 @@ def test_a_success_stamp_that_could_not_be_read_names_its_reason_beside_a_live_h
     assert "> Cron 27 active · 3 paused · ticker 07:19 (ticker_last_success is not a stamp)" in (
         text.splitlines()
     )
+
+
+# ----------------------------------------------------------------------------- the main screen, 1.0.0
+#
+# The look Ilya accepted in the live probe: the top line bold with the time of the data, what
+# needs attention, one row of what works, one line of what was not checked, the limits, the
+# Hermes version; the ages and counts in the details.
+
+_FIVE_HOURS = "2026-09-25T02:21:00Z"
+
+
+def test_the_top_line_is_bold_with_its_time_a_tag_in_html_and_its_words_in_plain() -> None:
+    """R1: ``<tg-time format="r">`` reads "18 minutes ago" on Telegram Desktop; Android shows
+    the words inside it, so they stay the full date with the zone. The plain form has no tag and
+    no upper case."""
+    from zoneinfo import ZoneInfo
+
+    snapshot = DashboardSnapshot(overall="warning", observed_at=NOW.isoformat())
+
+    text = render_dashboard(snapshot, now=NOW, zone=ZoneInfo("Asia/Yekaterinburg"))
+
+    assert text.splitlines()[0] == "#@1790320860 🟡 Warning · updated Sep 25 12:21 +05"
+    assert int(NOW.timestamp()) == 1790320860
+    assert to_telegram_html(text).splitlines()[0] == (
+        '<b>🟡 Warning · updated <tg-time unix="1790320860" format="r">Sep 25 12:21 +05'
+        "</tg-time></b>"
+    )
+    assert to_telegram_plain(text).splitlines()[0] == "🟡 Warning · updated Sep 25 12:21 +05"
+    assert "> Screen Sep 25 12:21 +05" in text.splitlines()  # the top line's time, in the details
+
+
+def test_a_time_that_cannot_be_read_is_time_unknown_with_no_tag_in_any_form() -> None:
+    snapshot = DashboardSnapshot(overall="unknown", observed_at="not a time")
+
+    text = render_dashboard(snapshot)
+    html = to_telegram_html(text)
+
+    assert text.splitlines()[0] == "#@ ⚪ Unknown · updated time unknown"
+    assert html.splitlines()[0] == "<b>⚪ Unknown · updated time unknown</b>"
+    assert "tg-time" not in html
+    assert to_telegram_plain(text).splitlines()[0] == "⚪ Unknown · updated time unknown"
+    assert "> Screen time unknown" in text.splitlines()
+
+
+def test_only_a_status_label_of_ours_makes_a_top_line_and_its_words_stay_escaped() -> None:
+    """R1, no free-form HTML from the data: the converters take the top line's kind only with one
+    of the status labels and a number of digits alone; anything else is an ordinary heading,
+    escaped and coded."""
+    forged = to_telegram_html("#@1 <i>x</i> · updated now\n#@x1 🟢 Healthy · updated now")
+    stamp = to_telegram_html("#@1 🟢 Healthy · updated <i>Sep AGENTS.md")
+
+    assert "tg-time" not in forged and "<i>" not in forged
+    assert stamp == (
+        '<b>🟢 Healthy · updated <tg-time unix="1" format="r">&lt;i&gt;Sep '
+        "<code>AGENTS.md</code></tg-time></b>"
+    )
+
+
+@pytest.mark.parametrize(
+    ("confirmed", "banner"),
+    [
+        ("2026-09-25T07:12:00Z", "Update lagging: last confirmation 9 min ago"),
+        ("2026-09-25T06:51:00Z", "DASHBOARD STALE: last confirmation 30 min ago, threshold 10 min"),
+    ],
+    ids=["lagging", "stale"],
+)
+def test_the_banner_s_circle_is_the_warning_mark_and_its_words_stay(
+    confirmed: str, banner: str
+) -> None:
+    """R2: one coloured circle per screen, the top line's. ``message_banner`` keeps its red or
+    yellow: its words are the watchdog's alert as well."""
+    from telegram_dashboard.freshness import classify_message_freshness, message_banner
+
+    delivery = DeliveryRecord(message_id=1, last_confirmed_at=confirmed)
+    snapshot = DashboardSnapshot(overall="normal", observed_at=NOW.isoformat())
+
+    lines = render_dashboard(snapshot, now=NOW, delivery=delivery, period_seconds=300).splitlines()
+    freshness = classify_message_freshness(delivery, now=NOW, period_seconds=300)
+    words = message_banner(freshness, delivery, now=NOW, period_seconds=300)
+
+    assert lines[:2] == [f"⚠️ {banner}", TOP_HEALTHY]
+    assert words is not None and words.startswith(("🟡 ", "🔴 ")) and words.endswith(banner)
+
+
+def test_a_broken_item_leaves_the_row_and_stands_after_the_events() -> None:
+    """R4, R5: the first five events in their order, then the line of every item the row leaves
+    out, in its 0.12.0 words, even one an event already names; the row keeps the rest, a
+    no-break space between the mark and the name, a space between two items."""
+    events = tuple(Incident(f"e:{i}", "warning", f"event {i}") for i in range(5))
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        gateway=GatewaySummary("running", "connected"),
+        backup=BackupSummary("failed", finished_at=_FIVE_HOURS, detail="disk full"),
+        drift=DriftSummary("clean", 0, 481, NOW.isoformat()),
+        cron=CRON_OK,
+        incidents=(*events[:2], Incident("backup:failed", "warning", "Backup failed"), *events[2:]),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+
+    assert _main_part(text) == [
+        "#@1790320860 🟡 Warning · updated Sep 25 07:21 UTC",
+        "",
+        "## 🛠 Needs attention",
+        "- event 0",
+        "- event 1",
+        "- Backup failed",
+        "- event 2",
+        "- event 3",
+        "Backup ⚠️ failed 5 h ago",
+        "",
+        "✓\xa0Gateway ✓\xa0Telegram ✓\xa0Drift ✓\xa0Cron",
+        "",
+    ]
+    assert "> ⚠️ Backup Sep 25 02:21 · 5 h ago · disk full" in text.splitlines()
+
+
+def test_an_old_backup_is_no_check_mark_in_the_row() -> None:
+    """R5: well only where the 0.12.0 line says so with nothing loud beside it; a backup older
+    than 26 hours keeps its whole line under "Needs attention"."""
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        backup=BackupSummary("ok", finished_at=_ago(hours=30), integrity="ok"),
+        drift=DriftSummary("clean", 0, 481, NOW.isoformat()),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+
+    assert _main_part(text)[2:6] == [
+        "## 🛠 Needs attention",
+        "Backup ✓ 30 h ago ⚠️ older than 26 h",
+        "",
+        _row("Drift"),
+    ]
+    assert "> ⚠️ Backup Sep 24 01:21 · 30 h ago · integrity ok" in text.splitlines()
+
+
+def test_an_absent_summary_adds_nothing_anywhere() -> None:
+    """R5: ``None`` is a source not on this installation; no row, no line, no event of ours."""
+    text = render_dashboard(DashboardSnapshot(overall="normal", observed_at=NOW.isoformat()))
+
+    assert _main_part(text) == [TOP_HEALTHY, ""]
+    for word in ("Gateway", "Telegram", "Backup", "Drift", "Cron", "Needs attention"):
+        assert word not in text
+
+
+def test_what_was_not_checked_is_one_line_and_nothing_vanishes() -> None:
+    """R6: the sources not observed with their reasons, the stale ones, the profiles not seen
+    and the failed sources the list does not already name, in one line; the full count stays
+    in the details."""
+    snapshot = DashboardSnapshot(
+        overall="unknown",
+        observed_at=NOW.isoformat(),
+        coverage=Coverage(2, 1, failed_sources=("backup", "profile:worker/cron", "profile:x")),
+        sources=(
+            SourceObservation("gemini_log", "local", "unsupported"),
+            SourceObservation("backup", "derived", "unavailable"),
+            SourceObservation("limits", "official", "stale"),
+            SourceObservation("drift", "derived", "fresh"),
+        ),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+
+    assert _main_part(text)[2] == (
+        "❔ Not checked: Gemini log (not on this installation), backup (unavailable), "
+        "limits (stale), profiles 1/2, 2 sources unavailable"
+    )
+    assert "> Profiles 1/2 · sources 2/4" in text.splitlines()
+    one = replace(snapshot, coverage=Coverage(1, 1, failed_sources=("profile:x",)), sources=())
+    assert "❔ Not checked: 1 source unavailable" in render_dashboard(one).splitlines()

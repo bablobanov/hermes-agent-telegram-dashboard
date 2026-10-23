@@ -127,4 +127,4 @@ def test_render_survives_edge_reset_dates_and_keeps_other_fields() -> None:
     # the numbers stay.
     assert "OpenAI 75% (?)" in lines
     assert "Claude 37% (?)" in lines
-    assert lines[0] == "🟢 Healthy · time unknown"
+    assert lines[0] == "#@ 🟢 Healthy · updated time unknown"  # no moment for a tag either
