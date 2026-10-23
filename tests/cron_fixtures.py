@@ -1,6 +1,7 @@
 """The engine's ``executions`` table (``cron/executions.py:51-88`` at v2026.9.14) as a fixture,
 shared by ``test_cron_runs.py`` and ``test_collect_async.py``. The ``error`` column is filled
-with a sentinel so a test can prove it is never read."""
+with a sentinel so a test can prove it is never read. The planted secret of the cron tests,
+shared by ``test_cron_jobs.py`` and ``test_rich.py``."""
 
 import sqlite3
 from pathlib import Path
@@ -10,6 +11,21 @@ SCHEMA = """CREATE TABLE executions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, 
   handoff_pending INTEGER NOT NULL DEFAULT 0, handoff_started_at REAL, claimed_at TEXT NOT NULL,
   started_at TEXT, finished_at TEXT, error TEXT, delivery_outcome TEXT, scheduled_instant TEXT)"""
 ERROR_SENTINEL = "secret error text never read"
+# A key, a path, chat ids and a bot token in one text, planted in a job's error, name, label or
+# schedule; none of the fragments may reach any form the screen takes.
+PLANTED = (
+    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
+    "telegram:-1001234567890:17 user 987654321 bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
+)
+FRAGMENTS = (
+    "sk-live",
+    "ABCDEFGHIJ",
+    "/home/someone",
+    "1001234567890",
+    "987654321",
+    "123456789",
+    "AAHdqTcvCH1vGWJ",
+)
 # Writers held open for the session, the way the gateway holds the file (``wal=True``).
 _WRITERS: list[sqlite3.Connection] = []
 

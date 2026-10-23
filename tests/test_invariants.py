@@ -337,8 +337,8 @@ def test_no_word_of_the_screen_becomes_a_link_a_command_a_mention_or_a_hashtag()
 
 def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hashtag() -> None:
     """12, the rich form (0.12.0): every demo state, and the forms of the test above as cron job
-    names and schedules in each of the three places a job is listed (the table, the paused
-    block, the done block), hold no entity outside ``<code>``."""
+    names and schedules in each of the three parts of the cron table (the active, the paused,
+    the done), hold no entity outside ``<code>``."""
     import html as html_module
     from dataclasses import replace
     from datetime import timedelta
@@ -379,5 +379,6 @@ def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hash
         )
         for name, pattern in _ENTITIES.items():
             assert not pattern.findall(shown), (number, name, pattern.findall(shown))
-    # Every name; the schedules of the table and the paused block (the done block shows none).
-    assert markups[-1].count("<code>") == len(forms) + 12
+    # Every name; the schedules of the active jobs, all in ``Other`` (1.0.0: the paused and the
+    # done rows show none, a named frequency's header says how often instead).
+    assert markups[-1].count("<code>") == len(forms) + 6

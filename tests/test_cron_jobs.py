@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cron_fixtures import FRAGMENTS, PLANTED
 
 from telegram_dashboard.compat import Environment
 from telegram_dashboard.cron_jobs import (
@@ -236,21 +237,6 @@ def test_error_kind_follows_the_engine_s_order(text, word) -> None:
     assert error_kind(text) == word
 
 
-PLANTED = (
-    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
-    "telegram:-1001234567890:17 user 987654321 bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
-)
-FRAGMENTS = (
-    "sk-live",
-    "ABCDEFGHIJ",
-    "/home/someone",
-    "1001234567890",
-    "987654321",
-    "123456789",
-    "AAHdqTcvCH1vGWJ",
-)
-
-
 def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
     tmp_path: Path,
 ) -> None:
@@ -303,7 +289,7 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
     )
     text = render_dashboard(snapshot, now=NOW)
     rich = to_telegram_rich(snapshot, now=NOW)
-    assert rich is not None and "<table compact striped>" in rich
+    assert rich is not None and '<th colspan="2">Other</th>' in rich
 
     forms = (
         text,
