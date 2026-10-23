@@ -288,8 +288,8 @@ def _job_row(job: CronJob, date: str | None, with_schedule: bool = False) -> _Ro
 
 
 def _schedule(job: CronJob) -> str:
-    """The schedule whole in ``<code>``: ``*/30 * * * *`` is no command there, and reads as the
-    expression it is."""
+    """The schedule, up to 24 characters, in ``<code>``: ``*/30 * * * *`` is no command there,
+    and reads as the expression it is."""
     if not job.schedule:
         return ""
     return f"<code>{html.escape(sanitize_public_text(job.schedule, limit=24))}</code>"

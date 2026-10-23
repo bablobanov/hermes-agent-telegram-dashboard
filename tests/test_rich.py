@@ -488,7 +488,8 @@ def test_the_note_on_the_mark_is_read_off_the_rows_as_built() -> None:
 def test_labels_that_escaping_grows_take_the_rich_form_over_a_ceiling() -> None:
     """``&``, ``"``, ``'``, ``<`` and ``>`` grow four to six times under escaping, and a label is
     whole up to 80: every set full of such labels passes 32,768 characters. Then there is no
-    rich form, and the tick edits the HTML form instead (``test_probe_screen``)."""
+    rich form, and the tick falls back: HTML on an HTML message, the plain words as one rich paragraph on a
+    rich one (``test_probe_screen``)."""
     label = ("&\"'<>" * 16)[:80]
     jobs = (
         *(_active(f"a{i}", note=label) for i in range(rich.JOB_ROWS_LIMIT)),
