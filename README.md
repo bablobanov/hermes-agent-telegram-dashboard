@@ -40,43 +40,72 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 
 ## What the message shows
 
-One phone screen, about thirty characters per line, then a details block that Telegram shows
-collapsed. The width is a guide, not a law: a phone sets a proportional font, so a line of the
-same count fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a Latin
-one). An event with a name beyond ASCII is kept shorter on purpose; the time of a limit is never
-rounded for the width, and a long limits line wraps:
+One phone screen in blocks, a thin line between two, then two folds that Telegram shows
+collapsed. The example is the rich view (`rich: true`) as 1.0.0 draws it for the showcase state
+(`python -m telegram_dashboard --demo 14` prints its plain form); the classic view, the default,
+says the same in text (below). The width is a guide, not a law: a phone sets a proportional
+font, so a line fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a
+Latin one). An event names a cron job by its label in full and a long one wraps; the time of a
+limit is never rounded for the width:
 
 ```
-🟢 Healthy · Sep 25 12:21 +05       status and the dated data stamp (the pinned header shows it)
-Gateway ✓ · Telegram ✓              words when something is off: stopped, disconnected;
-                                    ⚠️ no sends / stalled / quiet: connected but deaf
-Backup ✓ 6 h ago                    the last state.db backup; ⚠️ when it failed or is older than 26 h
-Drift ✓ 0 of 481                    keys that differ from the approved baseline
-Cron ✓ 27 jobs                      active jobs; ⚠️ N of M failing, ticker silent, ticks failing
-
-🧠 Limits used
-Claude · no data                    a line without a number never shows a zero
-⚠️ Codex 98% (1h21m)                the spent share, the time to the reset; the mark from 90%
-Grok · usage not started            a state in words is never turned into a number
-Kimi 3% (29d)                       every window, in the provider's own order
-Gemini · no data                    no number without billing; ⚠️ hit limit for an hour after one
-
-🤖 Hermes 0.21.3 → 0.21.5           the version the gateway runs → the latest upstream release;
-                                    🆕 and its age for a day after a release came out
-
-▎Details                            collapsed, a blank line between the sources: confirmation
-▎…                                  time, the odd data minute, period, coverage; the channel's
-                                    times; absolute backup time and integrity, drift check time,
-                                    the cron failures; whether each platform's agent sees its
-                                    rules; the memory notebooks and the approval queue; the
-                                    plans, logins and Gemini refusals; release dates; the reason
-                                    of every "no data"; the dashboard's own version last
+🟢 Healthy · updated Sep 26 21:00 UTC    the status and when the data was read; the
+                                        pinned bar shows this line, and Telegram may
+                                        say "3 minutes ago" instead of the date
+✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron
+                                        what works, in one row: the gateway process,
+                                        the Telegram channel, the last state.db backup,
+                                        config drift, the cron ticker and its jobs
+🧠 Limits used                           a table: the spent share and the time to its
+Provider  Used · resets in              reset of every window, in the provider's own
+Claude    42% · 2h10m    67% · 3d       order; ⚠️ from 90% spent; a provider without
+Codex     ⚠️ 93% · 1h20m 58% · 5d       a number never shows a zero, the reason is in
+Gemini    no data                       Details
+Grok      31% · 6d
+Kimi      8% · 3h40m     46% · 21d
+🤖 Hermes 0.21.3 → 0.21.5                the version the gateway runs → the latest
+                                        upstream release; 🆕 and its age for a day
+                                        after a release came out
+▸ 🕒 Cron · 27 active · 3 paused · 2 done
+                                        collapsed: every job in one table, by how
+                                        often it runs (see "The cron line")
+▸ Details                               collapsed, a section per source: the plans,
+                                        logins and Gemini refusals; the agent's rules;
+                                        its memory; the Telegram channel; backup and
+                                        drift; the Hermes version; every "no data"
+                                        with its reason; then the screen's time, the
+                                        confirmation, the odd data minute, the period,
+                                        the coverage, and
+  Dashboard 1.0.0                       the dashboard's own version, last
 ```
 
-The dashboard is one pinned text message in the agent's private chat or in a topic of its
+When something is off, 🛠 Needs attention comes between the top line and the ✓ row, and
+❔ Not checked after the row, before the limits (the state `--demo 21`, here with no Gemini log
+on the installation and the cron history not answering):
+
+```
+🟡 Warning · updated Sep 26 21:00 UTC
+🛠 Needs attention                       up to five events in the collectors' order,
+- Cron run failed: daily-digest         then the line of every item of the row that
+Cron ⚠️ 1 of 27 failing                 is not well, even one an event already names
+✓ Gateway ✓ Telegram ✓ Backup ✓ Drift   the row keeps what is well
+❔ Not checked: Gemini log (not on this installation), cron history (unavailable)
+                                        what the screen could not check: a source not
+                                        on this installation, one that did not answer
+                                        or is stale, profiles not seen
+```
+
+The classic view (`rich: false`, the default) is the same blocks as text, a blank line between
+two: the limits a line per provider (`⚠️ Codex 93% (1h20m) · 58% (5d)`, `Gemini · no data`),
+no fold for the cron jobs (their lines sit in the details with backup and drift, the job table
+is the one part this view does not carry), and the details one collapsed quote. In HTML the top
+line and the headings are bold; in plain text the headings are upper case (`🧠 LIMITS USED`) and
+the details are shown in full. Both views come from the same snapshot.
+
+The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
-status line, and the message under it carries the rest: gateway and Telegram state (and whether
+top line, and the message under it carries the rest: gateway and Telegram state (and whether
 the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs,
 whether the agent sees its rules (the context files in its system prompt), whether its
 memory works (the notebooks against their limits, the writes waiting for approval), the
@@ -87,10 +116,10 @@ on the reader's side, no second bot, no LLM call: it is there every time the cha
 
 <img src="docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
 
-The picture is an illustration of what the message carries; the message itself is the plain
-text above.
+The picture is an illustration of what the message carries, drawn before 1.0.0; the message
+itself is the screen above.
 
-Up to five events that need attention come right after the top block, before the limits.
+Up to five events that need attention come right after the top line, under 🛠 Needs attention.
 Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
 surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
 serves its own clients (see "Limits" below), and any provider from a local process of your own
@@ -103,24 +132,21 @@ A source that cannot prove a value says `unknown`. A source that does not exist 
 installation says `unsupported`. Both lower coverage; neither turns green (one exception, the
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
-only when it is incomplete (`Profile coverage 2/3`, `Not observed: …`, `Stale: …`). The details
-close with the dashboard's own version (`Dashboard 0.12.0`) after a blank line, so the installed
-copy can be told from the pinned message at a glance.
+only when it is incomplete, as one line:
+`❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3` (and
+`2 sources unavailable` for failed sources the line does not name). An item of the ✓ row with no
+source on this installation, or no data from a source that line names, is left out of the row
+and said by that line once. The details close with the dashboard's own version
+(`Dashboard 1.0.0`), so the installed copy can be told from the pinned message at a glance.
 
 **Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
 API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
 the setting or set `rich: false` to turn it off. Telegram documents no fallback text for a rich
 message, so an app without Rich Messages may not show the screen at all.
 
-With it on, where Telegram takes Rich Messages (Bot API 10.1+), the same message is a rich one
-(0.12.0): the first lines stay as above, and the details are a collapsed section per source instead of one
-quote, opened one at a time. The limits come with a compact table of every window, how much is
-spent, the time to its reset and the moment; the cron jobs with their schedules, what fails now
-first, the paused ones under ⏸ (see "The cron line"); then the agent's rules, its memory, the
-Telegram channel, backup and drift, the Hermes version, every "no data" with its reason, and the
-confirmation, period, coverage and the dashboard's version last. The two tables are the only
-words the text form does not carry; they come from the same snapshot. How the plugin sends it,
-and falls back to the text form, is in "The plugin" below.
+With it on, where Telegram takes Rich Messages (Bot API 10.1+), the message is the rich view
+above. How the plugin sends each view, and when it falls back to the classic one, is in "The
+plugin" below.
 
 ## Freshness is a load-bearing requirement
 
@@ -218,6 +244,21 @@ forward to the replacement adapter (`send` does). A loop that keeps its first ad
 "Not connected" forever while looking alive. `tests/test_probe_plugin.py` executes the chain
 against the real engine objects with the Telegram `Bot` mocked and simulates the reconnect.
 
+**Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
+snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
+Needs attention, the ✓ row, Not checked, the limits as a table and the Hermes version, a thin line
+between two, then two collapsed `<details>`: the cron jobs as one table by how often they run, and
+Details with a titled section per source (the plans, logins and Gemini refusals, the agent's
+rules, its memory, the Telegram channel, backup and drift, the Hermes version, every "no data"),
+the screen's own stamps and the dashboard's version closing it. The classic view (`rich: false`,
+the default) is the same blocks as text: HTML when the adapter has a verb for it (bold headings,
+the details in one `<blockquote expandable>`), else plain (upper-case headings, the details in
+full); the limits are a line per provider, the cron lines sit in the details with backup and
+drift, and no job table is drawn. The top line is bold in the HTML and the rich forms and carries
+its time as `<tg-time unix="…" format="r">Sep 26 21:00 UTC</tg-time>`: Telegram shows "18 minutes
+ago" where the client supports it (Telegram Desktop) and the words inside otherwise (Android), so
+the words are the full date with the zone; the plain form writes them as they are.
+
 **The screen is HTML when the adapter has a verb for it, plain text otherwise.** Which verb is
 read off the adapter object on every tick, never off a version number, in this order:
 
@@ -236,7 +277,8 @@ path converts to MarkdownV2 and, when the escaped payload exceeds 4096 UTF-16 un
 into NEW continuation messages, which a pinned dashboard must never do. So today the form goes
 through `_edit_text`; the day the public verb takes a parse mode, the plugin switches to it
 without a release. The HTML form is bold headings and the details in one
-`<blockquote expandable>`, both Bot API 7.4 features that any bot may use. On any refusal but
+`<blockquote expandable>`, both Bot API 7.4 features that any bot may use, and the top line's
+`<tg-time>` (above). On any refusal but
 "not modified" the same tick edits plain through the public verb. A plain edit that succeeds
 right after a failed HTML one means the form was refused: the screen stays plain (upper-case
 headings, the details shown in full), the record says `screen_format: plain` with the reason in
@@ -249,7 +291,7 @@ recreation after a loss) goes through the adapter's own markdown conversion as p
 next tick edits it into the HTML form. The cron path sends the HTML form with its own bot, rich
 or not.
 
-**Before HTML, the rich form** (0.12.0, only with `rich: true`). Where the engine's bot has the
+**Before HTML, the rich form** (since 0.12.0, only with `rich: true`). Where the engine's bot has the
 raw Bot API call the engine sends its own rich messages with (`adapter._bot.do_api_request`, a
 coroutine function: the engine's own test, `_bot_supports_rich`), every tick edits the message as
 a Rich Message first: `editMessageText` with `rich_message: {html}`, the chat and the id as numbers, no topic,
@@ -319,18 +361,30 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok, Kimi and the external sources are asked (not every tick) |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
-   | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the line says "not observed" |
+   | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
-   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is HTML or plain as before 0.12.0, a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
+   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is the classic view, HTML or plain, and a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
+   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name in the cron table, under "Needs attention" and in the details. Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
 
-   Neither drift source configured means drift is `unsupported` on the screen, never zero.
-   The drift reader takes numbers, never words: a `drift_command` prints a line
+   `cron_notes` takes the job's `id` from `cron/jobs.json`; quote an id YAML would read as a
+   number:
+
+   ```yaml
+   cron_notes:                     # in plugins.entries.telegram_dashboard_probe.settings
+     "05d7506c24ff": Checks the dashboard updates
+     "42d769b28188": Sends Threads topics to SMM
+   ```
+
+   Neither drift source configured means `drift (not on this installation)` on the ❔ line,
+   never zero. The drift reader takes numbers, never words: a `drift_command` prints a line
    `keys_changed=N keys_total=M` (positions that differ, keys in the baseline) and exits 0 when
    clean, 1 on drift, 2 when it could not check; our own `check_drift.py` prints it last. Output
    without that line falls back to numbered sections `[N] …: count` and has no total
-   (`Drift ✓ N keys`); output with neither reads `Drift: unknown` when the exit code says drift
-   (exit 0 without them still reads as clean, `Drift ✓ 0 keys`).
+   (`Drift ⚠️ 3 keys` under "Needs attention", `✓ Drift 0 keys · checked 08:00` in the details);
+   output with neither is no data when the exit code says drift (`drift (unavailable)` on the
+   ❔ line, `Drift: drift present, output not parsed` in the details), and exit 0 without them
+   still reads as clean (`✓ Drift`, `0 keys` in the details).
    A source that hangs is not started again until its worker returns (one worker per
    source across ticks), so a stuck facade or command cannot fill the gateway's executor.
 3. restart the gateway; the message appears in the configured chat and its screen moves
@@ -365,19 +419,26 @@ sighting of a blocked send path and the last send error the engine logged.
 ### The cron line
 
 ```
-Cron ✓ 27 jobs                      active jobs (enabled and without a pause marker: scheduled or running; or enabled and parked in error); paused in the details
-Cron ⚠️ 2 of 27 failing             a run failed, a result was not delivered, a job is blocked or overdue
+✓ Cron                              in the ✓ row: the ticker beats and no active job fails
+Cron ⚠️ 2 of 27 failing             under Needs attention: a run failed, a result was not delivered, a job is blocked or overdue
 Cron ⚠️ ticker silent 12 min        no heartbeat for longer than the engine's own threshold (200 s)
 Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in an error
-Cron: no data                       the files could not be read; the reason in the details
-Cron: not observed                  no cron directory on this installation
+❔ Not checked: cron (unavailable)   the files could not be read; the reason in the details
+❔ Not checked: cron (not on this installation)
+                                    no cron directory, or no jobs.json, on this installation
 ```
+
+The counts open the cron lines of the details: `Cron 27 active · 3 paused · ticker 20:58`, the
+active jobs (enabled and without a pause marker: scheduled or running; or enabled and parked in
+error), the paused ones and the ticker's last heartbeat.
 
 The sources are the engine's own files under `HERMES_HOME/cron/`, read only: `jobs.json`
 (every job with the outcome of its last run: `last_status`, `last_error`, `last_delivery_error`,
 `failure_streak`, `next_run_at`, `last_run_at`, `state`, `paused_at`; since 0.12.0 also its
 schedule in the engine's own words, `schedule_display`, else the stored schedule's own words in
-the order `hermes cron list` falls back to them), the ticker's stamps
+the order `hermes cron list` falls back to them (`schedule.display`, `schedule.value`,
+`schedule.expr`, `schedule.run_at`); since 1.0.0 also how often it runs, from `schedule.kind`
+with `schedule.expr` or `schedule.minutes`, below), the ticker's stamps
 (`ticker_heartbeat`, `ticker_last_success`, `ticker_last_error`; the first token of each is the
 epoch, which is why main's `<epoch> <pid>` heartbeat reads the same), and `executions.db`, the
 run history, opened `mode=ro` with `PRAGMA query_only` in a worker under the tick's deadline
@@ -408,11 +469,12 @@ nobody saw: the history shows it, and the details keep it for two ticks with the
 replaced it (`Cron daily-digest: run failed Sep 30 11:35, ok since 11:40`; `cron_cache.held` in
 the record). A history that cannot be read, or one the installation does not keep, is one
 source that did not answer: the line and the events stand on `jobs.json`, the delivery
-streak reads `streak unknown`, the coverage says `Not observed: cron history (unavailable)`
-(a `chronos` cron provider keeps no history: `not on this installation`), and the status is
-left to the other sources. The history is the one source that lowers the coverage and never
-the status: it only adds to a line that stands on `jobs.json`, and an installation that keeps
-none would otherwise never be green. The jobs file that cannot be read is ⚪ like any source.
+streak reads `streak unknown`, the ❔ line says `cron history (unavailable)` (a `chronos` cron
+provider keeps no history: `not on this installation`), and the status is left to the other
+sources. The history is the one source that lowers the coverage and never the status: it only
+adds to a line that stands on `jobs.json`, and an installation that keeps none would otherwise
+never be green. The jobs file that cannot be read is `cron (unavailable)` on the ❔ line and
+turns the status ⚪ like any source.
 
 **The engine's error texts never reach the screen.** `last_error`, `last_delivery_error` and the
 ticker's error are reduced to the kind of the error in a word, in the order the engine's own
@@ -425,30 +487,62 @@ first.
 Severity: a failed run, an undelivered result, a blocked or an overdue job is a warning; a dead
 ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
 three cron events on the screen; the line carries the full count; the details name every job
-with its time, its streak and the kind of its error. The job's name in an event is cut to eleven
-characters and an ellipsis, to eight when it carries a character beyond ASCII (Cyrillic glyphs
-are wider on a phone); the details carry it whole, up to 24. The thresholds are the engine's own: 200 s
+with its time, its streak and the kind of its error. An event names the job by its label in
+full, as the details and the cron table do: whole up to 80 characters, a long one wraps on the
+phone (accepted on 23.10). The thresholds are the engine's own: 200 s
 for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
 [itpartypattaya/hermes-cron](https://github.com/itpartypattaya/hermes-cron) (MIT); no code is
 taken from it. `python -m telegram_dashboard --demo 3`, `21`, `22` and `24` show the forms.
 
-**The cron section of the rich screen** (0.12.0) lists every job under the line's counts
-(`⏱ Cron · 27 active · 3 paused · 2 done`), after the details lines of the text form. The active
-ones are a compact table (job, schedule, next run, last run): what fails now first, ⚠️ on its
-name, then by the next run; ⚠️ on an overdue next run and on a failed last run, ✓ on the others.
-The paused ones are a block of their own under ⏸. A paused job whose next run is already behind
-says when it was due, and one line says why that is no alarm: a paused job does not fire, its
-date is the one set before the pause (decision of 22.10: a mark, never a failure; the line and
-the status do not change). The completed ones are collapsed once more, the latest run first. The
-schedule is set in `<code>` whole, so `*/30 * * * *` is never a command; a name and a schedule
-pass the shared sanitizer and are cut at 24, and a word where Telegram would find a mention, a
-hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>` too. A long list is cut with how many are left out (60
-active, 30 paused, 20 completed).
+**How often a job runs** comes from its stored schedule as the engine keeps it (`cron/jobs.py`,
+v0.22.2): `kind`, and the `expr` of a `cron` job or the `minutes` of an `interval` one; a `once`
+job (a `run_at`) is `Once`. Never from the display words, which can disagree with the
+expression (a job shown as "every monday 6am" runs `0 6 * * 1`; `cron_frequency.py`):
+
+- `interval`: whole minutes, at most a year, in the largest unit that divides them
+  (`Every 45 min`, `Every hour`, `Every 6 h`, `Daily`, `Every 3 days`), else in minutes
+  (`Every 90 min`)
+- `cron`, five fields with every month: a step of minutes that divides the hour, every other
+  field open (`*/15 * * * *`: `Every 15 min`); a fixed minute every hour (`Every hour`), every N
+  hours with N dividing the day (`0 */6 * * *`: `Every 6 h`) or at listed hours (`Daily`,
+  `Twice a day`, `3 times a day`); one hour on listed weekdays (`Weekly`, `Twice a week`,
+  `Weekdays` for Monday to Friday) or on one day of the month (`Monthly`)
+- anything else is `Other`: a step that does not divide its cycle (`*/45` fires at :00 and
+  :45), another shape, a malformed or a missing schedule
+
+**The cron fold of the rich screen** (1.0.0) comes collapsed after the main screen, titled with
+the counts (`🕒 Cron · 27 active · 3 paused · 2 done`; `done` only when a job completed). It
+opens with the cron lines of the details (the counts and the ticker, every failure), then one
+table in the look of the limits table:
+
+- a shaded header row per frequency, ordered from the most frequent by the minutes between two
+  runs (`Once` first, as a one-shot has no second run; `Other` last; one period with two
+  labels, `Every 12 h` and `Twice a day`, by the label), and under it the active jobs of that
+  frequency, what fails now first, then by the next run. Under `Other` a job's schedule follows its name in the
+  engine's own words, set in `<code>` whole (`*/30 9-17 * * 1-5`), since the header does not say
+  how often it runs
+- `⏸ Paused` and the paused jobs by their next run, then `✅ Done` and the completed ones, the
+  latest run first
+- the date right-aligned in one short form: an active job's next run as the time on the
+  screen's day (`21:15`), the weekday and the time within the week ahead (`Sun 02:00`), else the
+  day (`Oct 3`); a paused job's next run and a done job's last run as the day (`Sep 19`); `—`
+  when there is none to read
+- ⚠️ before a job that fails now (a failed or undelivered run, a blocked job) or is overdue, and
+  a line under the table that says what the mark means
+
+A paused job whose next run is already behind keeps that date, and one line under the table
+says why that is no alarm: a paused job does not fire, its date is the one set before the pause
+(decision of 22.10: a mark, never a failure; the line and the status do not change). A job is
+named by its label from `cron_notes`, else by its name; both pass the shared sanitizer and are
+whole up to 80 characters, a schedule up to 24, and a word where Telegram would find a mention,
+a hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>`. A long list is cut
+with how many are left out (`… 5 more`; 60 active, 30 paused, 20 done). The classic view draws
+no job table: its details carry the cron lines with backup and drift.
 
 ### Connected but deaf: the Telegram line
 
-`Gateway ✓ · Telegram ✓` says the adapter is running: `is_connected` on the engine's adapter is
+`✓ Telegram` in the ✓ row says the adapter is running: `is_connected` on the engine's adapter is
 literally "the adapter was started", nothing about updates arriving or replies leaving. The
 adapter keeps counters of its own for that, and the plugin reads four of them off the live
 adapter object it already holds, as attributes, once per tick, calling nothing on it:
@@ -457,13 +551,14 @@ adapter object it already holds, as attributes, once per tick, calling nothing o
 `send_path_degraded` (declared on `BasePlatformAdapter`, overridden by the Telegram adapter;
 `telegram_traffic.py`).
 
-Three verdicts replace the ✓ on the line while the adapter says connected:
+Three verdicts take Telegram out of the row while the adapter says connected; its line goes under
+"Needs attention", after the events:
 
 ```
-Gateway ✓ · Telegram ⚠️ no sends   the adapter's own send gate is closed past the 120 s reconnect
+Telegram ⚠️ no sends                the adapter's own send gate is closed past the 120 s reconnect
                                     grace: every reply fails while this message may still move (critical)
-Gateway ✓ · Telegram ⚠️ stalled    no successful getUpdates round-trip for five minutes (critical)
-Gateway ✓ · Telegram ⚠️ quiet      no update seen for longer than this installation usually waits (warning)
+Telegram ⚠️ stalled                 no successful getUpdates round-trip for five minutes (critical)
+Telegram ⚠️ quiet                   no update seen for longer than this installation usually waits (warning)
 ```
 
 The quiet threshold is relative: twice the longest gap between updates seen in the last seven
@@ -473,16 +568,17 @@ chatty group at lunch; one without a ceiling never surfaces a dead bot on a quie
 A new polling generation (a reconnect) resets the counter: a lower number is a reset, not
 silence, and the first update of the new generation counts.
 
-The details always carry the times: `Telegram last update seen Sep 30 12:30 · polling ok 12:30`
-(plus `sends blocked since …` and `quiet 9 h, usual gap up to 4 h` when they apply) and
+The details always carry the times: `✓ Telegram last update seen Sep 30 12:30 · polling ok 12:30`
+(the mark is the Telegram item's: ✓ in the row, ⚠️ under "Needs attention", none when it is not
+checked; plus `sends blocked since …` and `quiet 9 h, usual gap up to 4 h` when they apply) and
 `Telegram send errors: last Sep 30 11:58` or `none in the log`. "Last update seen" is the tick
 that saw the counter grow, not the update's own time. Failed sends are the engine's own
 `Failed to send Telegram message` ERROR lines in `logs/errors.log` (the same tail the Gemini
 line reads, in its own worker); three in an hour are an event. Successful sends are not logged
 at that level: the last successful send the plugin can vouch for is its own confirmed edit
 (`Confirmed` in the details). Without the counters (an adapter of another shape, or the cron
-path, which holds no adapter) the line keeps its old word and the details say `Telegram traffic:
-no data` with the reason. `python -m telegram_dashboard --demo 23` shows the form.
+path, which holds no adapter) Telegram keeps the verdict of the gateway state, the ❔ line names
+`Telegram traffic`, and the details say `Telegram traffic: …` with the reason. `python -m telegram_dashboard --demo 23` shows the form.
 
 **Four private attributes, read as a capability, not a promise; one public property.** The send
 gate, `send_path_degraded`, is the adapter's public API since 0.21.1 and is read as such. The
@@ -507,7 +603,7 @@ file put next to the service, or next to `SOUL.md`, is silently never loaded. Th
 judges it per platform of the gateway, from the system prompt the engine saved for that
 platform's latest session, and comes up to the screen only when an agent does not see its rules,
 as one event per platform under "Needs attention" that turns the status to a warning (the
-healthy screen keeps its fifteen lines; there is no separate rules line beside the event).
+healthy screen gets no line for them; there is no separate rules line beside the event).
 Of the five events the screen shows, one place is kept for the rules when other sources fill
 them: those sources have lines of their own, the rules do not:
 
@@ -519,14 +615,14 @@ them: those sources have lines of their own, the rules do not:
 ```
 
 The details always carry one line per platform:
-`Rules Telegram: ✓ AGENTS.md · 11,162 chars · session Oct 7 14:32` when the agent sees them,
+`✓ Rules Telegram: AGENTS.md · 11,162 chars · session Oct 7 14:32` when the agent sees them,
 otherwise the files and what to do (`AGENTS.md only in the gateway's directory, the agent works
 in another`, `only in HERMES_HOME`, `changed …, after session …: /new`, `in the agent's
 directory, not in the prompt of session …`, `not UTF-8, the engine skips it in silence`, `in
 the prompt, no such file now`, `differ from the prompt of session …`), and also `no context
 file where the agent works` (never an alarm), `context files off for it in the engine's
 config`, `the agent's directory not known here` (a sandbox prompt with no host directory to
-compare), or the reason of a no data (the coverage line names that source on the screen).
+compare), or the reason of a no data (the ❔ line names that source on the screen).
 A `/new` there is for the chat of the platform it names, sent by hand: in the HTML message the
 file names and `/new` are code, which Telegram turns into neither a link (`AGENTS.md` ends in a
 top-level domain) nor a command a tap would send to the dashboard's own chat.
@@ -677,15 +773,17 @@ The numbers are in the details, always:
 
 ### The backup line
 
-`Backup ✓ 6 h ago` sits in the top block, beside the gateway line, in every state: a screen
-silent about the norm makes silence indistinguishable from confirmation. The absolute time and
-the integrity verdict are in the details (`Backup Sep 24 05:31 · integrity ok`). The source is a
+`✓ Backup` sits in the ✓ row while the last run is good and younger than 26 h, and the details
+carry the backup in every state: a screen silent about the norm makes silence indistinguishable
+from confirmation. The details give the absolute time, the age and the integrity verdict
+(`✓ Backup Sep 24 05:31 · 6 h ago · integrity ok`). The source is a
 JSON status a backup job writes on every run (`ok`, `phase`, `reason`, `integrity`,
 `finished_epoch` or `finished_at`); the dashboard reads that file only and never opens the
-database or the copy. A failed run is loud on the line (`Backup ⚠️ failed 6 h ago`, the
-`<phase>: <reason>` in the details) and an event; a status older than 26 h is marked
-(`⚠️ older than 26 h`) and an event; a missing or unreadable file is `no data` with the reason in
-the details and an event; no `backup_status` configured is `not observed`. The status shape is
+database or the copy. A failed run is loud: its line goes under "Needs attention"
+(`Backup ⚠️ failed 6 h ago`, the `<phase>: <reason>` in the details) with an event; a status
+older than 26 h likewise (`Backup ✓ 30 h ago ⚠️ older than 26 h`) with an event; a missing or
+unreadable file is `backup (unavailable)` on the ❔ line, the reason in the details, and an
+event; no `backup_status` configured is `backup (not on this installation)` there. The status shape is
 the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
 produces the same keys works.
 
@@ -796,15 +894,17 @@ a line of its own under the account's line, `Claude Fable 9%`, without the time 
 together with the account's window of the same label (see "External limit sources"). A state the provider reports in words is never
 turned into a number or a zero (`Grok · usage not started`). The plans the providers name are
 one details line, `Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok`; a plan nobody
-reports is not guessed.
+reports is not guessed. The rich view writes the same lines as a table (`Provider`,
+`Used · resets in`): a row per line, a cell per window (`⚠️ 93% · 1h20m`), a state in words
+across the row (`no data`), and a model's own limit in a row of its own with its reset spelled.
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
 updating is the freshness banner's business, not the countdown's. A number read on its own
 cadence must not borrow the screen's stamp: the details line `Data 12:21 · Kimi 12:16` names
 every number read at another minute than the screen, and a cached number is never shown older
-than its refresh interval (`quota_cache.py`), after two intervals the source is `Stale` on the
-screen. A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
+than its refresh interval (`quota_cache.py`), after two intervals the ❔ line says so
+(`Kimi quota (stale)`). A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
 block must never do.
 
 **Grok** (`telegram_dashboard/grok.py`): the weekly pool of the SuperGrok subscription, read
@@ -827,8 +927,8 @@ state rather than a changed shape: right after the weekly reset the proxy leaves
 `creditUsagePercent` out altogether until the first request of the new period (probed
 2026-09-25). The line then reads `Grok · usage not started`, never a zero, and only while the
 period is the current one and on-demand spend is an explicit zero; a percent missing under any
-other conditions is named (`no creditUsagePercent`). Grok is its own source on the coverage
-line (`Grok quota`).
+other conditions is named (`no creditUsagePercent`). Grok is its own source of the coverage
+(`Grok quota` on the ❔ line).
 
 **Kimi** (`telegram_dashboard/kimi.py`): the windows of the Kimi Code subscription, read from
 `<base URL>/v1/usages` on the very host the engine uses for Kimi inference. The key and the base
@@ -850,7 +950,7 @@ reset (`Kimi 3% (29d)`). `usages.limit_5h` is not shown for now: on the pilot ac
 same reset, and the plan shows no five-hour limit; a probe decides what either field is. Same
 policy and cache as Grok; the request never goes through the credential pool's rotation, so a
 failed request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named,
-not guessed. Kimi is its own source on the coverage line (`Kimi quota`).
+not guessed. Kimi is its own source of the coverage (`Kimi quota` on the ❔ line).
 
 **Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
 `Prolite`), in the details beside the others. The engine names Codex's first window `Session`
@@ -950,7 +1050,7 @@ The guards, and why:
   `limits_refresh_seconds`, whichever is longer; the late answer is the next tick's line. A slow
   source never holds the tick back
 - a source is asked once per `limits_refresh_seconds`, like Grok and Kimi, and is a source of
-  its own on the coverage line (`Claude limits`): `ok` and `login_expired` are answers;
+  its own in the coverage (`Claude limits` on the ❔ line): `ok` and `login_expired` are answers;
   `unavailable`, silence and a shape the contract does not allow are `unavailable`
 - `limits_enabled` off turns the sources off too. The fallback tick reads the same list from its
   JSON config and asks each source on every run, one after another, within its own timeout; it
@@ -999,7 +1099,7 @@ log when Google refuses a call, and that refusal is what the Gemini line shows, 
 - **time**: the engine stamps its log in the host's local time without an offset; the plugin
   runs in the same process on the same host and converts with the process's zone. The hour
   repeated when summer time ends adds an hour to the age of a 429 from that hour, once a year
-- **source**: `Gemini log` on the coverage line. No `logs/` directory is `not on this
+- **source**: `Gemini log` on the ❔ line when it does not answer. No `logs/` directory is `not on this
   installation`; the directory without `errors.log` is a log with no 429 (the engine on Windows
   creates the file at the first warning); a file that cannot be read is `unavailable`, and the
   line keeps what the record remembers. The read runs in a worker under the tick's 25 s deadline,
@@ -1115,8 +1215,8 @@ the entry registers no hook, tool, middleware or command, the traffic probe read
 counters without calling anything on it, and the rules line writes nothing, imports no network
 client and logs no text, the memory section opens files to read bytes only, opens no database,
 imports no network client and logs nothing, no file of the plugin folder carries an invisible character (the
-catalog validator warns on one), and no word of any demo screen, sent as HTML, becomes a link,
-a command, a mention or a hashtag outside `<code>`: a word that looks like a file name
+catalog validator warns on one), and no word of any demo screen, sent as HTML or rich, becomes a
+link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a
 list. The plain fallback has no code: there Telegram may still link a file name and make `/new`
 a command a tap would send to the dashboard's own chat.
