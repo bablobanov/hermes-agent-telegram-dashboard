@@ -1618,6 +1618,18 @@ def test_the_top_line_is_bold_with_its_time_a_tag_in_html_and_its_words_in_plain
     assert "> Screen Sep 25 12:21 +05" in text.splitlines()  # the top line's time, in the details
 
 
+def test_a_time_before_1970_is_time_unknown_with_no_raw_marker_in_any_form() -> None:
+    snapshot = DashboardSnapshot(overall="warning", observed_at="1960-01-01T00:00:00+00:00")
+
+    text = render_dashboard(snapshot)
+    html = to_telegram_html(text)
+
+    assert text.splitlines()[0] == "#@ 🟡 Warning · updated time unknown"
+    assert html.splitlines()[0] == "<b>🟡 Warning · updated time unknown</b>"
+    assert "@-" not in html and "tg-time" not in html
+    assert to_telegram_plain(text).splitlines()[0] == "🟡 Warning · updated time unknown"
+
+
 def test_a_time_that_cannot_be_read_is_time_unknown_with_no_tag_in_any_form() -> None:
     snapshot = DashboardSnapshot(overall="unknown", observed_at="not a time")
 

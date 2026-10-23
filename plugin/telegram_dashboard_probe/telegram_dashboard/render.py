@@ -436,7 +436,8 @@ def _top_line(snapshot: DashboardSnapshot, zone: tzinfo) -> str:
     label = _STATUS_LABELS[snapshot.overall]
     stamp = format_stamp(snapshot.observed_at, zone)
     moment = parse_timestamp(snapshot.observed_at)
-    if stamp is None or moment is None:
+    # Before 1970 the number would carry a sign the marker does not read: time unknown.
+    if stamp is None or moment is None or moment.timestamp() < 0:
         return f"{_TOP_PREFIX} {label}{_UPDATED}time unknown"
     return f"{_TOP_PREFIX}{int(moment.timestamp())} {label}{_UPDATED}{stamp}"
 
@@ -1192,13 +1193,6 @@ def _share_words(
     if window.used_percent is not None:
         return f"{head}{window.used_percent:.0f}%", _reset_words(window.reset_at, reference)
     return f"{head}{window.note or '?'}", None
-
-
-def _reset_suffix(value: object, reference: datetime | None) -> str:
-    """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
-    reset date at all."""
-    words = _reset_words(value, reference)
-    return f" ({words})" if words else ""
 
 
 def _reset_words(value: object, reference: datetime | None) -> str | None:
