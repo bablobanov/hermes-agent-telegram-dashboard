@@ -781,7 +781,8 @@ JSON status a backup job writes on every run (`ok`, `phase`, `reason`, `integrit
 `finished_epoch` or `finished_at`); the dashboard reads that file only and never opens the
 database or the copy. A failed run is loud: its line goes under "Needs attention"
 (`Backup ⚠️ failed 6 h ago`, the `<phase>: <reason>` in the details) with an event; a status
-older than 26 h likewise (`Backup ✓ 30 h ago ⚠️ older than 26 h`) with an event; a missing or
+older than 26 h likewise (`Backup ✓ 30 h ago ⚠️ older than 26 h`) with an event, and the
+❔ line says `backup (stale)`; a missing or
 unreadable file is `backup (unavailable)` on the ❔ line, the reason in the details, and an
 event; no `backup_status` configured is `backup (not on this installation)` there. The status shape is
 the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
