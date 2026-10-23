@@ -1368,6 +1368,40 @@ def test_traffic_times_are_always_in_the_details() -> None:
     assert "> Telegram send errors: last Sep 25 06:58" in text.splitlines()
 
 
+@pytest.mark.parametrize(
+    "telegram, traffic, sources, attention, mark",
+    [
+        ("degraded", "ok", (), "Telegram error", "⚠️ "),
+        ("disconnected", "reconnecting", (), "Telegram disconnected", "⚠️ "),
+        (
+            "unknown",
+            "ok",
+            (SourceObservation("gateway_state", "official", "unavailable"),),
+            None,
+            "",
+        ),
+    ],
+    ids=["degraded", "disconnected", "not checked"],
+)
+def test_the_telegram_line_in_the_details_takes_the_item_s_own_verdict(
+    telegram: str, traffic: str, sources: tuple, attention: str | None, mark: str
+) -> None:
+    """Fix round 1: counters that say ok next to an adapter that is not connected are no ✓ in
+    the details while "Needs attention" says Telegram is broken; one not checked has no mark."""
+    snapshot = replace(
+        _cron_snapshot(CRON_OK, TrafficSummary(traffic, polling_at="2026-09-25T07:20:00Z")),
+        gateway=GatewaySummary("running", telegram, None),
+        sources=sources,
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+    main = _main_part(text)
+
+    assert f"> {mark}Telegram last update seen never · polling ok 07:20" in text.splitlines()
+    assert (attention in main) if attention else ("Needs attention" not in text)
+    assert not any("✓\xa0Telegram" in line for line in main)
+
+
 def test_the_deaf_word_never_hides_a_disconnected_adapter() -> None:
     snapshot = replace(
         _cron_snapshot(CRON_OK, TrafficSummary("no_sends")),

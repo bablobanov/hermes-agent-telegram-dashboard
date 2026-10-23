@@ -180,6 +180,12 @@ _TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"
 # "Needs attention"; ``unchecked``, in neither, the "❔ Not checked" line says it: no source on
 # this installation, or no data from a source that line names.
 _Verdict = Literal["well", "broken", "unchecked"]
+# The mark a details line takes from its thing's verdict: none for one not checked.
+_VERDICT_MARKS: dict[_Verdict, str] = {
+    "well": f"{OK_MARK} ",
+    "broken": f"{WARN_MARK} ",
+    "unchecked": "",
+}
 # The source a thing of the row is read from, as ``snapshot.sources`` names it.
 _ITEM_SOURCES = {
     "Gateway": "gateway_state",
@@ -469,7 +475,8 @@ def _items(
     details.section("telegram")
     items = _gateway_items(snapshot.gateway, snapshot.traffic, unchecked)
     if snapshot.traffic is not None:
-        details.state.extend(_traffic_words(snapshot.traffic, zone))
+        telegram = next((item.verdict for item in items if item.name == "Telegram"), None)
+        details.state.extend(_traffic_words(snapshot.traffic, zone, telegram))
     details.section("backup")
     if snapshot.backup is not None:
         items.append(_backup_item(snapshot.backup, reference, zone, details, unchecked))
@@ -595,18 +602,19 @@ def _gateway_items(
     ]
 
 
-def _traffic_words(traffic: TrafficSummary, zone: tzinfo) -> list[str]:
+def _traffic_words(traffic: TrafficSummary, zone: tzinfo, telegram: _Verdict | None) -> list[str]:
     """The channel's times, always in the details: the last update seen, the last successful
     poll, since when the sends are blocked, how quiet it is against the usual, the last send
-    error the engine logged. The first line is the channel's verdict, its mark in front (1.0.0):
-    the warning mark when the counters say it is deaf."""
+    error the engine logged. The first line carries the mark of the Telegram item's verdict
+    (1.0.0), the one the ✓ row and "Needs attention" use: none when it is not checked or no
+    gateway summary judges it."""
     if traffic.state in ("unsupported", "unknown"):
         reason = sanitize_public_text(traffic.detail or "not read", limit=60)
         return [f"Telegram traffic: {reason}"]
     seen = format_day_time(traffic.last_update_seen_at, zone) or "never"
     polling = format_in_zone(traffic.polling_at, zone, "%H:%M") or "unknown"
-    mark = WARN_MARK if traffic.state in _TRAFFIC_WORDS else OK_MARK
-    parts = [f"{mark} Telegram last update seen {seen} · polling ok {polling}"]
+    mark = _VERDICT_MARKS[telegram] if telegram is not None else ""
+    parts = [f"{mark}Telegram last update seen {seen} · polling ok {polling}"]
     since = format_in_zone(traffic.sends_blocked_since, zone, "%H:%M")
     if since:
         parts.append(f"sends blocked since {since}")
