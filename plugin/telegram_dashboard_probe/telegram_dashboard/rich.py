@@ -71,6 +71,9 @@ _TITLES = {
 }
 _DETAILS_ORDER = ("limits", "rules", "memory", "telegram", "backup", "hermes")
 _NO_DATA_TITLE = "❔ No data"
+# A row of the cron table and whether it carries the failure mark before a name: the note under
+# the table is read off the rows as built, never off a second cut of the list.
+_Row = tuple[str, bool]
 _BLOCK_TAG = re.compile(r"<(?:p|tr|table|details|blockquote|li|h[1-6]|hr)\b")
 
 
@@ -222,8 +225,9 @@ def _cron_body(cron: CronSummary, reference: datetime | None, zone: tzinfo) -> s
     rows += _set_rows(_DONE_HEADER, done, DONE_LIMIT, lambda job: job.last_run_at, zone)
     if not rows:
         return ""
-    shown = [*active[:JOB_ROWS_LIMIT], *paused[:PAUSED_LIMIT], *done[:DONE_LIMIT]]
-    return f"<table compact bordered>{''.join(rows)}</table>" + _cron_notes(shown, paused)
+    table = "".join(markup for markup, _marked in rows)
+    marked = any(marked for _markup, marked in rows)
+    return f"<table compact bordered>{table}</table>" + _cron_notes(marked, paused)
 
 
 def _by_frequency(jobs: Sequence[CronJob]) -> list[CronJob]:
@@ -233,10 +237,10 @@ def _by_frequency(jobs: Sequence[CronJob]) -> list[CronJob]:
     return sorted(jobs, key=lambda job: (job.frequency.period, job.frequency.label))
 
 
-def _active_rows(jobs: Sequence[CronJob], reference: datetime | None, zone: tzinfo) -> list[str]:
+def _active_rows(jobs: Sequence[CronJob], reference: datetime | None, zone: tzinfo) -> list[_Row]:
     """A header row per frequency and its jobs with their next run; ``Other`` names each
     job's schedule, since its header does not say how often the job runs."""
-    rows = []
+    rows: list[_Row] = []
     for frequency, group in groupby(jobs[:JOB_ROWS_LIMIT], key=lambda job: job.frequency):
         rows.append(_header_row(frequency.label))
         rows.extend(
@@ -252,7 +256,7 @@ def _set_rows(
     limit: int,
     stamp: Callable[[CronJob], str | None],
     zone: tzinfo,
-) -> list[str]:
+) -> list[_Row]:
     """The paused or the done jobs under their header row, each with the day of ``stamp``."""
     if not jobs:
         return []
@@ -260,24 +264,25 @@ def _set_rows(
     return [_header_row(header), *rows, *_more_rows(len(jobs) - limit)]
 
 
-def _header_row(words: str) -> str:
+def _header_row(words: str) -> _Row:
     """The shaded header row across both columns; Telegram centres it, as the limits header."""
-    return f"<tr>{_cell(words, header=True, span=2)}</tr>"
+    return f"<tr>{_cell(words, header=True, span=2)}</tr>", False
 
 
-def _more_rows(left_out: int) -> list[str]:
+def _more_rows(left_out: int) -> list[_Row]:
     """``… 5 more`` across both columns when a set was cut; nothing when it was not."""
-    return [f"<tr>{_cell(f'… {left_out} more', span=2)}</tr>"] if left_out > 0 else []
+    return [(f"<tr>{_cell(f'… {left_out} more', span=2)}</tr>", False)] if left_out > 0 else []
 
 
-def _job_row(job: CronJob, date: str | None, with_schedule: bool = False) -> str:
+def _job_row(job: CronJob, date: str | None, with_schedule: bool = False) -> _Row:
     """The job's label, marked when it fails now, and its date on the right, ``—`` unread."""
     name = sanitize_public_text(job.label, limit=NAME_LIMIT)
-    words = _words(f"{WARN_MARK} {name}" if job.failure is not None else name)
+    marked = job.failure is not None
+    words = _words(f"{WARN_MARK} {name}" if marked else name)
     schedule = _schedule(job) if with_schedule else ""
     if schedule:
         words += f" · {schedule}"
-    return f"<tr><td>{words}</td>{_cell(date or '—', right=True)}</tr>"
+    return f"<tr><td>{words}</td>{_cell(date or '—', right=True)}</tr>", marked
 
 
 def _schedule(job: CronJob) -> str:
@@ -288,11 +293,11 @@ def _schedule(job: CronJob) -> str:
     return f"<code>{html.escape(sanitize_public_text(job.schedule, limit=24))}</code>"
 
 
-def _cron_notes(shown: Sequence[CronJob], paused: Sequence[CronJob]) -> str:
+def _cron_notes(marked: bool, paused: Sequence[CronJob]) -> str:
     """One paragraph under the table with the lines that apply: what the mark before a name
     means when a row carries it, why a paused job's date can be behind (decision of 22.10)."""
     lines = []
-    if any(job.failure is not None for job in shown):
+    if marked:
         lines.append(html.escape(_FAILURE_NOTE))
     if any(job.paused_past_due for job in paused):
         lines.append(f"<i>{html.escape(_PAUSED_NOTE)}</i>")

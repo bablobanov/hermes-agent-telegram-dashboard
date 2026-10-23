@@ -470,6 +470,21 @@ def test_each_note_under_the_table_only_when_it_applies(failing, past_due, notes
     assert after == (f"<p>{'<br>'.join(notes)}</p>" if notes else "") + "</details>"
 
 
+def test_the_note_on_the_mark_is_read_off_the_rows_as_built() -> None:
+    """A failing job the cut leaves out (in ``Other``, past the sixtieth row) carries no mark in
+    the table, so no note explains one; shown, it carries both."""
+    daily = Frequency("Daily", 1440.0)
+    full = tuple(_active(f"a{i:03d}", daily) for i in range(rich.JOB_ROWS_LIMIT))
+    late = _active("late", failure="overdue")
+
+    cut = _cron_fold(_with_jobs(*full, late))
+    shown = _cron_fold(_with_jobs(*full[1:], late))
+
+    assert "late" not in cut and "⚠️" not in cut
+    assert cut.split("</table>")[1] == "</details>"
+    assert "<tr><td>⚠️ late</td>" in shown and f"<p>{_FAILURE_NOTE}</p>" in shown
+
+
 def test_labels_that_escaping_grows_take_the_rich_form_over_a_ceiling() -> None:
     """``&``, ``"``, ``'``, ``<`` and ``>`` grow four to six times under escaping, and a label is
     whole up to 80: every set full of such labels passes 32,768 characters. Then there is no
