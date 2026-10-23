@@ -65,7 +65,9 @@ def _job(**over):
     return base
 
 
-def _home(tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None) -> Environment:
+def _home(
+    tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None, notes=()
+) -> Environment:
     cron = tmp_path / "cron"
     cron.mkdir()
     (cron / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
@@ -74,7 +76,7 @@ def _home(tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None) -> 
             (cron / name).write_text(value, encoding="utf-8")
     if error is not None:
         (cron / "ticker_last_error").write_text(error, encoding="utf-8")
-    return Environment(hermes_home=tmp_path)
+    return Environment(hermes_home=tmp_path, cron_notes=notes)
 
 
 def _epoch(moment: datetime) -> str:
@@ -236,9 +238,17 @@ def test_error_kind_follows_the_engine_s_order(text, word) -> None:
 
 PLANTED = (
     "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
-    "telegram:-1001234567890:17 user 987654321"
+    "telegram:-1001234567890:17 user 987654321 bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
 )
-FRAGMENTS = ("sk-live", "ABCDEFGHIJ", "/home/someone", "1001234567890", "987654321")
+FRAGMENTS = (
+    "sk-live",
+    "ABCDEFGHIJ",
+    "/home/someone",
+    "1001234567890",
+    "987654321",
+    "123456789",
+    "AAHdqTcvCH1vGWJ",
+)
 
 
 def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
@@ -246,7 +256,9 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
 ) -> None:
     """Edit (b) of 01.10: the engine's error texts are reduced to a kind in a word; nothing
     planted reaches the text, the record, the block or the events, in any form the message
-    takes. The sanitizer's own masks (task 0) are the second line, not the first."""
+    takes. The sanitizer's own masks (task 0) are the second line, not the first. 1.0.0: nor
+    from the owner's label for a job (``cron_notes``), which goes through the sanitizer like a
+    name, nor from the stored schedule's expression."""
     from telegram_dashboard.render import render_dashboard, to_telegram_html, to_telegram_plain
     from telegram_dashboard.rich import to_telegram_rich
     from telegram_dashboard.schema import DashboardSnapshot
@@ -264,6 +276,8 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
             name="mail",
             last_status="delivery_failed",
             last_delivery_error=f"Chat not found: {PLANTED}",
+            schedule={"kind": "cron", "expr": PLANTED},
+            schedule_display=None,
         ),
         _job(
             id="b3",
@@ -279,6 +293,7 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         heartbeat=_epoch(NOW),
         success=_epoch(NOW),
         error=f"{_epoch(NOW)}\nPermissionError: {PLANTED}\n",
+        notes=(("b1", f"Digest {PLANTED}"),),
     )
     cache: dict = {}
 
@@ -303,7 +318,58 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         for fragment in FRAGMENTS:
             assert fragment not in rendered, fragment
     assert "(rate limit)" in text and "(chat unavailable)" in text and "(config)" in text
+    # The label and the expression were read, and reached the record and the list sanitized.
+    assert cache["held"]["b1"]["name"].startswith("Digest [secret]")
+    assert summary.jobs[0].label.startswith("Digest [secret]")
+    assert next(job for job in summary.jobs if job.job_id == "b2").schedule.startswith("[secret]")
     assert "> Cron ticker error: permission denied" in text.splitlines()
+
+
+def test_a_job_is_labelled_by_the_owner_s_note_else_by_its_name(tmp_path: Path) -> None:
+    """1.0.0: ``cron_notes`` gives a job the owner's label; a job without a note keeps its name,
+    a note for an id no job has changes nothing. The failure carries the label, so the details
+    and the events name the job by it."""
+    jobs = [
+        _job(id="a1", name="threads-smm", last_status="error", last_error="x"),
+        _job(id="a2", name="digest"),
+    ]
+    notes = (("a1", "Sends Threads topics"), ("gone", "No such job"))
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=notes)
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    rows = {job.job_id: job for job in summary.jobs}
+    assert (rows["a1"].name, rows["a1"].note, rows["a1"].label) == (
+        "threads-smm",
+        "Sends Threads topics",
+        "Sends Threads topics",
+    )
+    assert (rows["a2"].name, rows["a2"].note, rows["a2"].label) == ("digest", None, "digest")
+    assert [(f.job_id, f.name) for f in summary.failing] == [("a1", "Sends Threads topics")]
+    assert len(summary.jobs) == 2
+
+
+def test_a_note_that_sanitizes_to_nothing_leaves_the_name() -> None:
+    job = job_of(_job(name="digest"), {"b1": "\x1b[31m\x07"})
+
+    assert job is not None and (job.note, job.label) == (None, "digest")
+
+
+def test_the_fallback_tick_reads_cron_notes_as_the_plugin_does(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The cron tick's config carries ``cron_notes`` too: the same pairs, the same skips, one
+    warning for a value that is not a mapping."""
+    from telegram_dashboard.__main__ import _environment
+
+    home = {"hermes_home": str(tmp_path)}
+    notes = {"a1": " Morning brief ", "a2": "", "": "x", "a3": 5, 3: "x"}
+
+    assert _environment({**home, "cron_notes": notes}).cron_notes == (("a1", "Morning brief"),)
+    assert _environment(home).cron_notes == ()
+    with caplog.at_level("WARNING", logger="telegram_dashboard"):
+        assert _environment({**home, "cron_notes": ["a1", "label"]}).cron_notes == ()
+    assert caplog.text.count("cron_notes must be a mapping") == 1
 
 
 def test_an_overdue_job_is_a_failure_only_while_the_ticker_lives() -> None:

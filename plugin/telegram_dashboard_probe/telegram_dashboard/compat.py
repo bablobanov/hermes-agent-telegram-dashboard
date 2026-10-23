@@ -46,6 +46,9 @@ class Environment:
     context_files_enabled: bool = True
     # The memory section (``memory.py``); off by the dashboard's own setting only.
     memory_enabled: bool = True
+    # The owner's label per cron job id (``cron_notes``) as pairs, nothing mutable; checked
+    # entry by entry where the config is read, sanitized where a label is shown (``cron_jobs``).
+    cron_notes: tuple[tuple[str, str], ...] = ()
     # The gateway process's working directory, where an operator may expect the agent's rules;
     # ``None`` outside the gateway unless the cron tick's config names it.
     gateway_dir: Path | None = None

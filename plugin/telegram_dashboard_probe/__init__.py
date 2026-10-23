@@ -60,7 +60,7 @@ import inspect
 import logging
 import math
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from html import escape
@@ -212,6 +212,9 @@ class Settings:
     # fallback text (``InputRichMessage`` has no field for one), so an app without Rich Messages
     # may not show the screen at all.
     rich: bool = False
+    # The owner's label per cron job (``cron_notes``, job id to label), config only; pairs, so
+    # the frozen settings hold nothing mutable. Sanitized where it is shown, like a name.
+    cron_notes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,6 +295,7 @@ def read_settings(ctx: Any) -> Settings | None:
         context_files=_setting(ctx, "context_files", ENV_CONTEXT_FILES).lower() not in _FALSE_WORDS,
         memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
         rich=_setting(ctx, "rich", ENV_RICH).lower() in _TRUE_WORDS,
+        cron_notes=_notes(_raw_setting(ctx, "cron_notes")),
     )
 
 
@@ -301,6 +305,21 @@ def _entries(raw: object) -> tuple[Any, ...]:
         return tuple(raw)
     if raw not in (None, ""):
         logger.warning("probe: limits_sources must be a list; ignoring %r", type(raw))
+    return ()
+
+
+def _notes(raw: object) -> tuple[tuple[str, str], ...]:
+    """``cron_notes`` as a mapping of job id to label in the config entry; anything else is
+    "none configured". An entry whose id or label is not a non-empty string is skipped."""
+    if isinstance(raw, Mapping):
+        return tuple(
+            (job_id.strip(), label.strip())
+            for job_id, label in raw.items()
+            if isinstance(job_id, str) and isinstance(label, str)
+            if job_id.strip() and label.strip()
+        )
+    if raw not in (None, ""):
+        logger.warning("probe: cron_notes must be a mapping; ignoring %r", type(raw))
     return ()
 
 
@@ -1041,6 +1060,7 @@ class ProbeRuntime:
             limits_sources=self.settings.limits_sources,
             context_files_enabled=self.settings.context_files,
             memory_enabled=self.settings.memory,
+            cron_notes=self.settings.cron_notes,
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,

@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from .backup import describe_age
@@ -72,6 +73,7 @@ SCHEDULE_LIMIT = 24
 # The stored schedule's keys the engine falls back to without ``schedule_display``, in its order
 # (``cron/jobs.py`` ``_schedule_display_for_job``, v0.22.2).
 _SCHEDULE_KEYS = ("display", "value", "expr", "run_at")
+_NO_NOTES: Mapping[str, str] = MappingProxyType({})
 # Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns. A name
 # with any character beyond ASCII is cut at eight (decision of 01.10, from Ilya's phone): Cyrillic
 # glyphs are wider in a proportional font, and an event of the same count with a Cyrillic name
@@ -164,6 +166,14 @@ class Job:
     last_error: str | None
     delivery_error: str | None
     failure_streak: int | None
+    # The owner's label for it from ``cron_notes``, sanitized and cut like the name; ``None``
+    # without one.
+    note: str | None = None
+
+    @property
+    def label(self) -> str:
+        """What the screen names the job by: the owner's note for it, else its name."""
+        return self.note or self.name
 
     @property
     def paused(self) -> bool:
@@ -212,19 +222,20 @@ class Scan:
 # ----------------------------------------------------------------------------- the files
 
 
-def read_jobs(path: Path) -> list[Job]:
-    """The jobs of ``jobs.json``; ``OSError``/``ValueError`` are the caller's to name."""
+def read_jobs(path: Path, notes: Mapping[str, str] = _NO_NOTES) -> list[Job]:
+    """The jobs of ``jobs.json``, each with the owner's note for its id when ``notes`` (the
+    ``cron_notes`` setting) has one; ``OSError``/``ValueError`` are the caller's to name."""
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
         raise ValueError("jobs.json is not an object")
-    return [job for job in (job_of(raw) for raw in payload["jobs"]) if job is not None]
+    return [job for job in (job_of(raw, notes) for raw in payload["jobs"]) if job is not None]
 
 
-def job_of(raw: object) -> Job | None:
+def job_of(raw: object, notes: Mapping[str, str] = _NO_NOTES) -> Job | None:
     """One record, its pause fields read as the ticker reads them (``cron/jobs.py``
     ``is_job_runnable`` and ``_has_pause_marker``, v2026.9.14; 0.9.2): ``enabled`` and
     ``paused_at`` by their truth (``null`` is off, a number is a stamp), ``state`` as written
-    (``Paused`` is no pause marker)."""
+    (``Paused`` is no pause marker). The note for its id in ``notes`` becomes its label."""
     if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not raw["id"]:
         return None
     streak = raw.get("failure_streak")
@@ -244,6 +255,7 @@ def job_of(raw: object) -> Job | None:
         last_error=_text(raw.get("last_error")),
         delivery_error=_text(raw.get("last_delivery_error")),
         failure_streak=streak if counted else None,
+        note=_note(notes.get(raw["id"])),
     )
 
 
@@ -255,6 +267,12 @@ def _name(value: object) -> str:
     """The job's name for the screen: the shared sanitizer (secrets, paths, chat ids and
     delivery targets), cut to ``NAME_LIMIT``."""
     return sanitize_public_text(str(value), limit=NAME_LIMIT) or "?"
+
+
+def _note(value: str | None) -> str | None:
+    """The owner's label for a job, through the same sanitizer and cut as the name: a secret,
+    a path or a chat id typed into ``cron_notes`` never reaches the screen or the record."""
+    return sanitize_public_text(value, limit=NAME_LIMIT) or None if value else None
 
 
 def _schedule(raw: Mapping[str, object]) -> str | None:
@@ -343,18 +361,23 @@ def classify(job: Job, *, now: datetime, ticker_alive: bool) -> CronFailure | No
             fallback = _literal(status) if status not in ("", "error") else "error"
         reason = error_kind(job.last_error, default=fallback)
         return CronFailure(
-            job.job_id, job.name, kind, at=job.last_run_at, streak=job.failure_streak, reason=reason
+            job.job_id,
+            job.label,
+            kind,
+            at=job.last_run_at,
+            streak=job.failure_streak,
+            reason=reason,
         )
     if status == "delivery_failed" or job.delivery_error:
         reason = error_kind(job.delivery_error, default="delivery error")
         return CronFailure(
-            job.job_id, job.name, "delivery", at=job.last_run_at, streak=None, reason=reason
+            job.job_id, job.label, "delivery", at=job.last_run_at, streak=None, reason=reason
         )
     if ticker_alive and job.active:
         due = parse_timestamp(job.next_run_at)
         late = age_seconds(due, now) if due is not None else None
         if late is not None and late > OVERDUE_SECONDS:
-            return CronFailure(job.job_id, job.name, "overdue", at=job.next_run_at)
+            return CronFailure(job.job_id, job.label, "overdue", at=job.next_run_at)
     return None
 
 
@@ -393,6 +416,7 @@ def _row(job: Job, failure: CronFailureKind | None, *, now: datetime) -> CronJob
         failure=failure,
         paused_past_due=behind,
         frequency=job.frequency,
+        note=job.note,
     )
 
 
@@ -423,7 +447,7 @@ def scan_cron(env: Environment, *, now: datetime) -> Scan:
     if not cron_dir.is_dir():
         return Scan(state="unsupported", detail="no cron directory")
     try:
-        jobs = tuple(read_jobs(cron_dir / JOBS_FILE))
+        jobs = tuple(read_jobs(cron_dir / JOBS_FILE, dict(env.cron_notes)))
     except FileNotFoundError:
         return Scan(state="unsupported", detail="jobs.json not found")
     except ValueError as exc:
@@ -587,7 +611,7 @@ def _with_history(
         out.append(
             CronFailure(
                 run.job_id,
-                job.name,
+                job.label,
                 kind,
                 at=run.finished_at or run.claimed_at,
                 recovered_at=job.last_run_at or now.isoformat(),

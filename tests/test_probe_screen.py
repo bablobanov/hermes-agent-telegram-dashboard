@@ -367,6 +367,84 @@ def test_settings_fall_back_to_the_environment_and_to_the_engine_default_home(
     assert plugin.display_zone(settings) is UTC  # unknown zone name degrades, never raises
 
 
+def test_cron_notes_are_read_from_the_config_entry_as_pairs(monkeypatch, tmp_path: Path) -> None:
+    """1.0.0: ``cron_notes`` maps a job id to the owner's label for it; the settings hold the
+    pairs, nothing mutable, trimmed. An entry whose id or label is not a non-empty string is
+    skipped, the others stand."""
+    plugin = load_plugin()
+    notes = {
+        "a1b2c3": "Sends Threads topics to SMM",
+        " d4e5 ": " Morning brief ",
+        "empty": "",
+        "blank": "   ",
+        "": "no id",
+        "number": 5,
+        7: "a number for an id",
+        "none": None,
+    }
+
+    settings = plugin.read_settings(FakeContext(_settings(monkeypatch, tmp_path, cron_notes=notes)))
+
+    assert settings is not None
+    assert settings.cron_notes == (
+        ("a1b2c3", "Sends Threads topics to SMM"),
+        ("d4e5", "Morning brief"),
+    )
+
+
+@pytest.mark.parametrize("value", [["a1b2c3", "label"], "a1b2c3: label", 5])
+def test_cron_notes_that_are_not_a_mapping_are_ignored_with_one_warning(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, value: object
+) -> None:
+    plugin = load_plugin()
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        settings = plugin.read_settings(
+            FakeContext(_settings(monkeypatch, tmp_path, cron_notes=value))
+        )
+
+    assert settings is not None and settings.cron_notes == ()
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "hermes.plugins.telegram_dashboard_probe"
+    ]
+    assert len(warnings) == 1 and "cron_notes must be a mapping" in warnings[0]
+
+
+def test_cron_notes_come_from_the_config_only(monkeypatch, tmp_path: Path) -> None:
+    """No environment fallback: without the config entry there are no notes, whatever the
+    environment holds."""
+    plugin = load_plugin()
+    base = _settings(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_CRON_NOTES", '{"a1b2c3": "label"}')
+    monkeypatch.setenv("CRON_NOTES", '{"a1b2c3": "label"}')
+
+    settings = plugin.read_settings(FakeContext(base))
+
+    assert settings is not None and settings.cron_notes == ()
+
+
+def test_cron_notes_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    plugin = load_plugin()
+    notes = {"a1b2c3": "Sends Threads topics to SMM"}
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), cron_notes=notes))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[Any] = []
+
+    async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(env)
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    asyncio.run(runtime._collect(datetime(2026, 10, 24, 7, 0, tzinfo=UTC)))
+
+    assert seen[0].cron_notes == (("a1b2c3", "Sends Threads topics to SMM"),)
+
+
 def test_a_package_copy_from_before_the_version_line_is_refused_at_load(tmp_path: Path) -> None:
     """The plugin hands ``version_cache`` to the collector. A copy of the package from before
     0.6.0 would reject that argument on every tick and cost the whole screen; it is refused once,

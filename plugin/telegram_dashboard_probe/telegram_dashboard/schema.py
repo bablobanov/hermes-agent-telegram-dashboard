@@ -88,6 +88,7 @@ class CronFailure:
     """One job that is not delivering what it should, as the engine's own records say."""
 
     job_id: str
+    # The job's label: the owner's note for it (``cron_notes``), else its name.
     name: str
     kind: CronFailureKind
     # The failed run's end (``last_run_at``), or the overdue ``next_run_at``.
@@ -118,9 +119,10 @@ class Frequency:
 
 @dataclass(frozen=True, slots=True)
 class CronJob:
-    """One job as the cron section lists it: the name, the schedule in the engine's own words,
-    the next and the last run, what the line counts against it now. Never the prompt, the
-    script, the delivery target, the skills or the model."""
+    """One job as the cron section lists it: the name and the owner's label for it, the
+    schedule in the engine's own words and how often it runs, the next and the last run, what
+    the line counts against it now. Never the prompt, the script, the delivery target, the
+    skills or the model."""
 
     job_id: str
     name: str
@@ -137,6 +139,14 @@ class CronJob:
     # How often it runs, read from ``kind`` and ``expr``/``minutes`` of the stored schedule;
     # ``schedule`` above stays the engine's own words.
     frequency: Frequency = Frequency()
+    # The owner's label for it (``cron_notes``), sanitized and cut like the name; ``None``
+    # without one.
+    note: str | None = None
+
+    @property
+    def label(self) -> str:
+        """What the cron section names the job by: the owner's note for it, else its name."""
+        return self.note or self.name
 
 
 @dataclass(frozen=True, slots=True)
