@@ -11,6 +11,7 @@ the first screen is one phone screen, with the explanations in a collapsed detai
 import pytest
 
 from telegram_dashboard import __version__
+from telegram_dashboard.cron_jobs import EVENT_TITLES
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT, render_dashboard, to_telegram_html
 from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
@@ -20,13 +21,14 @@ STATES = all_states()
 # phone shows them: the blank line before the collapsed Details is one of them (decision of
 # 01.10, when the cron line made the healthy screen 15 lines). The 32 is a guide (decisions of
 # 01.10, from Ilya's phone) for every line of the main part but the limits block: a limits line
-# keeps its exact times and wraps when it must (0.9.2), and an event with a name beyond ASCII is
-# cut at eight, see test_render and test_cron_jobs. 1.0.0, the look accepted in the live probe:
-# the top line and the ✓ row are not held to it either; the top line's time reads "18 minutes
-# ago" on Telegram Desktop and the full date on Android, and the row wraps between two items,
-# never inside one.
+# keeps its exact times and wraps when it must (0.9.2). 1.0.0, the look accepted in the live
+# probe: the top line and the ✓ row are not held to it either; the top line's time reads "18
+# minutes ago" on Telegram Desktop and the full date on Android, and the row wraps between two
+# items, never inside one. Nor is a cron event: it names the job by its full label and wraps
+# (decision of 23.10), see test_cron_jobs.
 PHONE_LINES = 15
 PHONE_COLUMNS = 32
+_CRON_EVENTS = tuple(f"- {title}: " for title in EVENT_TITLES.values())
 NBSP = "\xa0"
 
 
@@ -54,12 +56,13 @@ def _row(*names: str) -> str:
 
 def _held_to_width(main: list[str]) -> list[str]:
     """The lines the 32 is a guide for: the main part without the limits block (from its
-    heading to the blank line after it), the top line and the ✓ row."""
+    heading to the blank line after it), the top line, the ✓ row and the cron events that
+    name a job."""
     if "## 🧠 Limits used" in main:
         start = main.index("## 🧠 Limits used")
         end = next((i for i in range(start, len(main)) if not main[i]), len(main))
         main = main[:start] + main[end:]
-    return [line for line in main if not line.startswith(("#@", f"✓{NBSP}"))]
+    return [line for line in main if not line.startswith(("#@", f"✓{NBSP}", *_CRON_EVENTS))]
 
 
 def test_twenty_eight_states_are_defined_and_numbered() -> None:
@@ -592,11 +595,11 @@ def test_state_23_connected_but_deaf_is_critical_and_keeps_the_times() -> None:
     assert len(main) <= PHONE_LINES + 3
 
 
-def test_state_24_the_narrow_phone_keeps_the_exact_times_and_the_short_event() -> None:
-    """0.9.1, decisions of 01.10 from Ilya's phone: the 32 is a guide and an event with a name
-    beyond ASCII is cut at eight. 0.9.2: the marked Claude line keeps its exact times at 32 and
-    wraps on the narrow phone, which is accepted. The event is a literal, held to what
-    ``cron_jobs.incidents_for`` builds for the same record."""
+def test_state_24_the_narrow_phone_keeps_the_exact_times_and_the_full_event() -> None:
+    """0.9.1, decisions of 01.10 from Ilya's phone: the 32 is a guide. 0.9.2: the marked Claude
+    line keeps its exact times at 32 and wraps on the narrow phone, which is accepted. 1.0.0:
+    the event names the job in full and wraps too (23.10). The event is a literal, held to
+    what ``cron_jobs.incidents_for`` builds for the same record."""
     state = STATES[23]
     text = _render(state)
     main = _main_part(text)
@@ -610,7 +613,7 @@ def test_state_24_the_narrow_phone_keeps_the_exact_times_and_the_short_event() -
         _top("🟡 Warning", state),
         "",
         "## 🛠 Needs attention",
-        "- Cron undelivered: Утренняя…",
+        "- Cron undelivered: Утренняя сводка проекта",
         "Cron ⚠️ 1 of 27 failing",
         "",
         _row("Gateway", "Telegram", "Backup", "Drift"),

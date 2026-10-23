@@ -67,19 +67,16 @@ RUN_OK_STATUSES = frozenset({"ok", "delivery_failed", "delivery_queued"})
 HOLD_TICKS = 2
 HELD_LIMIT = 50
 MAX_EVENTS = 3
-NAME_LIMIT = 24
+# A job's name and the owner's label for it (``cron_notes``) are whole up to here: the cron
+# table lists them whole and an event names the job in full, the rich screen wraps (1.0.0;
+# the owner accepted the full label in the event on 23.10).
+NAME_LIMIT = 80
 # ``0 9 * * 1-5``, ``every 30m``, ``once at 2026-10-22 13:00``: whole up to here.
 SCHEDULE_LIMIT = 24
 # The stored schedule's keys the engine falls back to without ``schedule_display``, in its order
 # (``cron/jobs.py`` ``_schedule_display_for_job``, v0.22.2).
 _SCHEDULE_KEYS = ("display", "value", "expr", "run_at")
 _NO_NOTES: Mapping[str, str] = MappingProxyType({})
-# Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns. A name
-# with any character beyond ASCII is cut at eight (decision of 01.10, from Ilya's phone): Cyrillic
-# glyphs are wider in a proportional font, and an event of the same count with a Cyrillic name
-# wrapped where the Latin one fits.
-EVENT_NAME_LIMIT = 12
-EVENT_NAME_LIMIT_BEYOND_ASCII = 9
 EVENT_TITLES: dict[CronFailureKind, str] = {
     "run": "Cron run failed",
     "delivery": "Cron undelivered",
@@ -620,18 +617,9 @@ def _with_history(
     return tuple(out)
 
 
-def _event_name(name: str) -> str:
-    """The job's name for an event line: whole up to ``EVENT_NAME_LIMIT``, else cut with an
-    ellipsis; ``EVENT_NAME_LIMIT_BEYOND_ASCII`` when any character of it is beyond ASCII, the
-    ellipsis of the sanitizer's own cut at ``NAME_LIMIT`` aside."""
-    beyond = not name.replace("…", "").isascii()
-    limit = EVENT_NAME_LIMIT_BEYOND_ASCII if beyond else EVENT_NAME_LIMIT
-    if len(name) <= limit:
-        return name
-    return name[: limit - 1].rstrip() + "…"
-
-
 def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...]:
+    """A dead or failing ticker, else the first ``MAX_EVENTS`` failures, each naming the job by
+    its label in full (``Cron run failed: Sends Threads topics to SMM``)."""
     if summary.state in ("stalled", "ticks_failing"):
         stamp = summary.ticker_at if summary.state == "stalled" else summary.ticker_ok_at
         age = _age(stamp, now)
@@ -642,7 +630,7 @@ def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...
         return (Incident("cron:ticker", "critical", title),)
     events: list[Incident] = []
     for failure in summary.failing[:MAX_EVENTS]:
-        name = _event_name(sanitize_public_text(failure.name, limit=NAME_LIMIT))
+        name = sanitize_public_text(failure.name, limit=NAME_LIMIT)
         title = f"{EVENT_TITLES[failure.kind]}: {name}"
         events.append(Incident(f"cron:{failure.kind}:{failure.job_id}", "warning", title))
     return tuple(events)

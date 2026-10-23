@@ -680,53 +680,57 @@ def test_failures_make_the_state_failing_and_at_most_three_events(tmp_path: Path
     assert all(i.severity == "warning" for i in incidents)
 
 
-def test_a_long_name_is_cut_so_the_event_fits_the_phone(tmp_path: Path) -> None:
-    """Decision of 01.10: eleven characters and an ellipsis in the event, the full name (up to
-    24) in the details."""
-    job = _job(
-        name="dashboard-probe-check-and-more",
-        last_status="delivery_failed",
-        last_delivery_error="x",
-    )
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+def test_an_event_names_the_job_by_its_full_label(tmp_path: Path) -> None:
+    """1.0.0 (the owner, 23.10): the event names the job by its label in full, the note when
+    there is one, else the name, Cyrillic or not; the rich screen wraps. The incident id stays
+    the job's id."""
+    jobs = [
+        _job(id="a1", name="threads-smm", last_status="error", last_error="x"),
+        _job(
+            id="a2",
+            name="Еженедельный отчёт по проектам",
+            last_status="delivery_failed",
+            last_delivery_error="x",
+        ),
+        _job(id="a3", name="dashboard-probe-check-and-more", state="error", last_status=None),
+    ]
+    notes = (("a1", "Sends Threads topics to SMM"),)
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=notes)
 
     _summary, _source, incidents = collect_cron(env, {}, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: dashboard-p…"
-    assert len("- " + incidents[0].title) <= 32
+    assert [(i.incident_id, i.title) for i in incidents] == [
+        ("cron:run:a1", "Cron run failed: Sends Threads topics to SMM"),
+        ("cron:delivery:a2", "Cron undelivered: Еженедельный отчёт по проектам"),
+        ("cron:run:a3", "Cron run failed: dashboard-probe-check-and-more"),
+    ]
 
 
-def test_a_name_beyond_ascii_is_cut_shorter_in_the_event(tmp_path: Path) -> None:
-    """Decision of 01.10 (0.9.1), from Ilya's phone: Cyrillic glyphs are wider in a proportional
-    font, so an event of 32 characters with a Cyrillic name wrapped where the Latin one of the
-    same count fits. A name with any character beyond ASCII is cut at eight and an ellipsis;
-    the full name (up to 24) stays in the details, as before."""
-    job = _job(name="Еженедельный отчёт", last_status="delivery_failed", last_delivery_error="x")
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+def test_a_long_name_and_a_long_label_are_cut_at_80(tmp_path: Path) -> None:
+    """Whole up to 80 characters, then 79 and an ellipsis, in the list, the failure, the record
+    and the event alike."""
+    name = "n" * 79 + "-overflow"
+    label = "Label " + "x" * 74 + " overflow"
+    jobs = [
+        _job(id="a1", name=name, last_status="error", last_error="x"),
+        _job(id="a2", name="digest", last_status="error", last_error="x"),
+        _job(id="a3", name="m" * 80),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=(("a2", label),))
+    cache: dict = {}
 
-    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+    summary, _source, incidents = collect_cron(env, cache, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: Еженедел…"
-    assert len("- " + incidents[0].title) <= 29
-    assert summary.failing[0].name == "Еженедельный отчёт"
-
-
-@pytest.mark.parametrize(
-    ("name", "shown"),
-    [
-        ("Дайджесты", "Дайджесты"),  # nine characters fit whole, as twelve Latin ones do
-        ("Дайджестик", "Дайджест…"),  # the tenth brings the cut: eight and an ellipsis
-    ],
-)
-def test_a_name_beyond_ascii_is_whole_up_to_nine_characters(
-    tmp_path: Path, name: str, shown: str
-) -> None:
-    job = _job(name=name, last_status="delivery_failed", last_delivery_error="x")
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
-
-    _summary, _source, incidents = collect_cron(env, {}, now=NOW)
-
-    assert incidents[0].title == f"Cron undelivered: {shown}"
+    rows = {job.job_id: job for job in summary.jobs}
+    assert rows["a1"].name == "n" * 79 + "…" and rows["a1"].label == rows["a1"].name
+    assert rows["a2"].label == label[:79] + "…" and rows["a2"].name == "digest"
+    assert rows["a3"].name == "m" * 80  # exactly 80: whole
+    assert [f.name for f in summary.failing] == ["n" * 79 + "…", label[:79] + "…"]
+    assert cache["held"]["a2"]["name"] == label[:79] + "…"
+    assert [i.title for i in incidents] == [
+        "Cron run failed: " + "n" * 79 + "…",
+        "Cron run failed: " + label[:79] + "…",
+    ]
 
 
 @pytest.mark.parametrize(
