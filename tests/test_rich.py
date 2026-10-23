@@ -295,7 +295,8 @@ def test_the_cron_jobs_are_one_table_a_header_row_per_frequency_then_paused_then
     rows = table.split("</tr>")[:-1]
     jobs = [row for row in rows if "<td>" in row]
 
-    assert _cron_fold(markup).count("<table") == 1 and "<details>" not in _cron_fold(markup)
+    # Two folds in all, the cron jobs and Details: the done jobs are rows, no fold of their own.
+    assert markup.count("<details>") == 2 and _cron_fold(markup).count("<table") == 1
     assert _headers(markup) == [
         "Every 15 min",
         "Every 30 min",
