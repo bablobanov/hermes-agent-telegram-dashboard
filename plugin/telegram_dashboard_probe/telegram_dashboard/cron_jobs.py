@@ -13,6 +13,8 @@ Read only. Never read: ``prompt``, ``script``, ``deliver`` (chat ids), ``skills`
 The schedule is read twice for the cron section of the rich screen: in the engine's own words
 (``schedule_display``), sanitized like the name, and as how often the job runs, from the stored
 schedule's ``kind`` and ``expr`` or ``minutes`` (``cron_frequency``), never from its display.
+A job is named by the owner's label for it when the plugin's ``cron_notes`` setting has one,
+else by its name; both go through the shared sanitizer and are whole up to ``NAME_LIMIT``.
 The engine's error texts (``last_error``, ``last_delivery_error``, ``ticker_last_error``) never
 reach the screen or the record: each is reduced to the KIND of the error in a word
 (``error_kind``), in the order the engine's own health projection uses (decision of 01.10); the

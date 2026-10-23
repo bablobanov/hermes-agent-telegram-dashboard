@@ -639,6 +639,36 @@ def test_the_cron_states_carry_what_the_collector_builds() -> None:
         assert incidents_for(state.snapshot.cron, now=state.now) == state.snapshot.incidents
 
 
+def test_the_showcase_jobs_fall_into_groups_by_how_often_they_run() -> None:
+    """1.0.0: every showcase job stores the schedule its display names, so the cron table has
+    real groups; the market-hours expression is ``Other`` on purpose."""
+    from collections import Counter
+
+    state = STATES[13]
+    assert state.snapshot.cron is not None
+    jobs = state.snapshot.cron.jobs
+
+    assert len(jobs) == 32
+    assert Counter(job.frequency.label for job in jobs) == {
+        "Once": 2,
+        "Every 15 min": 1,
+        "Every 30 min": 1,
+        "Every 45 min": 1,
+        "Every hour": 1,
+        "Every 2 h": 2,
+        "Every 3 h": 1,
+        "Every 4 h": 1,
+        "Every 6 h": 2,
+        "Every 12 h": 1,
+        "Daily": 11,
+        "Weekdays": 2,
+        "Weekly": 4,
+        "Monthly": 1,
+        "Other": 1,
+    }
+    assert [job.name for job in jobs if job.frequency.label == "Other"] == ["stock-alert"]
+
+
 def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_place() -> None:
     lines = _render(STATES[24]).splitlines()
 

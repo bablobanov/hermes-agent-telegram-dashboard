@@ -205,8 +205,9 @@ def _showcase_limits() -> CapacitySummary:
 
 # The showcase installation's jobs (0.12.0, the cron section of the rich screen): the 27 active
 # and 3 paused its line counts, two of the paused due in the past, two one-off jobs done. Generic
-# names, the schedules in the engine's own forms (``schedule_display``); the minutes are the next
-# and the last run from SHOWCASE_NOW. The text screen does not show them.
+# names, the schedules in the engine's own forms (``schedule_display``, the stored schedule
+# built from it by ``_stored``); the minutes are the next and the last run from SHOWCASE_NOW.
+# The text screen does not show them.
 _SHOWCASE_ACTIVE = (
     ("daily-digest", "0 21 * * *", 1440, -55),
     ("inbox-triage", "every 30m", 12, -18),
@@ -247,6 +248,18 @@ _SHOWCASE_DONE = (
 )
 
 
+def _stored(display: str) -> dict[str, Any]:
+    """The schedule the engine stores beside ``display`` (``cron/jobs.py`` v0.22.2: :780,
+    :783-784, :829-833): ``every {m}m`` an interval, ``once at ...`` a one-shot, any other a
+    cron expression."""
+    if display.startswith("every ") and display.endswith("m"):
+        return {"kind": "interval", "minutes": int(display[6:-1]), "display": display}
+    if display.startswith("once at "):
+        run_at = datetime.strptime(display[8:], "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+        return {"kind": "once", "run_at": run_at.isoformat(), "display": display}
+    return {"kind": "cron", "expr": display, "display": display}
+
+
 def _job_record(number: int, job: tuple[str, str, int | None, int], state: str) -> dict[str, Any]:
     """One record with the engine's own field names, as ``jobs.json`` keeps it."""
     name, schedule, next_in, last_in = job
@@ -257,6 +270,7 @@ def _job_record(number: int, job: tuple[str, str, int | None, int], state: str) 
     return {
         "id": f"b{number}",
         "name": name,
+        "schedule": _stored(schedule),
         "schedule_display": schedule,
         "enabled": state == "scheduled",
         "state": state,
