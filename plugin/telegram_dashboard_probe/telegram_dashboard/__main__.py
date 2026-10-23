@@ -19,7 +19,7 @@ from .collect import SubprocessRunner, collect_all
 from .compat import Environment
 from .delivery import DeliveryStore, deliver
 from .freshness import check_exit_code, classify_message_freshness, load_plugin_record
-from .render import render_dashboard, to_telegram_html
+from .render import render_dashboard, to_telegram_html, to_telegram_plain
 from .states import PERIOD_SECONDS, all_states
 
 _DEFAULT_TOKEN_ENV = "HERMES_DASHBOARD_BOT_TOKEN"
@@ -98,7 +98,9 @@ def run_tick(config: dict[str, object], *, dry_run: bool) -> int:
         snapshot, now=now, delivery=record, period_seconds=period, zone=_zone(config)
     )
     if dry_run:
-        print(text)
+        # The screen as a reader sees it (1.0.0): the plain form, the top line's date and not the
+        # moment the neutral text carries for the tag.
+        print(to_telegram_plain(text))
         return 0
     token = os.environ.get(str(config.get("token_env", _DEFAULT_TOKEN_ENV)), "")
     if not token:
@@ -158,14 +160,13 @@ def run_demo(number: int) -> int:
     for state in all_states():
         if state.number == number:
             print(f"[{state.number}] {state.title}\n")
-            print(
-                render_dashboard(
-                    state.snapshot,
-                    now=state.now,
-                    delivery=state.delivery,
-                    period_seconds=PERIOD_SECONDS,
-                )
+            text = render_dashboard(
+                state.snapshot,
+                now=state.now,
+                delivery=state.delivery,
+                period_seconds=PERIOD_SECONDS,
             )
+            print(to_telegram_plain(text))  # as a reader sees it, like ``--dry-run``
             return 0
     print(f"no state {number}; available 1..{len(all_states())}", file=sys.stderr)
     return 2
