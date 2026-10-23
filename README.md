@@ -50,8 +50,10 @@ limit is never rounded for the width:
 
 ```
 🟢 Healthy · updated Sep 26 21:00 UTC    the status and when the data was read; the
-                                        pinned bar shows this line, and Telegram may
-                                        say "3 minutes ago" instead of the date
+                                        pinned bar shows this line (under the
+                                        freshness banner when that is up), and
+                                        Telegram may say "3 minutes ago" instead of
+                                        the date
 ✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron
                                         what works, in one row: the gateway process,
                                         the Telegram channel, the last state.db backup,
@@ -105,7 +107,8 @@ the details are shown in full. Both views come from the same snapshot.
 The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
 own Telegram adapter, so the pinned-message bar at the top of the chat always shows the current
-top line, and the message under it carries the rest: gateway and Telegram state (and whether
+top line (the freshness banner first, while it is up), and the message under it carries the
+rest: gateway and Telegram state (and whether
 the connected channel is deaf), the last backup, config drift, the cron ticker and its jobs,
 whether the agent sees its rules (the context files in its system prompt), whether its
 memory works (the notebooks against their limits, the writes waiting for approval), the
@@ -520,8 +523,8 @@ table in the look of the limits table:
   runs (`Once` first, as a one-shot has no second run; `Other` last; one period with two
   labels, `Every 12 h` and `Twice a day`, by the label), and under it the active jobs of that
   frequency, what fails now first, then by the next run. Under `Other` a job's schedule follows its name in the
-  engine's own words, set in `<code>` whole (`*/30 9-17 * * 1-5`), since the header does not say
-  how often it runs
+  engine's own words, set in `<code>` up to 24 characters (`*/30 9-17 * * 1-5`), since the header
+  does not say how often it runs
 - `⏸ Paused` and the paused jobs by their next run, then `✅ Done` and the completed ones, the
   latest run first
 - the date right-aligned in one short form: an active job's next run as the time on the
