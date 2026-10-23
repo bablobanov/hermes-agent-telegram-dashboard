@@ -17,6 +17,7 @@ import html
 import json
 import os
 import shutil
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC
@@ -435,6 +436,54 @@ def test_cron_notes_entries_skipped_are_counted_in_one_warning_without_their_tex
     ]
     for text in ("123456", "Secret label", "Hidden text", "d4", "a1b2c3", "Morning brief"):
         assert text not in warnings[0]
+
+
+@pytest.mark.parametrize("broken", ["schema.py", "compat.py"])
+def test_a_package_copy_that_raises_on_import_does_not_stop_the_handler(
+    monkeypatch, tmp_path: Path, broken: str
+) -> None:
+    """The early ``cron_notes`` read imports the package copy; a SyntaxError or a RuntimeError
+    in it is ``import_dashboard``'s to report (the installed copy is taken), never an escape
+    from ``register``."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    target = plugin_dir / "telegram_dashboard" / broken
+    text = target.read_text(encoding="utf-8")
+    breakage = (
+        "def broken(:\n" if broken == "schema.py" else text + 'raise RuntimeError("secret")\n'
+    )
+    target.write_text(breakage, "utf-8")
+    plugin = load_plugin("hermes_plugins.broken_copy_probe", plugin_dir, vendored=True)
+    ctx = FakeContext(_settings(monkeypatch, tmp_path, cron_notes={"a1": "Brief"}))
+
+    runtime = plugin.register(ctx)
+
+    assert runtime is not None and runtime.dashboard is not None
+    assert runtime.dashboard.origin == "installed"
+    assert runtime.settings.cron_notes == (("a1", "Brief"),)
+
+
+def test_with_no_usable_package_the_handler_is_still_registered(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No importable package at all: ``register`` still registers the handler (the loud notice
+    path), the notes are none, and the journal names the type of the failure, not its text."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    target = plugin_dir / "telegram_dashboard" / "compat.py"
+    text = target.read_text(encoding="utf-8")
+    target.write_text(text + '\nraise RuntimeError("secret text")\n', "utf-8")
+    for name in ("", ".collect", ".compat", ".freshness", ".render", ".rich", ".telegram_traffic"):
+        monkeypatch.setitem(sys.modules, f"telegram_dashboard{name}", None)
+    plugin = load_plugin("hermes_plugins.no_package_probe", plugin_dir, vendored=True)
+    ctx = FakeContext(_settings(monkeypatch, tmp_path, cron_notes={"a1": "Brief"}))
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime = plugin.register(ctx)
+
+    assert runtime is not None and runtime.dashboard is None
+    assert runtime.settings.cron_notes == ()
+    assert "RuntimeError" in caplog.text and "secret text" not in caplog.text
 
 
 def test_cron_notes_come_from_the_config_only(monkeypatch, tmp_path: Path) -> None:

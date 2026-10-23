@@ -311,16 +311,21 @@ def _entries(raw: object) -> tuple[Any, ...]:
 
 def _notes(raw: object) -> tuple[tuple[str, str], ...]:
     """``cron_notes`` read by the package's own parser (``compat.parse_cron_notes``), so the
-    plugin and the cron tick agree; none when no package can be imported (``import_dashboard``
-    says so)."""
+    plugin and the cron tick agree; none when no package can be imported or one raises
+    (``import_dashboard`` says so, as it did before). Never raises: a broken copy must not stop
+    the handler from being registered. The exception's type only is logged, its message may
+    carry config text."""
     for base in (f"{__package__}.telegram_dashboard" if __package__ else "", "telegram_dashboard"):
         if not base:
             continue
         try:
             parse = importlib.import_module(f"{base}.compat").parse_cron_notes
-        except (ImportError, AttributeError):
+            notes: tuple[tuple[str, str], ...] = parse(raw, logger, "probe: ")
+        except ModuleNotFoundError:
+            continue  # an absent candidate is the normal case; ``import_dashboard`` logs it
+        except Exception as exc:
+            logger.warning("probe: cron_notes not read by %s: %s", base, type(exc).__name__)
             continue
-        notes: tuple[tuple[str, str], ...] = parse(raw, logger, "probe: ")
         return notes
     return ()
 
