@@ -1295,18 +1295,36 @@ def test_a_dead_or_failing_ticker_is_the_line_and_the_reason_is_in_the_details(
 
 
 @pytest.mark.parametrize(
-    "state, line, reason",
+    "state, source, line, reason",
     [
-        ("unsupported", "Cron: not observed", "> Cron: no cron directory"),
-        ("unknown", "Cron: no data", "> Cron: jobs.json unreadable: ValueError"),
+        (
+            "unsupported",
+            "unsupported",
+            "❔ Not checked: cron (not on this installation)",
+            "> Cron: no cron directory",
+        ),
+        (
+            "unknown",
+            "unavailable",
+            "❔ Not checked: cron (unavailable)",
+            "> Cron: jobs.json unreadable: ValueError",
+        ),
     ],
 )
-def test_no_cron_data_is_never_a_zero(state: str, line: str, reason: str) -> None:
+def test_no_cron_data_is_never_a_zero(state: str, source: str, line: str, reason: str) -> None:
+    """1.0.0, fix round 1: with its source as the tick records it, the "❔ Not checked" line says
+    it once; never a ✓, never under "Needs attention"; the reason in the details."""
     cron = CronSummary(state, detail=reason[len("> Cron: ") :])
+    snapshot = replace(
+        _cron_snapshot(cron), sources=(SourceObservation("cron", "official", source),)
+    )
 
-    text = render_dashboard(_cron_snapshot(cron), now=NOW)
+    text = render_dashboard(snapshot, now=NOW)
+    main = _main_part(text)
 
-    assert line in _main_part(text)
+    assert line in main
+    assert _row("Gateway", "Telegram") in main
+    assert not any(item.startswith("Cron") for item in main) and "Needs attention" not in text
     assert reason in text.splitlines()
     assert "0 jobs" not in text
 
@@ -1689,3 +1707,58 @@ def test_what_was_not_checked_is_one_line_and_nothing_vanishes() -> None:
     assert "> Profiles 1/2 · sources 2/4" in text.splitlines()
     one = replace(snapshot, coverage=Coverage(1, 1, failed_sources=("profile:x",)), sources=())
     assert "❔ Not checked: 1 source unavailable" in render_dashboard(one).splitlines()
+
+
+def test_a_source_not_on_this_installation_is_said_once_by_the_not_checked_line() -> None:
+    """Fix round 1: an installation without a backup status and a drift source. Backup and drift
+    are neither in the ✓ row nor under "Needs attention" (no block at all); the ❔ line names
+    each once, the details keep the reasons, in the text and the rich form alike."""
+    from telegram_dashboard.rich import to_telegram_rich
+
+    snapshot = DashboardSnapshot(
+        overall="unknown",  # what the collectors derive from two sources not observed
+        observed_at=NOW.isoformat(),
+        gateway=GatewaySummary("running", "connected"),
+        backup=BackupSummary("unsupported", detail="backup source not configured"),
+        drift=DriftSummary("unsupported", detail="drift source not configured"),
+        cron=CRON_OK,
+        sources=(
+            SourceObservation("gateway_state", "official", "fresh"),
+            SourceObservation("drift", "derived", "unsupported"),
+            SourceObservation("backup", "derived", "unsupported"),
+            SourceObservation("cron", "official", "fresh"),
+        ),
+    )
+
+    text = render_dashboard(snapshot, now=NOW)
+    markup = to_telegram_rich(snapshot, now=NOW)
+
+    assert _main_part(text) == [
+        "#@1790320860 ⚪ Unknown · updated Sep 25 07:21 UTC",
+        "",
+        _row("Gateway", "Telegram", "Cron"),
+        "",
+        "❔ Not checked: drift (not on this installation), backup (not on this installation)",
+        "",
+    ]
+    assert "> Backup: backup source not configured" in text.splitlines()
+    assert "> Drift: drift source not configured" in text.splitlines()
+    assert markup is not None and "Needs attention" not in markup
+    assert markup.count("not on this installation") == 2
+    assert "not observed" not in text and "not observed" not in markup
+
+
+def test_no_data_from_a_source_the_line_does_not_name_stays_under_needs_attention() -> None:
+    """R6, nothing vanishes: no data is left to the ❔ line only when it names the source."""
+    snapshot = DashboardSnapshot(
+        overall="warning",
+        observed_at=NOW.isoformat(),
+        backup=BackupSummary("unknown", detail="status file missing"),
+    )
+    named = replace(snapshot, sources=(SourceObservation("backup", "derived", "unavailable"),))
+
+    alone = _main_part(render_dashboard(snapshot, now=NOW))
+    said = _main_part(render_dashboard(named, now=NOW))
+
+    assert alone[2:4] == ["## 🛠 Needs attention", "Backup: no data"]
+    assert said[2:] == ["❔ Not checked: backup (unavailable)", ""]

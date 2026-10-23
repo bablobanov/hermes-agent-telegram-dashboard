@@ -201,14 +201,14 @@ def test_a_status_that_is_not_an_object_is_no_data(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------------- the screen
 
 
-def _render(summary: BackupSummary | None, *, zone=UTC, now: datetime = NOW) -> str:
+def _render(summary: BackupSummary | None, *, zone=UTC, now: datetime = NOW, sources=()) -> str:
     snapshot = build_snapshot(
         now=now,
         gateway=None,
         drift=None,
         backup=summary,
         capacity=CapacitySummary(),
-        sources=(),
+        sources=sources,
         incidents=(),
         coverage=Coverage(expected_profiles=1, observed_profiles=1),
     )
@@ -257,18 +257,26 @@ def test_a_failed_run_is_loud_on_the_line_and_names_the_phase_and_reason() -> No
 
 
 def test_no_data_and_not_observed_are_reasons_never_zero(tmp_path: Path) -> None:
-    missing, _, _ = backup.collect_backup(
+    """1.0.0, fix round 1: with its source, as the tick sees it, the "❔ Not checked" line says
+    it once, never a ✓ and never under "Needs attention"; the reason stays in the details. No
+    data from a source that line does not name keeps its line under "Needs attention"."""
+    missing, missing_source, _ = backup.collect_backup(
         Environment(hermes_home=tmp_path, backup_status=tmp_path / "none.json"), now=NOW
     )
-    unconfigured, _, _ = backup.collect_backup(Environment(hermes_home=tmp_path), now=NOW)
+    unconfigured, unconfigured_source, _ = backup.collect_backup(
+        Environment(hermes_home=tmp_path), now=NOW
+    )
 
-    missing_lines = _render(missing).splitlines()
-    unconfigured_lines = _render(unconfigured).splitlines()
+    missing_lines = _render(missing, sources=(missing_source,)).splitlines()
+    unconfigured_lines = _render(unconfigured, sources=(unconfigured_source,)).splitlines()
 
-    assert "Backup: no data" in missing_lines
+    assert "❔ Not checked: backup (unavailable)" in missing_lines
     assert "> Backup: status file missing" in missing_lines
-    assert "Backup: not observed" in unconfigured_lines
+    assert "❔ Not checked: backup (not on this installation)" in unconfigured_lines
     assert "> Backup: backup source not configured" in unconfigured_lines
+    for lines in (missing_lines, unconfigured_lines):
+        assert not any(line.startswith(("Backup", "✓", "## 🛠")) for line in lines)
+    assert "Backup: no data" in _render(missing).splitlines()  # the line does not name it
 
 
 def test_the_backup_sits_in_the_row_beside_the_gateway() -> None:

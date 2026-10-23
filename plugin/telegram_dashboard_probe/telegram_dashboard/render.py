@@ -24,8 +24,10 @@ import html
 import math
 import re
 import unicodedata
+from collections.abc import Set
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
+from typing import Literal
 
 from . import __version__
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
@@ -174,6 +176,18 @@ _SOURCE_LABELS = {
 }
 # The word on the Telegram line when the adapter is connected but the channel is deaf.
 _TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"}
+# What a thing of the ✓ row is (1.0.0): ``well``, in the row; ``broken``, its 0.12.0 line under
+# "Needs attention"; ``unchecked``, in neither, the "❔ Not checked" line says it: no source on
+# this installation, or no data from a source that line names.
+_Verdict = Literal["well", "broken", "unchecked"]
+# The source a thing of the row is read from, as ``snapshot.sources`` names it.
+_ITEM_SOURCES = {
+    "Gateway": "gateway_state",
+    "Telegram": "gateway_state",
+    "Backup": "backup",
+    "Drift": "drift",
+    "Cron": "cron",
+}
 _FAILURE_WORDS = {
     "run": "run failed",
     "delivery": "not delivered",
@@ -313,12 +327,23 @@ class ScreenParts:
 
 @dataclass(frozen=True)
 class _Item:
-    """A thing the ✓ row names (1.0.0): its name there and its 0.12.0 line, which stands under
-    "Needs attention" instead when it does not say the thing is well."""
+    """A thing the ✓ row names (1.0.0): its name there, its 0.12.0 line and where it goes."""
 
     name: str
     line: str
-    healthy: bool
+    verdict: _Verdict
+
+
+def _item(name: str, line: str, well: bool, state: str, unchecked: Set[str]) -> _Item:
+    """The thing with its verdict: ``well`` as its 0.12.0 line says; ``unchecked`` for no source
+    on this installation (``unsupported``) or no data (``unknown``) from a source the ❔ line
+    names, so the screen says it once and nothing vanishes; ``broken`` otherwise."""
+    verdict: _Verdict = "broken"
+    if well:
+        verdict = "well"
+    elif state == "unsupported" or (state == "unknown" and _ITEM_SOURCES[name] in unchecked):
+        verdict = "unchecked"
+    return _Item(name, line, verdict)
 
 
 def render_dashboard(
@@ -440,35 +465,37 @@ def _items(
     """Gateway, Telegram, backup, drift and cron in the order of the ✓ row; a summary that is
     absent adds nothing. Their times, ages and counts go to the details: Telegram's group, then
     one with backup and drift, then cron's."""
+    unchecked = _unchecked_sources(snapshot)
     details.section("telegram")
-    items = _gateway_items(snapshot.gateway, snapshot.traffic)
+    items = _gateway_items(snapshot.gateway, snapshot.traffic, unchecked)
     if snapshot.traffic is not None:
         details.state.extend(_traffic_words(snapshot.traffic, zone))
     details.section("backup")
     if snapshot.backup is not None:
-        items.append(_backup_item(snapshot.backup, reference, zone, details))
+        items.append(_backup_item(snapshot.backup, reference, zone, details, unchecked))
     if snapshot.drift is not None:
-        items.append(_drift_item(snapshot.drift, zone, details))
+        items.append(_drift_item(snapshot.drift, zone, details, unchecked))
     # A fold of its own in the rich form; one group with backup and drift in the text.
     details.section("cron", joined=True)
     if snapshot.cron is not None:
         line = _cron_line(snapshot.cron, reference, zone, details)
-        items.append(_Item("Cron", line, snapshot.cron.state == "ok"))
+        state = snapshot.cron.state
+        items.append(_item("Cron", line, state == "ok", state, unchecked))
     return items
 
 
 def _attention(snapshot: DashboardSnapshot, items: list[_Item]) -> tuple[str, ...]:
     """``🛠 Needs attention``: the first five events in the collectors' order, then the line of
-    every item the ✓ row leaves out, even one an event already names."""
+    every item that is broken, even one an event already names."""
     lines = [f"- {sanitize_public_text(incident.title)}" for incident in snapshot.incidents[:5]]
-    lines.extend(item.line for item in items if not item.healthy)
+    lines.extend(item.line for item in items if item.verdict == "broken")
     return (f"## {ATTENTION_HEADING}", *lines) if lines else ()
 
 
 def _works_row(items: list[_Item]) -> tuple[str, ...]:
     """``✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron``: every item that is well, no row
     without one."""
-    names = [f"{OK_MARK}{_ROW_SPACE}{item.name}" for item in items if item.healthy]
+    names = [f"{OK_MARK}{_ROW_SPACE}{item.name}" for item in items if item.verdict == "well"]
     return (" ".join(names),) if names else ()
 
 
@@ -514,12 +541,17 @@ def _unchecked_line(snapshot: DashboardSnapshot, details: _Details) -> str | Non
     items.extend(f"{_source_label(source)} (stale)" for source in stale)
     if coverage.expected_profiles and coverage.observed_profiles != coverage.expected_profiles:
         items.append(f"profiles {coverage.observed_profiles}/{coverage.expected_profiles}")
-    named = {source.name for source in (*missing, *stale)}
+    named = _unchecked_sources(snapshot)
     failed = [name for name in coverage.failed_sources if name not in named]
     if failed:
         items.append(f"{_plural(len(failed), 'source', 'sources')} unavailable")
     details.coverage = _coverage_words(snapshot)
     return f"{UNCHECKED_MARK} Not checked: " + ", ".join(items) if items else None
+
+
+def _unchecked_sources(snapshot: DashboardSnapshot) -> frozenset[str]:
+    """The sources the ❔ line names: every one not fresh."""
+    return frozenset(source.name for source in snapshot.sources if source.state != "fresh")
 
 
 def _coverage_words(snapshot: DashboardSnapshot) -> str | None:
@@ -545,7 +577,9 @@ def _source_reason(state: str) -> str:
     return "not on this installation" if state == "unsupported" else "unavailable"
 
 
-def _gateway_items(gateway: GatewaySummary | None, traffic: TrafficSummary | None) -> list[_Item]:
+def _gateway_items(
+    gateway: GatewaySummary | None, traffic: TrafficSummary | None, unchecked: Set[str]
+) -> list[_Item]:
     """``Gateway ✓`` and ``Telegram ✓``, the 0.12.0 line in two; when the adapter says connected
     and its own counters say the channel is deaf, the word says so instead. A disconnected
     adapter keeps its own word: the deaf verdict is only about a connected one."""
@@ -556,8 +590,8 @@ def _gateway_items(gateway: GatewaySummary | None, traffic: TrafficSummary | Non
     if traffic is not None and gateway.telegram == "connected" and traffic.state in _TRAFFIC_WORDS:
         telegram = f"{WARN_MARK} {_TRAFFIC_WORDS[traffic.state]}"
     return [
-        _Item("Gateway", f"Gateway {process}", gateway.process == "running"),
-        _Item("Telegram", f"Telegram {telegram}", telegram == OK_MARK),
+        _item("Gateway", f"Gateway {process}", process == OK_MARK, gateway.process, unchecked),
+        _item("Telegram", f"Telegram {telegram}", telegram == OK_MARK, gateway.telegram, unchecked),
     ]
 
 
@@ -800,7 +834,11 @@ def _rules_none_words(rules: PlatformRules, files: str, changed: str | None, ses
 
 
 def _backup_item(
-    backup: BackupSummary, reference: datetime | None, zone: tzinfo, details: _Details
+    backup: BackupSummary,
+    reference: datetime | None,
+    zone: tzinfo,
+    details: _Details,
+    unchecked: Set[str],
 ) -> _Item:
     """The verdict and the age in words on the 0.12.0 line; the absolute time, the age, the
     integrity verdict and any reason in the details, the mark in front (1.0.0). Shown in every
@@ -809,17 +847,18 @@ def _backup_item(
     if backup.state == "unsupported":
         reason = sanitize_public_text(backup.detail or "source not configured", limit=60)
         details.state.append(f"Backup: {reason}")
-        return _Item("Backup", "Backup: not observed", False)
+        return _item("Backup", "Backup: not observed", False, backup.state, unchecked)
     if backup.state == "unknown":
         reason = sanitize_public_text(backup.detail or "status not read", limit=60)
         details.state.append(f"Backup: {reason}")
-        return _Item("Backup", "Backup: no data", False)
+        return _item("Backup", "Backup: no data", False, backup.state, unchecked)
     stamp = format_day_time(backup.finished_at, zone) or "time unreadable"
     age, age_words = _backup_age(backup, reference)
     if backup.state == "failed":
         detail = sanitize_public_text(backup.detail or "reason not recorded", limit=120)
         details.state.append(f"{WARN_MARK} Backup {stamp} · {age_words} · {detail}")
-        return _Item("Backup", f"Backup {WARN_MARK} failed {age_words}", False)
+        line = f"Backup {WARN_MARK} failed {age_words}"
+        return _item("Backup", line, False, backup.state, unchecked)
     verdict = sanitize_public_text(backup.integrity or "unknown", limit=24)
     stale = age is not None and age > BACKUP_STALE_SECONDS
     mark = WARN_MARK if stale else OK_MARK
@@ -827,7 +866,7 @@ def _backup_item(
     line = f"Backup {OK_MARK} {age_words}"
     if stale:
         line += f" {WARN_MARK} {BACKUP_STALE_WORDS}"
-    return _Item("Backup", line, not stale)
+    return _item("Backup", line, not stale, backup.state, unchecked)
 
 
 def _backup_age(backup: BackupSummary, reference: datetime | None) -> tuple[float | None, str]:
@@ -842,7 +881,7 @@ def _backup_age(backup: BackupSummary, reference: datetime | None) -> tuple[floa
     return age, describe_age(max(age, 0.0))
 
 
-def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details) -> _Item:
+def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details, unchecked: Set[str]) -> _Item:
     """``Drift ✓ 0 of 481`` on the 0.12.0 line; the count joins the check time in the details,
     the mark in front (1.0.0)."""
     checked = format_in_zone(drift.checked_at, zone, "%H:%M") if drift.checked_at else None
@@ -854,7 +893,8 @@ def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details) -> _Item:
         marker = OK_MARK if drift.state == "clean" else WARN_MARK
         when = f"checked {checked}" if checked else "check time unknown"
         details.state.append(f"{marker} Drift {count} · {when}")
-        return _Item("Drift", f"Drift {marker} {count}", drift.state == "clean")
+        well = drift.state == "clean"
+        return _item("Drift", f"Drift {marker} {count}", well, drift.state, unchecked)
     label = _DRIFT_LABELS.get(drift.state, drift.state)
     if drift.detail:
         # Why there is no number; a check that never finished has no check time to show.
@@ -862,7 +902,7 @@ def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details) -> _Item:
         details.state.append(f"Drift: {reason}" + (f" · checked {checked}" if checked else ""))
     else:
         details.state.append(f"Drift checked {checked}" if checked else "Drift: check time unknown")
-    return _Item("Drift", f"Drift: {label}", False)
+    return _item("Drift", f"Drift: {label}", False, drift.state, unchecked)
 
 
 def _quota_lines(
