@@ -131,8 +131,9 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # VERSION_FLIGHT came with ``version_cache`` (0.6.0), collect_external and read_sources
     # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
-    # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0): a copy without them
-    # would reject the tick's arguments every time.
+    # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
+    # with ``Environment.cron_notes`` (1.0.0): a copy without them would reject the tick's
+    # arguments every time.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -145,7 +146,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "TRAFFIC",
         "RULES",
     ),
-    "compat": ("Environment",),
+    "compat": ("Environment", "CRON_NOTES"),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
     # The rich form came with 0.12.0, the module with it.

@@ -23,6 +23,10 @@ from typing import Any, Literal
 Capability = Literal["supported", "unsupported", "unknown"]
 
 MATRIX_SCHEMA = 1
+# The setting and the ``Environment`` field of the owner's cron labels (1.0.0). The plugin
+# requires the name (``REQUIRED_API``): a copy without the field would reject the tick's
+# ``Environment`` arguments every time.
+CRON_NOTES = "cron_notes"
 
 
 @dataclass(frozen=True, slots=True)

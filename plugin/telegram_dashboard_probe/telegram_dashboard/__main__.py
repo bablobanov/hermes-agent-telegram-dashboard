@@ -17,7 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .collect import SubprocessRunner, collect_all
-from .compat import Environment
+from .compat import CRON_NOTES, Environment
 from .delivery import DeliveryStore, deliver
 from .freshness import check_exit_code, classify_message_freshness, load_plugin_record
 from .render import render_dashboard, to_telegram_html, to_telegram_plain
@@ -56,7 +56,7 @@ def _environment(config: dict[str, object]) -> Environment:
         limits_sources=tuple(sources) if isinstance(sources, list) else (),
         context_files_enabled=_enabled(config.get("context_files", True)),
         memory_enabled=_enabled(config.get("memory", True)),
-        cron_notes=_notes(config.get("cron_notes")),
+        cron_notes=_notes(config.get(CRON_NOTES)),
         # The cron tick runs in a directory of its own: the gateway's comes from the config.
         gateway_dir=Path(str(gateway_dir)).expanduser()
         if isinstance(gateway_dir, str) and gateway_dir

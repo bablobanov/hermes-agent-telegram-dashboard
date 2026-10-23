@@ -480,6 +480,24 @@ def test_a_package_copy_from_before_the_gemini_log_is_refused_at_load(tmp_path: 
     assert dashboard.origin == "installed"
 
 
+def test_a_package_copy_from_before_the_cron_notes_is_refused_at_load(tmp_path: Path) -> None:
+    """The plugin hands ``cron_notes`` to ``Environment`` (1.0.0); a copy from before it would
+    reject the argument on every tick. It is refused at load and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    compat_py = plugin_dir / "telegram_dashboard" / "compat.py"
+    text = compat_py.read_text(encoding="utf-8")
+    line = 'CRON_NOTES = "cron_notes"\n'
+    assert line in text
+    compat_py.write_text(text.replace(line, ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_notes_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""
