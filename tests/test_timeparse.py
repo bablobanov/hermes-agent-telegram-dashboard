@@ -25,6 +25,7 @@ from telegram_dashboard.timeparse import (
 )
 
 MOSCOW = ZoneInfo("Europe/Moscow")
+BERLIN = ZoneInfo("Europe/Berlin")  # CEST ends 25.10.2026 at 03:00, the day has 25 hours
 YEKATERINBURG = ZoneInfo("Asia/Yekaterinburg")  # "+05" as its abbreviation, like the live host
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
 
@@ -62,6 +63,29 @@ def test_weekday_words_do_not_follow_the_process_locale() -> None:
     assert weekday_word(reference) == "Sat"
     assert format_short(reference + timedelta(days=1), reference, UTC) == "Sun 21:00"
     assert format_short(saturday, reference, UTC) == "Oct 31"
+
+
+@pytest.mark.parametrize(
+    "reference, value, words",
+    [
+        # 24 h 29 min apart, the same calendar day: the day of the change has 25 hours.
+        (datetime(2026, 10, 25, 0, 30, tzinfo=BERLIN), "2026-10-25T23:59:00+01:00", "23:59"),
+        # 25 hours apart, one calendar day.
+        (datetime(2026, 10, 24, 23, 30, tzinfo=BERLIN), "2026-10-25T23:30:00+01:00", "Sun 23:30"),
+        (datetime(2026, 10, 24, 23, 30, tzinfo=BERLIN), "2026-10-30T23:30:00+01:00", "Fri 23:30"),
+        (datetime(2026, 10, 24, 23, 30, tzinfo=BERLIN), "2026-10-31T23:30:00+01:00", "Oct 31"),
+        (datetime(2026, 10, 25, 0, 30, tzinfo=BERLIN), "2026-10-31T23:59:00+01:00", "Sat 23:59"),
+        (datetime(2026, 10, 25, 0, 30, tzinfo=BERLIN), "2026-11-01T00:10:00+01:00", "Nov 1"),
+    ],
+    ids=["same-day", "1-day", "6-days", "7-days", "6-days-late", "7-days-early"],
+)
+def test_format_short_counts_calendar_days_across_the_end_of_summer_time(
+    reference: datetime, value: str, words: str
+) -> None:
+    """The days are the zone's calendar days, not spans of 24 hours: the day CEST becomes CET
+    is 25 hours long in Berlin."""
+    assert reference.utcoffset() == timedelta(hours=2)  # still CEST
+    assert format_short(value, reference, BERLIN) == words
 
 
 def test_format_short_without_a_reference_names_the_day() -> None:
