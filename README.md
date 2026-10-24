@@ -12,7 +12,10 @@ pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call
 The updater lives **inside the gateway as a plugin** (`plugin/`): the bot token never leaves the
 engine, the message is edited through the engine's own Telegram adapter. A cron tick with a
 separate bot (`python -m telegram_dashboard`) remains as the fallback for installations without
-the plugin API.
+the plugin API. That standalone CLI is for running from cron outside Hermes and the plugin never
+runs it: it reads the bot token from the environment variable its JSON config names
+(`HERMES_DASHBOARD_BOT_TOKEN` by default) and calls `api.telegram.org` itself (`sendMessage`,
+`editMessageText`, `pinChatMessage`).
 
 ## Install
 
@@ -25,7 +28,7 @@ hermes plugins install telegram_dashboard_probe
 ```
 
 The plugin folder `plugin/telegram_dashboard_probe/` is self-contained: the `telegram_dashboard`
-package lives inside it (module paths below, like `telegram_dashboard/grok.py`, are relative to
+package lives inside it (module paths below, like `telegram_dashboard/external.py`, are relative to
 that folder). Without the catalog, one line puts the folder in place from a clone:
 
 ```bash
@@ -41,7 +44,7 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 ## What the message shows
 
 One phone screen in blocks, a thin line between two, then two folds that Telegram shows
-collapsed. The example is the rich view (`rich: true`) as 1.0.0 draws it for the showcase state
+collapsed. The example is the rich view (`rich: true`) as 1.1.0 draws it for the showcase state
 (`python -m telegram_dashboard --demo 14` prints its plain form); the classic view, the default,
 says the same in text (below). The width is a guide, not a law: a phone sets a proportional
 font, so a line fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a
@@ -63,8 +66,6 @@ Provider  Used · resets in              reset of every window, in the provider'
 Claude    42% · 2h10m    67% · 3d       order; ⚠️ from 90% spent; a provider without
 Codex     ⚠️ 93% · 1h20m 58% · 5d       a number never shows a zero, the reason is in
 Gemini    no data                       Details
-Grok      31% · 6d
-Kimi      8% · 3h40m     46% · 21d
 🤖 Hermes 0.21.3 → 0.21.5                the version the gateway runs → the latest
                                         upstream release; 🆕 and its age for a day
                                         after a release came out
@@ -78,7 +79,7 @@ Kimi      8% · 3h40m     46% · 21d
                                         with its reason; then the screen's time, the
                                         confirmation, the odd data minute, the period,
                                         the coverage, and
-  Dashboard 1.0.0                       the dashboard's own version, last
+  Dashboard 1.1.0                       the dashboard's own version, last
 ```
 
 When something is off, 🛠 Needs attention comes between the top line and the ✓ row, and
@@ -123,10 +124,8 @@ The picture is an illustration of what the message carries, drawn before 1.0.0; 
 itself is the screen above.
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
-Account limits: Claude and Codex from the Hermes usage facade, Grok's weekly pool from the
-surface xAI serves its own Grok CLI, Kimi Code's windows from the surface the Kimi Code platform
-serves its own clients (see "Limits" below), and any provider from a local process of your own
-(see "External limit sources"). Gemini has no number without billing, never a zero: the last
+Account limits: Claude and Codex from the Hermes usage facade (see "Limits" below), and any
+other provider from a local process of your own (see "External limit sources"). Gemini has no number without billing, never a zero: the last
 time Google refused the engine a call is on its line while it is recent and always in the
 details (see "Gemini refusals from the engine log"). Nothing is dropped from the old screen,
 only moved: a line without a number still names its reason, in the details.
@@ -134,13 +133,13 @@ only moved: a line without a number still names its reason, in the details.
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green (one exception, the
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
-Coverage itself (`Profiles 1/1 · sources 10/10`) lives in the details and comes up to the screen
+Coverage itself (`Profiles 1/1 · sources 8/8`) lives in the details and comes up to the screen
 only when it is incomplete, as one line:
 `❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3` (and
 `2 sources unavailable` for failed sources the line does not name). An item of the ✓ row with no
 source on this installation, or no data from a source that line names, is left out of the row
 and said by that line once. The details close with the dashboard's own version
-(`Dashboard 1.0.0`), so the installed copy can be told from the pinned message at a glance.
+(`Dashboard 1.1.0`), so the installed copy can be told from the pinned message at a glance.
 
 **Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
 API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
@@ -181,7 +180,7 @@ What "verified" means here, honestly:
 | Hermes | How |
 |---|---|
 | 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
-| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the Kimi credential resolver, registry row and the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
+| 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
 source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
 | 0.21.5 (`v2026.9.24`) | `_edit_text` and `edit_message` read in the engine source: same signatures and bodies as 0.21.1 and 0.21.3; for 0.10.0 the saved prompt's context block and runtime line read in the source and built by the engine's own functions in `tests/test_context_files_engine.py`, as on 0.21.3 (row `context_files`) |
@@ -364,7 +363,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
-   | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often Grok, Kimi and the external sources are asked (not every tick) |
+   | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often your `limits_sources` are asked (not every tick) |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
@@ -403,10 +402,8 @@ journals WARNING and above never shows: take the path from disk
 (`ls $HERMES_HOME/plugin-data/ | grep probe`). The plugin's observability rests on that state
 file, not on the journal; an empty `grep probe:` in the journal means nothing.
 
-The record also carries `limits_cache`, one entry per provider read on its own cadence
-(`grok`, `kimi`), each with the last attempt (`attempted_at`) and its item, so the interval
-survives a restart and the state file shows when the provider was last asked. A record from
-before Kimi (Grok's attempt at the top level) is moved under `grok` once. Beside it,
+A record written by 1.0.0 may still carry `limits_cache` (the old per-provider cache of two
+built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads the record.
 `release_cache` holds the once-a-day check of the latest Hermes release the same way
 (`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
@@ -834,8 +831,7 @@ that a release is new. Update by your own process.
   engine's own update check (`check_for_updates` in `hermes_cli/banner.py`) counts commits
   behind `main` and is not used
 - **No LLM, no agent.** The request is plain stdlib `urllib`, made by the plugin itself in its
-  own worker thread, under Grok's single-flight deadline (`Flights`, 25 s; Kimi's is 15 s, for
-  one request) and the cache policy Grok and Kimi share. The agent, its sessions and its tools
+  own worker thread, under a single-flight deadline (`Flights`, 25 s). The agent, its sessions and its tools
   take no part. A GitHub that hangs costs this line its answer for the tick
   (`no answer within 25 s`) and nothing else: the check starts with the tick and runs beside
   every other source, the gateway's event loop keeps running, the tick waits for it no longer
@@ -868,7 +864,7 @@ Every limit line is one of three things, and the caption says which: an **offici
 this installation counted; it never knows the remaining quota, nor spend outside the agent), or
 **"no data" with a reason**. "Official" means *the number came from the provider*, not
 *the surface is in the provider's docs*: the engine's own Anthropic and Codex fetchers read
-undocumented surfaces (`api/oauth/usage`, the ChatGPT backend), and so does the Grok reader.
+undocumented surfaces (`api/oauth/usage`, the ChatGPT backend).
 A documented surface would be preferable; an undocumented provider number is still the
 provider's number, and a local count is not.
 
@@ -898,8 +894,8 @@ plans the first one is the week). A limit for one model keeps its scope
 (`Claude 37% (3h) · 12% (4d) · Opus 5% (4d)`). A model's own limit from an external source gets
 a line of its own under the account's line, `Claude Fable 9%`, without the time when it resets
 together with the account's window of the same label (see "External limit sources"). A state the provider reports in words is never
-turned into a number or a zero (`Grok · usage not started`). The plans the providers name are
-one details line, `Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok`; a plan nobody
+turned into a number or a zero (`Claude · login expired`). The plans the providers name are
+one details line, `Plans: Claude Max 5x · Codex Prolite`; a plan nobody
 reports is not guessed. The rich view writes the same lines as a table (`Provider`,
 `Used · resets in`): a row per line, a cell per window (`⚠️ 93% · 1h20m`), a state in words
 across the row (`no data`), and a model's own limit in a row of its own with its reset spelled.
@@ -907,56 +903,11 @@ There is no bar: Telegram draws the block glyphs from a fallback font, and a bar
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
 updating is the freshness banner's business, not the countdown's. A number read on its own
-cadence must not borrow the screen's stamp: the details line `Data 12:21 · Kimi 12:16` names
+cadence must not borrow the screen's stamp: the details line `Data 12:21 · Claude 12:16` names
 every number read at another minute than the screen, and a cached number is never shown older
 than its refresh interval (`quota_cache.py`), after two intervals the ❔ line says so
-(`Kimi quota (stale)`). A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
+(`Claude limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
 block must never do.
-
-**Grok** (`telegram_dashboard/grok.py`): the weekly pool of the SuperGrok subscription, read
-from `https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the token the engine
-already holds for `xai-oauth`, obtained through the engine's own resolver
-(`hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials`, so the screen shows the quota
-of exactly the grant inference uses) and the client header the Grok CLI sends. The plan name
-comes from `…/v1/settings` (`subscription_tier_display`), optional, and shows in the details
-(`Plans: … Grok SuperGrok`). The resolver is Hermes' own auth code and acts as it does for any
-Hermes request to xAI: a token close to expiry is refreshed at xAI's token endpoint and saved to
-`auth.json`, and a refresh xAI refuses for good clears the dead token there. The plugin's own
-code writes neither. Neither request follows a redirect: urllib would carry the token on to
-whatever host the redirect names, so a redirect is `no data` with its status (`HTTP 302`).
-Probed on 2026-09-12: the inference host `api.x.ai` answers 404 for this path, so the proxy host
-is required. Policy: one attempt per `limits_refresh_seconds`, success or failure; a failed attempt is "no data"
-with its reason until the next interval; a cached number older than the interval is not shown.
-The shape is checked strictly (`currentPeriod.type == USAGE_PERIOD_TYPE_WEEKLY`, a finite
-percent in 0..100, a readable end date); anything else is named, not guessed. One answer is a
-state rather than a changed shape: right after the weekly reset the proxy leaves
-`creditUsagePercent` out altogether until the first request of the new period (probed
-2026-09-25). The line then reads `Grok · usage not started`, never a zero, and only while the
-period is the current one and on-demand spend is an explicit zero; a percent missing under any
-other conditions is named (`no creditUsagePercent`). Grok is its own source of the coverage
-(`Grok quota` on the ❔ line).
-
-**Kimi** (`telegram_dashboard/kimi.py`): the windows of the Kimi Code subscription, read from
-`<base URL>/v1/usages` on the very host the engine uses for Kimi inference. The key and the base
-URL come from the engine's own resolver
-(`hermes_cli.auth.resolve_api_key_provider_credentials("kimi-coding")`: `.env` first, then the
-credential pool, then the key-prefix redirect), so the screen shows the quota of exactly the
-credential inference uses, and the request carries the client header the engine sends to that
-host. Without a usable key in `.env` or the gateway's environment that resolver loads Hermes'
-credential pool, and loading saves the pool back to `auth.json` when it changes something, for
-example: a placeholder key in `.env` (`changeme`, `***`) seeded into the pool, a row an older
-Hermes wrote with the secret in it, an emptied `auth_type`. Hermes makes the same save itself the
-first time it loads that pool (`hermes auth list`, an agent run on Kimi); a settled pool is not
-written, and the plugin's own code writes nothing there. The request follows no redirect, like
-Grok's. The shape is the one the official client parses (`@moonshot-ai/kimi-code-oauth`,
-`managed-usage.ts`): `usages.limit_7d` (legacy plans) and `usages.limit_month_total` (new
-plans), each with `used_ratio` in 0..1 and a `reset_time`, every window on the line with its own
-reset (`Kimi 3% (29d)`). `usages.limit_5h` is not shown for now: on the pilot account it has read
-0 at every reading while `limits[]` beside it reported 55 of 100 for a 300-minute window with the
-same reset, and the plan shows no five-hour limit; a probe decides what either field is. Same
-policy and cache as Grok; the request never goes through the credential pool's rotation, so a
-failed request cannot mark the pool exhausted. Not in Kimi's docs; a changed shape is named,
-not guessed. Kimi is its own source of the coverage (`Kimi quota` on the ❔ line).
 
 **Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
 `Prolite`), in the details beside the others. The engine names Codex's first window `Session`
@@ -1012,8 +963,8 @@ The answer is `200` with a JSON object of at most 64 KB:
 ```
 
 - `contract` is `1`; any other version is `no data` with `contract N not supported`
-- `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex,
-  Grok, Kimi) takes that line's place; any other gets a line of its own before Gemini
+- `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex)
+  takes that line's place; any other gets a line of its own before Gemini
 - `state`: `ok` puts the windows on the screen; `login_expired` reads `Claude · login expired`
   and raises the event `Claude login expired`; `unavailable` is `no data` with `reason` (up to 60
   characters) in the details
@@ -1053,13 +1004,12 @@ The guards, and why:
   read: the plugin does not read the bot token itself, and a setting must not become a way to
   send it to a local port. The variable is read in `telegram_dashboard/external.py` and nowhere
   else
-- the tick waits for a source no longer than 25 s, Grok's deadline (Kimi's is 15 s, for one
-  request). The request itself runs on in its worker with the source's own `timeout_seconds`,
+- the tick waits for a source no longer than 25 s. The request itself runs on in its worker with the source's own `timeout_seconds`,
   never two at once for one source. On a miss the screen keeps the source's last line with that
   line's own stamp in the details while it is younger than two ticks or two
   `limits_refresh_seconds`, whichever is longer; the late answer is the next tick's line. A slow
   source never holds the tick back
-- a source is asked once per `limits_refresh_seconds`, like Grok and Kimi, and is a source of
+- a source is asked once per `limits_refresh_seconds` and is a source of
   its own in the coverage (`Claude limits` on the ❔ line): `ok` and `login_expired` are answers;
   `unavailable`, silence and a shape the contract does not allow are `unavailable`
 - `limits_enabled` off turns the sources off too. The fallback tick reads the same list from its
@@ -1206,7 +1156,7 @@ ruff check . && ruff format --check . && mypy --strict -p telegram_dashboard
 
 `pyproject.toml` points pytest and mypy at the package inside the plugin folder. Every run prints
 `telegram_dashboard.__file__` in the header: a green run that does not say which tree it tested
-proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the Grok, Kimi and GitHub attempts are stubbed by an autouse
+proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the GitHub and external-source attempts are stubbed by an autouse
 fixture in `tests/conftest.py` unless a test passes its own fake, and the running Hermes version
 there is a fixed one; a plugin loaded by the test
 helpers takes that same patched package, not a second copy of it under the plugin's name
