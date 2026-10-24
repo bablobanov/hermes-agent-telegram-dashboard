@@ -10,7 +10,9 @@ The key is read here and nowhere else, with the engine's ``agent.secret_scope.ge
 active profile's value; the process environment outside Hermes), and never from a bot token
 variable: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN``, the cron path of this
 dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``, and any ``*_BOT_TOKEN`` is refused with them. The
-plugin never reads the bot token itself (the catalog review, hermes-agent#122408).
+plugin never reads the bot token itself (the catalog review, hermes-agent#122408). A key with
+whitespace or a control character is never sent, and a failed request that carried the key names
+the error's class only: the text of a transport error can hold the header.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -48,6 +51,7 @@ BOT_TOKEN_SUFFIX = "_BOT_TOKEN"
 BOT_TOKEN_REFUSAL = "key_env names a bot token variable"
 SECRET_SCOPE_MODULE = "agent.secret_scope"
 UNSCOPED_REFUSAL = "key not readable outside a profile scope"
+KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -171,7 +175,8 @@ def http_get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, by
 
 
 class _KeyUnavailable(Exception):
-    """The key cannot be read; ``args[0]`` is the reason for the item (never an engine text)."""
+    """No key to send; ``args[0]`` is the reason for the item (never an engine text, never any
+    part of the key)."""
 
 
 def _read_key(name: str) -> str:
@@ -197,6 +202,27 @@ def _read_key(name: str) -> str:
     return key if isinstance(key, str) else ""
 
 
+def _source_key(name: str, environ: Mapping[str, str] | None) -> str:
+    """The key to send for ``key_env`` ``name``; ``_KeyUnavailable`` with the public reason
+    when there is none to send. The reason never carries any part of the value."""
+    # read_sources refuses these names already; checked again so that an entry built any
+    # other way cannot read a bot token either.
+    if is_bot_token_variable(name):
+        raise _KeyUnavailable(BOT_TOKEN_REFUSAL)
+    key = _read_key(name) if environ is None else environ.get(name, "")
+    if not key:
+        raise _KeyUnavailable(f"{name} not set")
+    if not _header_safe(key):
+        raise _KeyUnavailable(KEY_CHARACTERS_REFUSAL)
+    return key
+
+
+def _header_safe(key: str) -> bool:
+    """No whitespace and no control character in the key. http.client refuses CR and LF in a
+    header value and puts the whole value, ``Bearer <key>``, into the text of its error."""
+    return not any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in key)
+
+
 def fetch_item(
     source: Source,
     *,
@@ -213,24 +239,17 @@ def fetch_item(
         return item
     headers = {"Accept": "application/json"}
     if source.key_env:
-        # read_sources refuses these names already; checked again so that an entry built any
-        # other way cannot read a bot token either.
-        if is_bot_token_variable(source.key_env):
-            item["reason"] = BOT_TOKEN_REFUSAL
-            return item
         try:
-            key = _read_key(source.key_env) if environ is None else environ.get(source.key_env, "")
+            headers["Authorization"] = f"Bearer {_source_key(source.key_env, environ)}"
         except _KeyUnavailable as unavailable:
             item["reason"] = str(unavailable)
             return item
-        if not key:
-            item["reason"] = f"{source.key_env} not set"
-            return item
-        headers["Authorization"] = f"Bearer {key}"
     try:
         status, body = get(source.url, headers, source.timeout_seconds)
     except Exception as exc:
-        item["reason"] = f"request failed: {_public(exc)}"
+        # With the key in the request the error's text may carry the header: the class alone.
+        keyed = "Authorization" in headers
+        item["reason"] = f"request failed: {type(exc).__name__ if keyed else _public(exc)}"
         return item
     return _read_answer(status, body, now=now)
 

@@ -322,6 +322,63 @@ def test_without_the_engine_module_the_process_environment_is_read(
     assert len(get.calls) == 1
 
 
+@pytest.mark.parametrize(
+    "key", ["sk-0123\r4567", "sk-0123\n4567", "sk-0123 4567"], ids=["cr", "lf", "space"]
+)
+def test_a_key_a_header_cannot_carry_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """http.client puts the whole header value, ``Bearer <key>``, into the text of the error it
+    raises for such a key (Codex review, 1.1.0): the key is refused before any request, with a
+    reason that names no part of it, whether it came from the environment or from get_secret."""
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    given = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key})
+    _engine_scope(monkeypatch, lambda name, default="": key)
+    scoped = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    for item in (given, scoped):
+        assert item["reason"] == "key has characters a header cannot carry"
+        assert "sk-0123" not in str(item) and "4567" not in str(item)
+
+
+def test_a_failed_request_with_a_key_names_only_the_exception_class() -> None:
+    key = "sk-0123456789abcdef"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key}
+    )
+
+    assert item["reason"] == "request failed: ValueError"
+    assert "sk-0123" not in str(item) and "Bearer" not in str(item)
+
+
+def test_a_failed_request_without_a_key_keeps_the_error_text() -> None:
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise OSError("connection refused")
+
+    item = fetch_item(_source(), now=NOW, get=get)
+
+    assert item["reason"] == "request failed: connection refused"
+
+
+def test_the_transport_s_own_error_for_a_key_names_only_its_class(server: _Server) -> None:
+    """The real request path: http.client cannot encode a character outside latin-1 and names
+    it in the error text. With a key in the request, only the class reaches the reason."""
+    (source,) = read_sources([{"url": server.url(), "key_env": "LIMITS_SOURCE_KEY"}])
+
+    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "sk-0123й"})
+
+    assert item["reason"] == "request failed: UnicodeEncodeError"
+    assert "sk-0123" not in str(item) and "й" not in str(item) and "0439" not in str(item)
+    assert server.seen == []  # type: ignore[attr-defined]
+
+
 def test_http_codes_size_and_json_shape() -> None:
     source = _source()
 

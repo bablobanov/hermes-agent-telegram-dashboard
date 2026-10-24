@@ -409,6 +409,57 @@ def test_a_cached_line_older_than_two_ticks_is_no_data(tmp_path: Path, pid_alive
     assert _ext_state(snapshot).state == "unavailable"
 
 
+def test_a_failed_request_with_a_key_leaves_the_key_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex review of 1.1.0: the transport's error text carries the header, ``Bearer <key>``.
+    Through the tick, the reason in the record's ``external_cache`` and on the screen names the
+    exception class only."""
+    from functools import partial
+
+    from telegram_dashboard import external
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    key = "sk-0123456789abcdef"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    base = _env(tmp_path, limits_enabled=True)
+    env = Environment(
+        hermes_home=base.hermes_home,
+        drift_command=base.drift_command,
+        limits_enabled=True,
+        limits_sources=({"url": EXT_URL, "key_env": "LIMITS_SOURCE_KEY"},),
+    )
+    caches: dict[str, object] = {}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            env,
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=Flights(),
+            external_caches=caches,
+            external_interval_seconds=300,
+            external_timeout_seconds=5,
+            external_fetch=partial(
+                external.fetch_item, get=get, environ={"LIMITS_SOURCE_KEY": key}
+            ),
+            period_seconds=1800,
+        )
+    )
+
+    stored = json.dumps(caches)
+    screen = render_dashboard(snapshot, now=NOW)
+    assert "request failed: ValueError" in stored
+    assert "request failed: ValueError" in screen
+    for text in (stored, screen, repr(snapshot)):
+        assert "sk-0123" not in text and "Bearer" not in text
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 
