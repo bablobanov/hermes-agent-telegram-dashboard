@@ -6,7 +6,8 @@ The public extension point of 0.8.0. The plugin asks ``GET <url>`` on loopback, 
 login date. Nothing here knows who answers; any local process can.
 
 Guards: the URL is loopback http only; no proxy from the environment, no redirect, 64 KB at most.
-The key is read from the environment here and nowhere else, and never from a bot token
+The key is read here and nowhere else, with the engine's ``agent.secret_scope.get_secret`` (the
+active profile's value; the process environment outside Hermes), and never from a bot token
 variable: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN``, the cron path of this
 dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``, and any ``*_BOT_TOKEN`` is refused with them. The
 plugin never reads the bot token itself (the catalog review, hermes-agent#122408).
@@ -15,6 +16,7 @@ plugin never reads the bot token itself (the catalog review, hermes-agent#122408
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -44,6 +46,8 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 BOT_TOKEN_VARIABLES = frozenset({"TELEGRAM_BOT_TOKEN", "HERMES_DASHBOARD_BOT_TOKEN"})
 BOT_TOKEN_SUFFIX = "_BOT_TOKEN"
 BOT_TOKEN_REFUSAL = "key_env names a bot token variable"
+SECRET_SCOPE_MODULE = "agent.secret_scope"
+UNSCOPED_REFUSAL = "key not readable outside a profile scope"
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -166,6 +170,33 @@ def http_get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, by
         return int(exc.code), b""
 
 
+class _KeyUnavailable(Exception):
+    """The key cannot be read; ``args[0]`` is the reason for the item (never an engine text)."""
+
+
+def _read_key(name: str) -> str:
+    """The value of ``name`` through the engine's ``get_secret``, imported at call time.
+
+    The process environment only when the engine module does not exist at all (the standalone
+    CLI, CI). Raises ``_KeyUnavailable`` with the public reason otherwise; never anything else.
+    """
+    try:
+        module = importlib.import_module(SECRET_SCOPE_MODULE)
+    except ModuleNotFoundError as exc:
+        if exc.name in ("agent", SECRET_SCOPE_MODULE):
+            return os.environ.get(name, "")
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    except Exception as exc:
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    try:
+        key: Any = module.get_secret(name, "")
+    except Exception as exc:
+        if type(exc).__name__ == "UnscopedSecretError":
+            raise _KeyUnavailable(UNSCOPED_REFUSAL) from None
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    return key if isinstance(key, str) else ""
+
+
 def fetch_item(
     source: Source,
     *,
@@ -187,7 +218,11 @@ def fetch_item(
         if is_bot_token_variable(source.key_env):
             item["reason"] = BOT_TOKEN_REFUSAL
             return item
-        key = (os.environ if environ is None else environ).get(source.key_env, "")
+        try:
+            key = _read_key(source.key_env) if environ is None else environ.get(source.key_env, "")
+        except _KeyUnavailable as unavailable:
+            item["reason"] = str(unavailable)
+            return item
         if not key:
             item["reason"] = f"{source.key_env} not set"
             return item

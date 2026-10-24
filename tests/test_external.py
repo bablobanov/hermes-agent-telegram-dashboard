@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -237,6 +239,87 @@ def test_the_key_comes_from_the_named_variable_and_nowhere_else() -> None:
     ]
     missing = fetch_item(source, now=NOW, get=get, environ={})
     assert missing["reason"] == "LIMITS_SOURCE_KEY not set" and len(get.calls) == 1
+
+
+class UnscopedSecretError(RuntimeError):
+    """Stands in for the engine's class of the same name (agent/secret_scope.py)."""
+
+
+def _engine_scope(monkeypatch: pytest.MonkeyPatch, get_secret: Any) -> None:
+    """Install a fake ``agent.secret_scope``; ``import_module`` finds the leaf in sys.modules."""
+    module = ModuleType("agent.secret_scope")
+    if get_secret is not None:
+        module.get_secret = get_secret  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", module)
+
+
+def test_the_key_goes_through_the_engines_get_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[tuple[str, str]] = []
+
+    def get_secret(name: str, default: str = "") -> str:
+        asked.append((name, default))
+        return "scoped-key"
+
+    _engine_scope(monkeypatch, get_secret)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert item["status"] == "available"
+    assert asked == [("LIMITS_SOURCE_KEY", "")]
+    assert get.calls[0][1]["Authorization"] == "Bearer scoped-key"
+
+
+def test_an_unscoped_read_is_no_data_without_a_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get_secret(name: str, default: str = "") -> str:
+        raise UnscopedSecretError("restart the gateway with --secret-scope, please")
+
+    _engine_scope(monkeypatch, get_secret)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+    assert "restart" not in str(item)
+
+
+def test_another_failure_of_get_secret_names_only_the_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def get_secret(name: str, default: str = "") -> str:
+        raise ValueError("secret detail that must not leak")
+
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+    _engine_scope(monkeypatch, get_secret)
+
+    failed = fetch_item(source, now=NOW, get=get)
+    _engine_scope(monkeypatch, None)
+    absent = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    assert failed["reason"] == "key lookup failed: ValueError"
+    assert absent["reason"] == "key lookup failed: AttributeError"
+    assert "leak" not in str(failed)
+
+
+def test_without_the_engine_module_the_process_environment_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", None)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    item = fetch_item(source, now=NOW, get=get)
+
+    assert item["status"] == "available"
+    assert get.calls[0][1]["Authorization"] == "Bearer process-key"
+    monkeypatch.delenv("LIMITS_SOURCE_KEY")
+    assert fetch_item(source, now=NOW, get=get)["reason"] == "LIMITS_SOURCE_KEY not set"
+    assert len(get.calls) == 1
 
 
 def test_http_codes_size_and_json_shape() -> None:
