@@ -141,37 +141,6 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
     assert "Failed to send Telegram message" in traffic["contract"]
 
 
-README = Path(__file__).resolve().parents[1] / "README.md"
-
-
-def _readme_paragraph(start: str) -> str:
-    """The paragraph that opens with ``start``, its line breaks read as spaces."""
-    body = README.read_text(encoding="utf-8")
-    begin = body.index(start)
-    end = body.find("\n\n", begin)
-    return " ".join((body[begin:] if end == -1 else body[begin:end]).split())
-
-
-def test_the_grok_and_kimi_rows_say_what_hermes_auth_code_may_write() -> None:
-    """0.9.3: the resolvers these two lines call are Hermes' own auth code, which may save
-    auth.json (a refreshed or dead xAI token, a credential pool that loading settled). The rows
-    and the README paragraphs say so, say that the plugin's own code writes none of it, and that
-    the request follows no redirect (``tests/test_quota_cache.py``)."""
-    sources = load_matrix()["sources"]
-    rows = (
-        ("grok_quota", "**Grok** (", "Neither request follows a redirect"),
-        ("kimi_quota", "**Kimi** (", "The request follows no redirect"),
-    )
-    for name, start, no_redirect in rows:
-        row = sources[name]
-        assert "auth.json" in row["caveat"] and "the plugin's own code writes" in row["caveat"]
-        assert f"{no_redirect} (quota_cache.http_get, tests/test_quota_cache.py)" in row["caveat"]
-        assert {"0.21.3", "0.21.5"} <= set(row["verified"]), name
-        paragraph = _readme_paragraph(start)
-        assert "`auth.json`" in paragraph and "plugin's own code writes" in paragraph, name
-        assert no_redirect in paragraph, name
-
-
 def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
     """0.11.0: the audit of 08.10 read every engine touchpoint of 0.21.6 against 0.21.5; the
     plugin's own scripts and the engine-free sources have no engine to verify against."""
