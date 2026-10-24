@@ -127,8 +127,11 @@ Up to five events that need attention come right after the top line, under 🛠 
 Account limits: Claude and Codex from the Hermes usage facade (see "Limits" below), and any
 other provider from a local process of your own (see "External limit sources"). Gemini has no number without billing, never a zero: the last
 time Google refused the engine a call is on its line while it is recent and always in the
-details (see "Gemini refusals from the engine log"). Nothing is dropped from the old screen,
-only moved: a line without a number still names its reason, in the details.
+details (see "Gemini refusals from the engine log"). The one-screen layout moved lines to the
+details rather than dropping them: a line without a number still names its reason there. 1.1.0
+does drop two limit lines, the ones the dashboard used to read from vendor CLIs' private
+endpoints; an operator's `limits_sources` can bring such lines back (see
+[External limit sources](#external-limit-sources)).
 
 A source that cannot prove a value says `unknown`. A source that does not exist on this
 installation says `unsupported`. Both lower coverage; neither turns green (one exception, the
