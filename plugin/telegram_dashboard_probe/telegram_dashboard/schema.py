@@ -283,8 +283,9 @@ class QuotaWindow:
     label: str
     used_percent: float | None = None
     reset_at: str | None = None
-    # The provider's state in words when it gives no number (a week before its first
-    # request); shown instead of the percent, never turned into one.
+    # The provider's state in words when it gives no number; shown instead of the percent,
+    # never turned into one. Nothing sets it today: no built-in source produces it and the
+    # external contract does not carry it.
     note: str | None = None
     # The model the limit applies to (``Fable``); ``None`` is the account's own limit.
     scope: str | None = None

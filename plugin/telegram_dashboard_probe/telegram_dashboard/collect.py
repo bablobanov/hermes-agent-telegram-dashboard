@@ -575,7 +575,7 @@ def quota_off_for(label: str, capacity: CapacitySummary) -> QuotaMetric:
 
 
 def merge_quotas(capacity: CapacitySummary, *metrics: QuotaMetric) -> CapacitySummary:
-    """Own-cadence providers sit after the facade providers and before the trailing ones."""
+    """Gemini sits after the facade providers and before the trailing ones."""
     quotas = list(capacity.quotas)
     trailing = [q for q in quotas if _is_trailing(q)]
     named = [q for q in quotas if not _is_trailing(q)]
@@ -776,8 +776,8 @@ def _capacity_unavailable(detail: str) -> CapacitySummary:
 
 
 def _capacity_unsupported(detail: str) -> CapacitySummary:
-    """The facade's own providers only: every other line takes this verdict on its own
-    (``quota_off_for``)."""
+    """The facade's own providers only. Of the other lines only Gemini takes this verdict, on
+    a line of its own (``quota_off_for``)."""
     return CapacitySummary(
         tuple(
             QuotaMetric(label, "unsupported", detail=detail) for label in _PROVIDER_LABELS.values()
@@ -891,7 +891,7 @@ def collect_all(
     )
     rules, rules_source, rules_incidents = read_rules(env, now=now)
     memory, memory_source, memory_incidents = read_memory(env, now=now)
-    capacity, limits_source, _probe = collect_limits(env, now=now, resolve=resolve_limits)
+    capacity, limits_source, _ = collect_limits(env, now=now, resolve=resolve_limits)
     if env.limits_enabled:
         gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
     else:

@@ -564,7 +564,7 @@ def _unchecked_sources(snapshot: DashboardSnapshot) -> frozenset[str]:
 
 
 def _coverage_words(snapshot: DashboardSnapshot) -> str | None:
-    """``Profiles 1/1 · sources 10/10``: the full count, for the details."""
+    """``Profiles 1/1 · sources 8/8``: the full count, for the details."""
     parts: list[str] = []
     coverage = snapshot.coverage
     if coverage.expected_profiles:
