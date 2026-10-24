@@ -13,6 +13,7 @@ import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from probe_fakes import until
@@ -409,22 +410,15 @@ def test_a_cached_line_older_than_two_ticks_is_no_data(tmp_path: Path, pid_alive
     assert _ext_state(snapshot).state == "unavailable"
 
 
-def test_a_failed_request_with_a_key_leaves_the_key_out_of_the_cache_and_the_screen(
-    tmp_path: Path, pid_alive: None
-) -> None:
-    """Codex review of 1.1.0: the transport's error text carries the header, ``Bearer <key>``.
-    Through the tick, the reason in the record's ``external_cache`` and on the screen names the
-    exception class only."""
+def _keyed_tick(tmp_path: Path, get: Any, key: str) -> tuple[str, str, str]:
+    """One tick of the collector with a source that has ``key_env`` and the real
+    ``external.fetch_item`` over ``get``: the stored ``external_cache`` as JSON, the rendered
+    screen and the snapshot's repr."""
     from functools import partial
 
     from telegram_dashboard import external
     from telegram_dashboard.render import render_dashboard
     from telegram_dashboard.workers import Flights
-
-    key = "sk-0123456789abcdef"
-
-    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
-        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
 
     base = _env(tmp_path, limits_enabled=True)
     env = Environment(
@@ -451,13 +445,45 @@ def test_a_failed_request_with_a_key_leaves_the_key_out_of_the_cache_and_the_scr
             period_seconds=1800,
         )
     )
+    return json.dumps(caches), render_dashboard(snapshot, now=NOW), repr(snapshot)
 
-    stored = json.dumps(caches)
-    screen = render_dashboard(snapshot, now=NOW)
+
+def test_a_failed_request_with_a_key_leaves_the_key_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex review of 1.1.0: the transport's error text carries the header, ``Bearer <key>``.
+    Through the tick, the reason in the record's ``external_cache`` and on the screen names the
+    exception class only."""
+    key = "sk-0123456789abcdef"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
     assert "request failed: ValueError" in stored
     assert "request failed: ValueError" in screen
-    for text in (stored, screen, repr(snapshot)):
+    for text in (stored, screen, snapshot):
         assert "sk-0123" not in text and "Bearer" not in text
+
+
+def test_a_get_that_takes_the_header_away_leaves_the_key_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex re-check: whether the request carried the key is decided before ``get`` runs; a
+    ``get`` that pops the header and raises with its value cannot bring the text back."""
+    key = "kq7Zr4p9XwLm2Vt8"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        value = headers.pop("Authorization")
+        raise ValueError(value.removeprefix("Bearer "))
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    assert "request failed: ValueError" in stored
+    assert "request failed: ValueError" in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text and "Bearer" not in text
 
 
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)

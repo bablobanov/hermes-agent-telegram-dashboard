@@ -428,6 +428,28 @@ def test_a_failed_request_with_a_key_names_only_the_exception_class() -> None:
     assert "sk-0123" not in str(item) and "Bearer" not in str(item)
 
 
+@pytest.mark.parametrize("bare", [False, True], ids=["header", "bare-key"])
+def test_a_get_that_takes_the_header_away_still_gets_the_class_only(bare: bool) -> None:
+    """Codex re-check: whether the request carried the key is decided before ``get`` runs, and
+    ``get`` gets a copy of the headers. A ``get`` that pops the header and raises with its value
+    cannot turn the reason back into the error's text."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    passed: list[dict[str, str]] = []
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        passed.append(headers)
+        value = headers.pop("Authorization")
+        raise ValueError(value.removeprefix("Bearer ") if bare else value)
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key}
+    )
+
+    assert item["reason"] == "request failed: ValueError"
+    assert key[:6] not in str(item) and "Bearer" not in str(item)
+    assert len(passed) == 1
+
+
 def test_a_failed_request_without_a_key_keeps_the_error_text() -> None:
     def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
         raise OSError("connection refused")

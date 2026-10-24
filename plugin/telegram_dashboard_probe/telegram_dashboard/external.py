@@ -250,17 +250,19 @@ def fetch_item(
         item["reason"] = source.problem
         return item
     headers = {"Accept": "application/json"}
+    # Decided when the header is built, never read back from what ``get`` was handed.
+    keyed = False
     if source.key_env:
         try:
             headers["Authorization"] = f"Bearer {_source_key(source.key_env, environ)}"
         except _KeyUnavailable as unavailable:
             item["reason"] = str(unavailable)
             return item
+        keyed = True
     try:
-        status, body = get(source.url, headers, source.timeout_seconds)
+        status, body = get(source.url, dict(headers), source.timeout_seconds)
     except Exception as exc:
         # With the key in the request the error's text may carry the header: the class alone.
-        keyed = "Authorization" in headers
         item["reason"] = f"request failed: {type(exc).__name__ if keyed else _public(exc)}"
         return item
     return _read_answer(status, body, now=now)
