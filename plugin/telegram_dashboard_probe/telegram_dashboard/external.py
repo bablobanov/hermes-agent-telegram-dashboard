@@ -196,10 +196,22 @@ def _read_key(name: str) -> str:
     try:
         key: Any = module.get_secret(name, "")
     except Exception as exc:
-        if type(exc).__name__ == "UnscopedSecretError":
+        if _is_unscoped(module, exc):
             raise _KeyUnavailable(UNSCOPED_REFUSAL) from None
         raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
     return key if isinstance(key, str) else ""
+
+
+def _is_unscoped(module: object, exc: Exception) -> bool:
+    """The engine's ``UnscopedSecretError`` or a subclass of it; by the class's name along the
+    MRO when the module does not expose the class. Never raises."""
+    try:
+        engine_class = getattr(module, "UnscopedSecretError", None)
+        if isinstance(engine_class, type) and isinstance(exc, engine_class):
+            return True
+        return any(c.__name__ == "UnscopedSecretError" for c in type(exc).__mro__)
+    except Exception:
+        return False
 
 
 def _source_key(name: str, environ: Mapping[str, str] | None) -> str:

@@ -245,9 +245,14 @@ class UnscopedSecretError(RuntimeError):
     """Stands in for the engine's class of the same name (agent/secret_scope.py)."""
 
 
+class _NarrowerUnscopedError(UnscopedSecretError):
+    """A subclass the engine might raise one day: still an unscoped read."""
+
+
 def _engine_scope(monkeypatch: pytest.MonkeyPatch, get_secret: Any) -> None:
     """Install a fake ``agent.secret_scope``; ``import_module`` finds the leaf in sys.modules."""
     module = ModuleType("agent.secret_scope")
+    module.UnscopedSecretError = UnscopedSecretError  # type: ignore[attr-defined]
     if get_secret is not None:
         module.get_secret = get_secret  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "agent.secret_scope", module)
@@ -283,6 +288,48 @@ def test_an_unscoped_read_is_no_data_without_a_request(monkeypatch: pytest.Monke
     assert get.calls == []
     assert item["reason"] == "key not readable outside a profile scope"
     assert "restart" not in str(item)
+
+
+def test_a_subclass_of_the_engine_s_unscoped_error_is_an_unscoped_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matched by the engine's own class, not by the name of the class raised (Codex review)."""
+
+    def get_secret(name: str, default: str = "") -> str:
+        raise _NarrowerUnscopedError("no scope")
+
+    _engine_scope(monkeypatch, get_secret)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+
+
+def test_the_real_engine_refuses_an_unscoped_read_and_reads_the_environment_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Against the engine's own ``agent.secret_scope`` where it is importable (skipped without
+    the engine, as in CI). Multiplexing on and no scope installed: the fixed reason and no
+    request. Multiplexing off: the process environment reaches the header through get_secret."""
+    scope = pytest.importorskip("agent.secret_scope")
+    assert not scope.is_multiplex_active() and scope.current_secret_scope() is None
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    scope.set_multiplex_active(True)
+    try:
+        refused = fetch_item(source, now=NOW, get=get)
+    finally:
+        scope.set_multiplex_active(False)
+    read = fetch_item(source, now=NOW, get=get)
+
+    assert refused["reason"] == "key not readable outside a profile scope"
+    assert "process-key" not in str(refused)
+    assert read["status"] == "available"
+    assert [call[1]["Authorization"] for call in get.calls] == ["Bearer process-key"]
 
 
 def test_another_failure_of_get_secret_names_only_the_class(
