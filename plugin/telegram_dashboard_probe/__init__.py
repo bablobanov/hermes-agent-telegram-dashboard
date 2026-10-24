@@ -95,15 +95,16 @@ ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
 ENV_MEMORY = "HERMES_DASHBOARD_PROBE_MEMORY"
 ENV_RICH = "HERMES_DASHBOARD_PROBE_RICH"
 ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rules line
-# The Grok and Kimi quotas are asked at most once per this many seconds each, not every tick:
-# a weekly number does not move faster, and the surfaces are not documented ones. The caches
-# live in the record, one per provider (``limits_cache.grok``, ``limits_cache.kimi``).
+# The external limit sources are asked at most once per this many seconds each, not every
+# tick: a weekly number does not move faster.
 DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
-LIMITS_CACHE_KEY = "limits_cache"
-QUOTA_CACHE_PROVIDERS = ("grok", "kimi")
+# The record's key for the caches of the providers read by the dashboard itself before 1.1.0
+# (a plan, windows, the time of an attempt; no token): dropped on load, so the next save leaves
+# it out of the state file.
+RETIRED_LIMITS_CACHE_KEY = "limits_cache"
 # The check of the latest Hermes release upstream (at most one per 15 minutes) keeps its last
-# answer and attempt beside them, so a restart neither asks GitHub again nor forgets the answer.
+# answer and attempt in the record, so a restart neither asks GitHub again nor forgets the answer.
 RELEASE_CACHE_KEY = "release_cache"
 # External limit sources (``limits_sources``, contract 1) keep one attempt each, by URL
 # digest, under a key of their own.
@@ -133,7 +134,9 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
     # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
     # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0): a copy without them would
-    # reject the tick's arguments every time.
+    # reject the tick's arguments every time. EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0,
+    # whose tick hands no cache to providers an older copy read by itself: that copy would ask
+    # them on every tick.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -145,6 +148,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "CRON_RUNS",
         "TRAFFIC",
         "RULES",
+        "EXTERNAL_DEFAULT_INTERVAL_SECONDS",
     ),
     "compat": ("Environment", "CRON_NOTES", "parse_cron_notes"),
     "freshness": ("record_from_plugin_state",),
@@ -1078,16 +1082,11 @@ class ProbeRuntime:
             process_started_at=self.started_at,
         )
         runner = dashboard.collect.SubprocessRunner()
-        caches = self.quota_caches()
         return await dashboard.collect.collect_all_async(
             env,
             runner,
             now=now,
             flights=self.flights,
-            grok_cache=caches["grok"],
-            grok_interval_seconds=self.settings.limits_refresh_seconds,
-            kimi_cache=caches["kimi"],
-            kimi_interval_seconds=self.settings.limits_refresh_seconds,
             version_cache=self.release_cache(),
             external_caches=self.external_cache(),
             external_interval_seconds=self.settings.limits_refresh_seconds,
@@ -1097,24 +1096,6 @@ class ProbeRuntime:
             traffic_probe=self.traffic_probe,
             traffic_cache=self.traffic_cache(),
         )
-
-    def quota_caches(self) -> dict[str, dict[str, Any]]:
-        """One cache dict per provider inside the record's ``limits_cache``, the same objects on
-        every tick so the collector's writes land in the record.
-
-        The layout before Kimi kept Grok's attempt at the top level (``attempted_at``, ``item``);
-        a record in that shape is moved under ``grok`` once, so a restart keeps its interval.
-        """
-        cache = self.record.get(LIMITS_CACHE_KEY)
-        if not isinstance(cache, dict):
-            cache = {}
-        if "attempted_at" in cache or "item" in cache:
-            cache = {"grok": cache}
-        self.record[LIMITS_CACHE_KEY] = cache
-        for provider in QUOTA_CACHE_PROVIDERS:
-            if not isinstance(cache.get(provider), dict):
-                cache[provider] = {}
-        return cache
 
     def release_cache(self) -> dict[str, Any]:
         """The upstream release check's cache inside the record, the same object on every tick
@@ -1199,6 +1180,7 @@ class ProbeRuntime:
             )
             stored = {}
         self.record = dict(stored) if isinstance(stored, dict) else {}
+        self.record.pop(RETIRED_LIMITS_CACHE_KEY, None)
 
     def _note(
         self,

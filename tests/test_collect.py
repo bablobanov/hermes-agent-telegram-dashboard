@@ -425,8 +425,6 @@ def test_collect_all_composes_without_any_source(tmp_path: Path) -> None:
     assert {source.name: source.state for source in snapshot.sources} == {
         "gateway_state": "unsupported",
         "limits": "unsupported",
-        "grok_quota": "unsupported",
-        "kimi_quota": "unsupported",
         "gemini_log": "unsupported",
         "drift": "unsupported",
         "backup": "unsupported",
@@ -491,7 +489,7 @@ def test_the_facade_s_plan_reaches_the_metric(tmp_path: Path) -> None:
 
 
 def test_an_item_s_plan_scope_severity_and_login_ride_to_the_metric() -> None:
-    from telegram_dashboard.collect import collect_quota
+    from telegram_dashboard.collect import external_part
 
     item = {
         "provider": "x",
@@ -512,9 +510,7 @@ def test_an_item_s_plan_scope_severity_and_login_ride_to_the_metric() -> None:
             {"label": "week", "used_percent": 86, "reset_at": None, "severity": "loud"},
         ],
     }
-    metric, source = collect_quota(
-        "x", "Claude", {}, now=NOW, interval_seconds=900, fetch=lambda now: item
-    )
+    metric, source, _incidents = external_part(_ext_source(), {}, item, now=NOW, show_seconds=1800)
 
     assert (metric.kind, metric.plan, metric.login_expires_at) == (
         "official",
@@ -526,7 +522,7 @@ def test_an_item_s_plan_scope_severity_and_login_ride_to_the_metric() -> None:
 
 
 def test_an_expired_login_is_its_own_kind_and_the_source_answered() -> None:
-    from telegram_dashboard.collect import collect_quota
+    from telegram_dashboard.collect import external_part
 
     item = {
         "provider": "x",
@@ -538,30 +534,11 @@ def test_an_expired_login_is_its_own_kind_and_the_source_answered() -> None:
         "login_expires_at": "2026-09-01T00:00:00Z",
         "windows": [],
     }
-    metric, source = collect_quota(
-        "x", "Claude", {}, now=NOW, interval_seconds=900, fetch=lambda now: item
-    )
+    metric, source, _incidents = external_part(_ext_source(), {}, item, now=NOW, show_seconds=1800)
 
     assert metric.kind == "expired" and metric.plan == "Max 5x"
     assert metric.login_expires_at == "2026-09-01T00:00:00Z"
     assert source.state == "fresh"
-
-
-def test_grok_s_plan_is_no_longer_dropped() -> None:
-    from telegram_dashboard.collect import collect_grok
-
-    item = {
-        "provider": "grok",
-        "status": "available",
-        "reason": None,
-        "source": "grok_cli_billing",
-        "fetched_at": NOW.isoformat(),
-        "plan": "SuperGrok",
-        "windows": [{"label": "7d", "used_percent": 31.0, "reset_at": None}],
-    }
-    metric, _source = collect_grok({}, now=NOW, interval_seconds=900, fetch=lambda now: item)
-
-    assert metric.plan == "SuperGrok"
 
 
 # ---------------------------------------------------------------- external limit sources (0.8.0)
@@ -923,7 +900,7 @@ def test_every_provider_has_one_line_when_the_facade_cannot_answer(
     tmp_path: Path, limits_enabled: bool
 ) -> None:
     """Limits off, or no facade on this installation: the block's verdict reaches every line,
-    once. Grok and Kimi used to be in the facade's verdict and again as lines of their own."""
+    once."""
     snapshot = collect_all(
         Environment(hermes_home=tmp_path, limits_enabled=limits_enabled),
         FakeRunner(CommandResult(0, "", "")),
@@ -932,7 +909,7 @@ def test_every_provider_has_one_line_when_the_facade_cannot_answer(
     )
 
     providers = [q.provider for q in snapshot.capacity.quotas]
-    assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
+    assert providers == ["Claude", "Codex", "Gemini"]
 
 
 # ---------------------------------------------------------------- cron (0.9.0)

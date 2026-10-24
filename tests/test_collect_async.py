@@ -142,8 +142,6 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
     assert set(by_name) == {
         "gateway_state",
         "limits",
-        "grok_quota",
-        "kimi_quota",
         "gemini_log",
         "drift",
         "backup",
@@ -177,8 +175,6 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
     assert [source.name for source in snapshot.sources] == [
         "gateway_state",
         "limits",
-        "grok_quota",
-        "kimi_quota",
         "gemini_log",
         "drift",
         "backup",
@@ -611,7 +607,7 @@ def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
     )
 
     providers = [q.provider for q in snapshot.capacity.quotas]
-    assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
+    assert providers == ["Claude", "Codex", "Gemini"]
 
 
 # ----------------------------------------------------------------------------- cron (0.9.0)

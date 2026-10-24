@@ -42,9 +42,6 @@ from .external import read_sources
 from .gemini_log import LABEL as GEMINI_LABEL
 from .gemini_log import SOURCE_NAME as GEMINI_SOURCE
 from .gemini_log import GeminiPart, collect_gemini, remembered_part
-from .grok import DEFAULT_INTERVAL_SECONDS as GROK_DEFAULT_INTERVAL_SECONDS
-from .grok import TICK_TIMEOUT_SECONDS as GROK_TICK_TIMEOUT_SECONDS
-from .grok import fetch_item as grok_fetch_item
 from .hermes_version import INTERVAL_SECONDS as VERSION_INTERVAL_SECONDS
 from .hermes_version import TICK_TIMEOUT_SECONDS as VERSION_TICK_TIMEOUT_SECONDS
 from .hermes_version import fetch_item as version_fetch_item
@@ -52,9 +49,6 @@ from .hermes_version import known_answer as known_release_answer
 from .hermes_version import running_version
 from .hermes_version import summarize as summarize_version
 from .hermes_version import tick as version_tick
-from .kimi import DEFAULT_INTERVAL_SECONDS as KIMI_DEFAULT_INTERVAL_SECONDS
-from .kimi import TICK_TIMEOUT_SECONDS as KIMI_TICK_TIMEOUT_SECONDS
-from .kimi import fetch_item as kimi_fetch_item
 from .limits import Resolver, build_limits_payload, fetch_limits_payload_off_loop, import_fetcher
 from .memory import SOURCE_NAME as MEMORY
 from .memory import MemoryPart, read_memory
@@ -100,13 +94,8 @@ _DOWN_PLATFORM = frozenset({"disconnected", "connecting", "retrying", "paused", 
 _STOPPED_GATEWAY = frozenset({"stopped", "exited", "stopping", "crashed", "failed"})
 
 _SEVERITY_RANK = {"critical": 0, "warning": 1, "unknown": 2, "normal": 3}
-# Providers the engine's usage facade answers for; Grok and Kimi are read by ``grok.py`` and
-# ``kimi.py`` on their own cadence, each as its own source.
+# Providers the engine's usage facade answers for.
 _PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
-GROK_LABEL = "Grok"
-KIMI_LABEL = "Kimi"
-GrokFetch = QuotaFetch
-KimiFetch = QuotaFetch
 VersionFetch = QuotaFetch
 LocalVersion = Callable[[], tuple[str | None, str | None]]
 # The lines that close the block: Gemini, built from the engine's log (``gemini_log.py``); an
@@ -572,69 +561,15 @@ def _login_of(item: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and parse_timestamp(value) is not None else None
 
 
-# ----------------------------------------------------------------------------- Grok, Kimi
+# ----------------------------------------------------------------------------- other lines
 #
-# Each provider read on its own cadence is one line and one source, with its own cache dict.
-
-
-def collect_quota(
-    key: str,
-    label: str,
-    cache: dict[str, Any],
-    *,
-    now: datetime,
-    interval_seconds: float,
-    fetch: QuotaFetch,
-) -> tuple[QuotaMetric, SourceObservation]:
-    """The provider's line and its own source (``<key>_quota``): one attempt per interval, the
-    number never older than the interval (``quota_cache.tick``). ``cache`` is the caller's
-    durable dict, mutated in place."""
-    item = quota_tick(cache, now=now, interval_seconds=interval_seconds, fetch=fetch)
-    metric = _quota_from_item(label, item)
-    name = f"{key}_quota"
-    # An expired login is an answer: the source is fresh, the line says what it answered.
-    if metric.kind not in ("official", "expired"):
-        source = SourceObservation(name, "official", "unavailable", detail=metric.detail)
-    else:
-        state = classify_freshness(
-            metric.fetched_at, now=now, ttl_seconds=int(2 * interval_seconds)
-        )
-        source = SourceObservation(name, "official", state, observed_at=metric.fetched_at)
-    return metric, source
-
-
-def collect_grok(
-    cache: dict[str, Any],
-    *,
-    now: datetime,
-    interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
-    fetch: GrokFetch = grok_fetch_item,
-) -> tuple[QuotaMetric, SourceObservation]:
-    return collect_quota(
-        "grok", GROK_LABEL, cache, now=now, interval_seconds=interval_seconds, fetch=fetch
-    )
-
-
-def collect_kimi(
-    cache: dict[str, Any],
-    *,
-    now: datetime,
-    interval_seconds: float = KIMI_DEFAULT_INTERVAL_SECONDS,
-    fetch: KimiFetch = kimi_fetch_item,
-) -> tuple[QuotaMetric, SourceObservation]:
-    return collect_quota(
-        "kimi", KIMI_LABEL, cache, now=now, interval_seconds=interval_seconds, fetch=fetch
-    )
+# The lines beside the facade's: Gemini from the engine's log, the external sources.
 
 
 def quota_off_for(label: str, capacity: CapacitySummary) -> QuotaMetric:
     """A provider takes the block's verdict when the block itself is off or unsupported."""
     detail = capacity.quotas[0].detail if capacity.quotas else None
     return QuotaMetric(label, "unsupported", detail=detail or "limits disabled in config")
-
-
-def grok_off_for(capacity: CapacitySummary) -> QuotaMetric:
-    return quota_off_for(GROK_LABEL, capacity)
 
 
 def merge_quotas(capacity: CapacitySummary, *metrics: QuotaMetric) -> CapacitySummary:
@@ -649,18 +584,17 @@ def _is_trailing(quota: QuotaMetric) -> bool:
     return quota.provider.lower() in _TRAILING_PROVIDERS
 
 
-def merge_grok(capacity: CapacitySummary, metric: QuotaMetric) -> CapacitySummary:
-    return merge_quotas(capacity, metric)
-
-
 # ----------------------------------------------------------------------------- external sources
 #
 # Contract 1 (``external.py``): any local process can answer for a provider. A source naming a
-# built-in provider takes that line's place; a new one sits before Gemini. The tick waits
-# for a source no longer than for Grok or Kimi; on a miss it shows the source's last line with
+# built-in provider takes that line's place; a new one sits before Gemini. The tick waits for a
+# source ``external.TICK_TIMEOUT_SECONDS`` at most; on a miss it shows the source's last line with
 # that line's own stamp while it is younger than two ticks or two intervals, whichever is longer
 # (decision 10 of the subscription plan), and the late answer is the next tick's line.
 
+# How often a source is asked when the caller does not say: the cron path (the plugin passes
+# ``limits_refresh_seconds``). The plugin requires the name (``REQUIRED_API``): it came with 1.1.0.
+EXTERNAL_DEFAULT_INTERVAL_SECONDS = 900.0
 # The owner signs in again before the login ends: warned this long before (decision 7).
 LOGIN_WARN_SECONDS = 3 * 86400
 ExternalFetch = Callable[..., dict[str, Any]]
@@ -831,15 +765,6 @@ def _cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
     return cache
 
 
-def _without_replaced(
-    sources: Sequence[SourceObservation], metrics: Sequence[QuotaMetric]
-) -> list[SourceObservation]:
-    """A built-in Grok or Kimi source leaves the count when an external source answers for the
-    same provider: its line is gone from the screen, so is its verdict."""
-    names = {metric.provider.lower() for metric in metrics}
-    return [s for s in sources if not (s.name.endswith("_quota") and s.name[:-6] in names)]
-
-
 def _capacity_unavailable(detail: str) -> CapacitySummary:
     return CapacitySummary(
         tuple(
@@ -849,8 +774,8 @@ def _capacity_unavailable(detail: str) -> CapacitySummary:
 
 
 def _capacity_unsupported(detail: str) -> CapacitySummary:
-    """The facade's own providers only: Grok and Kimi take this verdict on lines of their own
-    (``quota_off_for``), so naming them here put each on the screen twice."""
+    """The facade's own providers only: every other line takes this verdict on its own
+    (``quota_off_for``)."""
     return CapacitySummary(
         tuple(
             QuotaMetric(label, "unsupported", detail=detail) for label in _PROVIDER_LABELS.values()
@@ -933,14 +858,8 @@ def collect_all(
     *,
     now: datetime,
     resolve_limits: Resolver = import_fetcher,
-    grok_cache: dict[str, Any] | None = None,
-    grok_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
-    grok_fetch: GrokFetch | None = None,
-    kimi_cache: dict[str, Any] | None = None,
-    kimi_interval_seconds: float = KIMI_DEFAULT_INTERVAL_SECONDS,
-    kimi_fetch: KimiFetch | None = None,
     external_caches: dict[str, Any] | None = None,
-    external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
+    external_interval_seconds: float = EXTERNAL_DEFAULT_INTERVAL_SECONDS,
     external_fetch: ExternalFetch | None = None,
     gemini_cache: dict[str, Any] | None = None,
     cron_cache: dict[str, Any] | None = None,
@@ -970,26 +889,7 @@ def collect_all(
     )
     rules, rules_source, rules_incidents = read_rules(env, now=now)
     memory, memory_source, memory_incidents = read_memory(env, now=now)
-    capacity, limits_source, probe = collect_limits(env, now=now, resolve=resolve_limits)
-    if probe.status == "supported":
-        grok, grok_source = collect_grok(
-            grok_cache if grok_cache is not None else {},
-            now=now,
-            interval_seconds=grok_interval_seconds,
-            fetch=grok_fetch or grok_fetch_item,
-        )
-        kimi, kimi_source = collect_kimi(
-            kimi_cache if kimi_cache is not None else {},
-            now=now,
-            interval_seconds=kimi_interval_seconds,
-            fetch=kimi_fetch or kimi_fetch_item,
-        )
-    else:
-        grok, grok_source = grok_off_for(capacity), _quota_off_source("grok", limits_source)
-        kimi, kimi_source = (
-            quota_off_for(KIMI_LABEL, capacity),
-            _quota_off_source("kimi", limits_source),
-        )
+    capacity, limits_source, _probe = collect_limits(env, now=now, resolve=resolve_limits)
     if env.limits_enabled:
         gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
     else:
@@ -1004,11 +904,10 @@ def collect_all(
         traffic=traffic,
         rules=rules,
         memory=memory,
-        capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
+        capacity=merge_external(merge_quotas(capacity, gemini), metrics),
         sources=(
             gateway_source,
             limits_source,
-            *_without_replaced((grok_source, kimi_source), metrics),
             *(part[1] for part in externals),
             gemini_source,
             drift_source,
@@ -1075,16 +974,6 @@ def _externals_sync(
     ]
 
 
-def _quota_off_source(key: str, limits_source: SourceObservation) -> SourceObservation:
-    return SourceObservation(
-        f"{key}_quota", "official", limits_source.state, detail=limits_source.detail
-    )
-
-
-def _grok_off_source(limits_source: SourceObservation) -> SourceObservation:
-    return _quota_off_source("grok", limits_source)
-
-
 def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation) -> GeminiPart:
     """Limits off: the log is not read, the line and the source take the block's verdict."""
     source = SourceObservation(
@@ -1123,21 +1012,13 @@ async def collect_all_async(
     limits_timeout_seconds: float = LIMITS_TIMEOUT_SECONDS,
     drift_timeout_seconds: float = DRIFT_TIMEOUT_SECONDS,
     flights: Flights | None = None,
-    grok_cache: dict[str, Any] | None = None,
-    grok_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
-    grok_timeout_seconds: float = GROK_TICK_TIMEOUT_SECONDS,
-    grok_fetch: GrokFetch | None = None,
-    kimi_cache: dict[str, Any] | None = None,
-    kimi_interval_seconds: float = KIMI_DEFAULT_INTERVAL_SECONDS,
-    kimi_timeout_seconds: float = KIMI_TICK_TIMEOUT_SECONDS,
-    kimi_fetch: KimiFetch | None = None,
     version_cache: dict[str, Any] | None = None,
     version_interval_seconds: float = VERSION_INTERVAL_SECONDS,
     version_timeout_seconds: float = VERSION_TICK_TIMEOUT_SECONDS,
     version_fetch: VersionFetch | None = None,
     version_local: LocalVersion | None = None,
     external_caches: dict[str, Any] | None = None,
-    external_interval_seconds: float = GROK_DEFAULT_INTERVAL_SECONDS,
+    external_interval_seconds: float = EXTERNAL_DEFAULT_INTERVAL_SECONDS,
     external_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     external_fetch: ExternalFetch | None = None,
     period_seconds: float | None = None,
@@ -1154,12 +1035,11 @@ async def collect_all_async(
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
     ``flights`` shared across ticks keeps one worker per source: a source abandoned by its
-    deadline is not started again until it returns. ``grok_cache`` and ``kimi_cache`` are the
-    caller's durable dicts (the plugin keeps them in its record, one per provider): a worker
-    abandoned by its deadline still writes its attempt there when it returns, so the next tick
-    serves it instead of asking again. ``version_cache`` is the same for the upstream release
-    check (at most one per 15 minutes); without it (no durable record) the version line is not
-    collected at all.
+    deadline is not started again until it returns. ``version_cache`` is the caller's durable
+    dict for the upstream release check (at most one per 15 minutes; the plugin keeps it in its
+    record): a worker abandoned by its deadline still writes its attempt there when it returns,
+    so the next tick serves it instead of asking again; without it (no durable record) the
+    version line is not collected at all.
     ``external_caches`` is the durable dict of the external limit sources, one cache per URL
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
     last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
@@ -1259,40 +1139,6 @@ async def collect_all_async(
                 flights=flights,
             ),
         )
-        grok_incidents: tuple[Incident, ...] = ()
-        kimi_incidents: tuple[Incident, ...] = ()
-        if env.limits_enabled and limits_source.state != "unsupported":
-            (
-                (grok, grok_source, grok_incidents),
-                (kimi, kimi_source, kimi_incidents),
-            ) = await asyncio.gather(
-                _quota_guarded(
-                    "grok",
-                    GROK_LABEL,
-                    grok_cache if grok_cache is not None else {},
-                    now=now,
-                    interval_seconds=grok_interval_seconds,
-                    timeout_seconds=grok_timeout_seconds,
-                    flights=flights,
-                    fetch=grok_fetch or grok_fetch_item,
-                ),
-                _quota_guarded(
-                    "kimi",
-                    KIMI_LABEL,
-                    kimi_cache if kimi_cache is not None else {},
-                    now=now,
-                    interval_seconds=kimi_interval_seconds,
-                    timeout_seconds=kimi_timeout_seconds,
-                    flights=flights,
-                    fetch=kimi_fetch or kimi_fetch_item,
-                ),
-            )
-        else:
-            grok, grok_source = grok_off_for(capacity), _quota_off_source("grok", limits_source)
-            kimi, kimi_source = (
-                quota_off_for(KIMI_LABEL, capacity),
-                _quota_off_source("kimi", limits_source),
-            )
         version, version_incidents = await version_task
         externals = await externals_task
         runs, runs_source = await runs_task
@@ -1315,11 +1161,10 @@ async def collect_all_async(
             traffic=traffic,
             rules=rules,
             memory=memory,
-            capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
+            capacity=merge_external(merge_quotas(capacity, gemini), metrics),
             sources=(
                 gateway_source,
                 limits_source,
-                *_without_replaced((grok_source, kimi_source), metrics),
                 *(part[1] for part in externals),
                 gemini_source,
                 drift_source,
@@ -1335,8 +1180,6 @@ async def collect_all_async(
                 *drift_incidents,
                 *backup_incidents,
                 *limits_incidents,
-                *grok_incidents,
-                *kimi_incidents,
                 *gemini_incidents,
                 *cron_incidents,
                 *traffic_incidents,
@@ -1587,50 +1430,6 @@ async def _limits_guarded(
 
 
 QuotaPart = tuple[QuotaMetric, SourceObservation, tuple[Incident, ...]]
-
-
-async def _quota_guarded(
-    key: str,
-    label: str,
-    cache: dict[str, Any],
-    *,
-    now: datetime,
-    interval_seconds: float,
-    timeout_seconds: float,
-    flights: Flights,
-    fetch: QuotaFetch,
-) -> QuotaPart:
-    """``collect_quota`` in a worker with a deadline; a deadline or a busy worker is one tick of
-    "no data" with the reason, the cache untouched until the worker returns."""
-    try:
-        metric, source = await flights.run(
-            key,
-            collect_quota,
-            key,
-            label,
-            cache,
-            now=now,
-            interval_seconds=interval_seconds,
-            fetch=fetch,
-            timeout_seconds=timeout_seconds,
-        )
-        return metric, source, ()
-    except TimeoutError:
-        return (*_quota_unavailable(key, label, f"no answer within {timeout_seconds:g} s"), ())
-    except StillRunning:
-        return (*_quota_unavailable(key, label, "previous request has not returned"), ())
-    except _UNGUARDED:
-        raise
-    except BaseException as exc:
-        source, incident = _collector_crashed(f"{key}_quota", "official", exc)
-        return QuotaMetric(label, "unavailable", detail=source.detail), source, (incident,)
-
-
-def _quota_unavailable(key: str, label: str, detail: str) -> tuple[QuotaMetric, SourceObservation]:
-    return (
-        QuotaMetric(label, "unavailable", detail=detail),
-        SourceObservation(f"{key}_quota", "official", "unavailable", detail=detail),
-    )
 
 
 async def _externals_guarded(
