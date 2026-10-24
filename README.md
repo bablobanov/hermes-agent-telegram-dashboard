@@ -375,8 +375,8 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
 
    ```yaml
    cron_notes:                     # in plugins.entries.telegram_dashboard_probe.settings
-     "05d7506c24ff": Checks the dashboard updates
-     "42d769b28188": Sends Threads topics to SMM
+     "a1b2c3d4e5f6": Checks the nightly backup
+     "0f1e2d3c4b5a": Sends the morning digest
    ```
 
    Neither drift source configured means `drift (not on this installation)` on the ❔ line,
