@@ -182,7 +182,7 @@ What "verified" means here, honestly:
 
 | Hermes | How |
 |---|---|
-| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 |
+| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11; the pilot runs 1.0.0, and the 1.1.0 `get_secret` path for a source's key has not run on a gateway yet (read-by-code only) |
 | 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
 source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
@@ -905,10 +905,11 @@ across the row (`no data`), and a model's own limit in a row of its own with its
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
-updating is the freshness banner's business, not the countdown's. A number read on its own
-cadence must not borrow the screen's stamp: the details line `Data 12:21 · Claude 12:16` names
-every number read at another minute than the screen, and a cached number is never shown older
-than its refresh interval (`quota_cache.py`), after two intervals the ❔ line says so
+updating is the freshness banner's business, not the countdown's. An external source's number
+is read on its own cadence and must not borrow the screen's stamp: the details line
+`Data 12:21 · Claude 12:16` names every number read at another minute than the screen, and a
+source's cached number is never shown older than its refresh interval (`quota_cache.py`), after
+two intervals the ❔ line says so
 (`Claude limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
 block must never do.
 
@@ -1160,9 +1161,10 @@ ruff check . && ruff format --check . && mypy --strict -p telegram_dashboard
 
 `pyproject.toml` points pytest and mypy at the package inside the plugin folder. Every run prints
 `telegram_dashboard.__file__` in the header: a green run that does not say which tree it tested
-proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the GitHub and external-source attempts are stubbed by an autouse
+proves nothing. Run it without `-q`: pytest hides the header in quiet mode. No test reaches a provider: the GitHub attempt is stubbed by an autouse
 fixture in `tests/conftest.py` unless a test passes its own fake, and the running Hermes version
-there is a fixed one; a plugin loaded by the test
+there is a fixed one; external sources are loopback by contract, and each test passes its own
+fake `get` or `external_fetch`, or runs a local server; a plugin loaded by the test
 helpers takes that same patched package, not a second copy of it under the plugin's name
 (`tests/probe_fakes.py`, `load_plugin`). `tests/test_probe_plugin.py` skips unless the Hermes engine is
 importable; to run it, use an interpreter with the engine and `python-telegram-bot` installed
