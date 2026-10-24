@@ -22,7 +22,7 @@ from telegram_dashboard.collect import (
     parse_limits_payload,
 )
 from telegram_dashboard.compat import Environment
-from telegram_dashboard.schema import QuotaMetric, Refusal
+from telegram_dashboard.schema import CapacitySummary, QuotaMetric, Refusal
 
 NOW = datetime(2026, 9, 9, 21, 0, tzinfo=UTC)
 OLD = "2026-09-08T09:00:00+00:00"  # a quiet gateway last wrote its status a day ago
@@ -256,6 +256,22 @@ def test_limits_payload_keeps_official_local_and_unsupported_apart() -> None:
     assert kinds == {"Claude": "official", "Codex": "unavailable"}
     assert capacity.quotas[0].windows[0].used_percent == 37.5
     assert source.state == "fresh" and probe.status == "supported"
+
+
+def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> None:
+    payload = {
+        "ok": True,
+        "providers": [
+            {"provider": "claude", "status": "unavailable", "reason": "none", "windows": []},
+            {"provider": "codex", "status": "unavailable", "reason": "AuthError", "windows": []},
+        ],
+    }
+
+    capacity, _, _ = parse_limits_payload(payload, now=NOW)
+
+    assert capacity.quotas[0].detail == "no account token"
+    assert capacity.quotas[1].detail == "AuthError"
+    assert [q.provider for q in capacity.quotas] == ["Claude", "Codex"]
 
 
 def test_limits_import_failure_is_unsupported_not_zero() -> None:
@@ -643,6 +659,28 @@ def test_a_new_provider_goes_before_gemini() -> None:
     merged = merge_external(merge_quotas(_facade_capacity(), _GEMINI_LINE), [metric])
 
     assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Mistral", "Gemini"]
+
+
+def test_lines_merged_in_sit_after_the_facade_providers_and_before_gemini() -> None:
+    """``merge_quotas`` keeps the facade's lines first and Gemini last; the lines it is given go
+    between, in the order given."""
+    from telegram_dashboard.collect import merge_quotas
+
+    capacity = CapacitySummary(
+        (
+            QuotaMetric("Claude", "unavailable", detail="x"),
+            QuotaMetric("Codex", "unavailable", detail="x"),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
+        )
+    )
+
+    merged = merge_quotas(
+        capacity,
+        QuotaMetric("Mistral", "unavailable", detail="HTTP 503"),
+        QuotaMetric("Qwen", "unavailable", detail="HTTP 503"),
+    )
+
+    assert [q.provider for q in merged.quotas] == ["Claude", "Codex", "Mistral", "Qwen", "Gemini"]
 
 
 def test_login_events_come_from_the_contract_and_survive_a_failed_tick() -> None:
