@@ -118,6 +118,13 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
     assert "error_kind" in cron["contract"] or "kind of the error" in cron["contract"]
     assert verification_for(matrix, "cron", "0.21.3").startswith("verified on 0.21.3")
     assert "main" in cron["verified"] and "6ec05205a9" in cron["verified"]["main"]
+    # 1.0.0: how often a job runs comes from the stored schedule, the words from its display.
+    reads = " ".join(cron["reads"])
+    assert any(line.startswith("schedule.kind") for line in cron["reads"])
+    for field in ("schedule.expr", "schedule.minutes", "schedule.run_at", "schedule_display"):
+        assert field in reads, field
+    assert verification_for(matrix, "cron", "0.22.2").startswith("verified on 0.22.2")
+    assert ":780" in cron["verified"]["0.22.2"] and ":1908-1909" in cron["verified"]["0.22.2"]
 
     assert "mode=ro" in runs["probe"] and "query_only" in runs["contract"]
     assert "error" in runs["never_reads"] and "state.db" in runs["never_reads"]

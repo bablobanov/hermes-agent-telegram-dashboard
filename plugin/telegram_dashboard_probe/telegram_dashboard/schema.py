@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -87,6 +88,7 @@ class CronFailure:
     """One job that is not delivering what it should, as the engine's own records say."""
 
     job_id: str
+    # The job's label: the owner's note for it (``cron_notes``), else its name.
     name: str
     kind: CronFailureKind
     # The failed run's end (``last_run_at``), or the overdue ``next_run_at``.
@@ -97,6 +99,54 @@ class CronFailure:
     reason: str | None = None
     # A later ok run replaced it in ``jobs.json``; held in the details for a while.
     recovered_at: str | None = None
+
+
+# Where a job stands in the cron section (``cron_jobs.job_rows``), as the counts on the line
+# count it: ``active`` the ticker may fire it, ``done`` completed, ``paused`` every other one.
+CronJobState = Literal["active", "paused", "done"]
+
+
+@dataclass(frozen=True, slots=True)
+class Frequency:
+    """How often a job runs, from its stored schedule (``cron_frequency.frequency_of``): the
+    words the cron section groups the jobs by (``Every 30 min``, ``Twice a day``, ``Weekly``)
+    and the minutes between two runs it orders the groups by. ``Once`` is 0, first; ``Other``,
+    a schedule the plugin does not name, is infinity, last."""
+
+    label: str = "Other"
+    period: float = math.inf
+
+
+@dataclass(frozen=True, slots=True)
+class CronJob:
+    """One job as the cron section lists it: the name and the owner's label for it, the
+    schedule in the engine's own words and how often it runs, the next and the last run, what
+    the line counts against it now. Never the prompt, the script, the delivery target, the
+    skills or the model."""
+
+    job_id: str
+    name: str
+    state: CronJobState
+    # ``schedule_display`` (``0 9 * * *``, ``every 30m``), sanitized and cut.
+    schedule: str | None = None
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    # The kind of its current failure (``CronSummary.failing``); ``None`` is nothing wrong now.
+    failure: CronFailureKind | None = None
+    # Paused with its ``next_run_at`` already behind: a mark of its own, never an alarm and never
+    # a failure (decision of 22.10).
+    paused_past_due: bool = False
+    # How often it runs, read from ``kind`` and ``expr``/``minutes`` of the stored schedule;
+    # ``schedule`` above stays the engine's own words.
+    frequency: Frequency = Frequency()
+    # The owner's label for it (``cron_notes``), sanitized and cut like the name; ``None``
+    # without one.
+    note: str | None = None
+
+    @property
+    def label(self) -> str:
+        """What the cron section names the job by: the owner's note for it, else its name."""
+        return self.note or self.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +166,9 @@ class CronSummary:
     # The kind of the ticker's last error in a word, never its text.
     ticker_error: str | None = None
     detail: str | None = None
+    # Every job for the cron section of the rich screen, in the order it lists them; the text
+    # screen does not show them.
+    jobs: tuple[CronJob, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

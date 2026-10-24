@@ -6,10 +6,12 @@ never reach the screen. The chat ids are made up.
 """
 
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cron_fixtures import FRAGMENTS, PLANTED
 
 from telegram_dashboard.compat import Environment
 from telegram_dashboard.cron_jobs import (
@@ -23,14 +25,30 @@ from telegram_dashboard.cron_jobs import (
     job_of,
     read_ticker,
 )
+from telegram_dashboard.schema import Frequency
 
 NOW = datetime(2026, 9, 30, 12, 30, tzinfo=UTC)
+# The engine's stored schedule, one per kind (``cron/jobs.py`` at v0.22.2: :780, :783-784,
+# :829-833), each with the display the engine writes beside it as ``schedule_display``.
+CRON = {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}
+INTERVAL = {"kind": "interval", "minutes": 30, "display": "every 30m"}
+ONCE = {
+    "kind": "once",
+    "run_at": "2026-10-01T10:00:00+00:00",
+    "display": "once at 2026-10-01 10:00",
+}
+
+
+def _scheduled(schedule: dict) -> dict:
+    """The two schedule fields of a record, as the engine writes them together."""
+    return {"schedule": schedule, "schedule_display": schedule["display"]}
 
 
 def _job(**over):
     base = {
         "id": "b1",
         "name": "daily-digest",
+        **_scheduled(CRON),
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -48,7 +66,9 @@ def _job(**over):
     return base
 
 
-def _home(tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None) -> Environment:
+def _home(
+    tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None, notes=()
+) -> Environment:
     cron = tmp_path / "cron"
     cron.mkdir()
     (cron / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
@@ -57,7 +77,7 @@ def _home(tmp_path: Path, jobs, *, heartbeat=None, success=None, error=None) -> 
             (cron / name).write_text(value, encoding="utf-8")
     if error is not None:
         (cron / "ticker_last_error").write_text(error, encoding="utf-8")
-    return Environment(hermes_home=tmp_path)
+    return Environment(hermes_home=tmp_path, cron_notes=notes)
 
 
 def _epoch(moment: datetime) -> str:
@@ -86,6 +106,62 @@ def test_job_of_reads_the_runtime_fields_and_nothing_private() -> None:
 @pytest.mark.parametrize("raw", [None, [], {"name": "no id"}, {"id": 5}])
 def test_job_of_refuses_a_record_that_is_not_a_job(raw) -> None:
     assert job_of(raw) is None
+
+
+@pytest.mark.parametrize(
+    "over, schedule",
+    [
+        ({"schedule_display": "0 9 * * 1-5"}, "0 9 * * 1-5"),
+        ({"schedule_display": " every 30m "}, "every 30m"),
+        # Without ``schedule_display`` the engine's own fallbacks, in its order (v0.22.2).
+        (
+            {
+                "schedule_display": None,
+                "schedule": {"kind": "cron", "expr": "*/30 * * * *", "display": ""},
+            },
+            "*/30 * * * *",
+        ),
+        ({"schedule_display": None, "schedule": INTERVAL}, "every 30m"),
+        ({"schedule_display": None, "schedule": "every 2h"}, "every 2h"),
+        ({"schedule_display": "", "schedule": None}, None),
+        ({"schedule_display": None, "schedule": {"kind": "cron"}}, None),
+        # The engine's one-shot form is 24 characters: whole.
+        ({"schedule_display": "once at 2026-10-22 13:00"}, "once at 2026-10-22 13:00"),
+        (
+            {"schedule_display": "once at 2026-10-22 13:00 and then some"},
+            "once at 2026-10-22 13:0…",
+        ),
+        ({"schedule_display": "deliver telegram:-1001234567890"}, "deliver [target]"),
+    ],
+)
+def test_job_of_reads_the_schedule_in_the_engine_s_words(over, schedule) -> None:
+    assert job_of(_job(**over)).schedule == schedule
+
+
+@pytest.mark.parametrize(
+    ("over", "label", "period"),
+    [
+        (_scheduled(CRON), "Daily", 1440),
+        (_scheduled(INTERVAL), "Every 30 min", 30),
+        (_scheduled(ONCE), "Once", 0),
+        # The owner's job: the display says one thing, the expression another; the expression.
+        (
+            {
+                "schedule": {"kind": "cron", "expr": "0 6 * * 1", "display": "every monday 6am"},
+                "schedule_display": "every monday 6am",
+            },
+            "Weekly",
+            10080,
+        ),
+        ({"schedule": None, "schedule_display": "0 9 * * *"}, "Other", math.inf),
+        ({"schedule": "0 9 * * *"}, "Other", math.inf),
+    ],
+)
+def test_job_of_reads_how_often_the_job_runs_from_the_stored_schedule(over, label, period) -> None:
+    job = job_of(_job(**over))
+
+    assert job is not None
+    assert job.frequency == Frequency(label, period)
 
 
 def test_an_ok_job_is_no_failure() -> None:
@@ -161,20 +237,16 @@ def test_error_kind_follows_the_engine_s_order(text, word) -> None:
     assert error_kind(text) == word
 
 
-PLANTED = (
-    "sk-live-ABCDEFGHIJKLMNOPQRSTUV at /home/someone/.hermes/secret.json chat -1001234567890 "
-    "telegram:-1001234567890:17 user 987654321"
-)
-FRAGMENTS = ("sk-live", "ABCDEFGHIJ", "/home/someone", "1001234567890", "987654321")
-
-
 def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
     tmp_path: Path,
 ) -> None:
     """Edit (b) of 01.10: the engine's error texts are reduced to a kind in a word; nothing
     planted reaches the text, the record, the block or the events, in any form the message
-    takes. The sanitizer's own masks (task 0) are the second line, not the first."""
+    takes. The sanitizer's own masks (task 0) are the second line, not the first. 1.0.0: nor
+    from the owner's label for a job (``cron_notes``), which goes through the sanitizer like a
+    name, nor from the stored schedule's expression."""
     from telegram_dashboard.render import render_dashboard, to_telegram_html, to_telegram_plain
+    from telegram_dashboard.rich import to_telegram_rich
     from telegram_dashboard.schema import DashboardSnapshot
 
     jobs = [
@@ -190,8 +262,16 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
             name="mail",
             last_status="delivery_failed",
             last_delivery_error=f"Chat not found: {PLANTED}",
+            schedule={"kind": "cron", "expr": PLANTED},
+            schedule_display=None,
         ),
-        _job(id="b3", name=f"watch {PLANTED}", last_status="blocked_config", last_error=PLANTED),
+        _job(
+            id="b3",
+            name=f"watch {PLANTED}",
+            last_status="blocked_config",
+            last_error=PLANTED,
+            schedule_display=PLANTED,
+        ),
     ]
     env = _home(
         tmp_path,
@@ -199,6 +279,7 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         heartbeat=_epoch(NOW),
         success=_epoch(NOW),
         error=f"{_epoch(NOW)}\nPermissionError: {PLANTED}\n",
+        notes=(("b1", f"Digest {PLANTED}"),),
     )
     cache: dict = {}
 
@@ -207,11 +288,14 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         overall="warning", observed_at=NOW.isoformat(), cron=summary, incidents=incidents
     )
     text = render_dashboard(snapshot, now=NOW)
+    rich = to_telegram_rich(snapshot, now=NOW)
+    assert rich is not None and '<th colspan="2">Other</th>' in rich
 
     forms = (
         text,
         to_telegram_plain(text),
         to_telegram_html(text),
+        rich,
         json.dumps(cache),
         repr(summary),
         repr(incidents),
@@ -220,7 +304,58 @@ def test_planted_secret_path_and_chat_id_never_leave_the_engine_s_error_texts(
         for fragment in FRAGMENTS:
             assert fragment not in rendered, fragment
     assert "(rate limit)" in text and "(chat unavailable)" in text and "(config)" in text
+    # The label and the expression were read, and reached the record and the list sanitized.
+    assert cache["held"]["b1"]["name"].startswith("Digest [secret]")
+    assert summary.jobs[0].label.startswith("Digest [secret]")
+    assert next(job for job in summary.jobs if job.job_id == "b2").schedule.startswith("[secret]")
     assert "> Cron ticker error: permission denied" in text.splitlines()
+
+
+def test_a_job_is_labelled_by_the_owner_s_note_else_by_its_name(tmp_path: Path) -> None:
+    """1.0.0: ``cron_notes`` gives a job the owner's label; a job without a note keeps its name,
+    a note for an id no job has changes nothing. The failure carries the label, so the details
+    and the events name the job by it."""
+    jobs = [
+        _job(id="a1", name="threads-smm", last_status="error", last_error="x"),
+        _job(id="a2", name="digest"),
+    ]
+    notes = (("a1", "Sends Threads topics"), ("gone", "No such job"))
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=notes)
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    rows = {job.job_id: job for job in summary.jobs}
+    assert (rows["a1"].name, rows["a1"].note, rows["a1"].label) == (
+        "threads-smm",
+        "Sends Threads topics",
+        "Sends Threads topics",
+    )
+    assert (rows["a2"].name, rows["a2"].note, rows["a2"].label) == ("digest", None, "digest")
+    assert [(f.job_id, f.name) for f in summary.failing] == [("a1", "Sends Threads topics")]
+    assert len(summary.jobs) == 2
+
+
+def test_a_note_that_sanitizes_to_nothing_leaves_the_name() -> None:
+    job = job_of(_job(name="digest"), {"b1": "\x1b[31m\x07"})
+
+    assert job is not None and (job.note, job.label) == (None, "digest")
+
+
+def test_the_fallback_tick_reads_cron_notes_as_the_plugin_does(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The cron tick's config carries ``cron_notes`` too: the same pairs, the same skips, one
+    warning for a value that is not a mapping."""
+    from telegram_dashboard.__main__ import _environment
+
+    home = {"hermes_home": str(tmp_path)}
+    notes = {"a1": " Morning brief ", "a2": "", "": "x", "a3": 5, 3: "x"}
+
+    assert _environment({**home, "cron_notes": notes}).cron_notes == (("a1", "Morning brief"),)
+    assert _environment(home).cron_notes == ()
+    with caplog.at_level("WARNING", logger="telegram_dashboard"):
+        assert _environment({**home, "cron_notes": ["a1", "label"]}).cron_notes == ()
+    assert caplog.text.count("cron_notes must be a mapping") == 1
 
 
 def test_an_overdue_job_is_a_failure_only_while_the_ticker_lives() -> None:
@@ -367,6 +502,116 @@ def test_collect_cron_counts_active_and_paused_and_is_fresh(tmp_path: Path) -> N
     assert incidents == ()
 
 
+def test_the_jobs_are_listed_failing_first_then_active_paused_and_done(tmp_path: Path) -> None:
+    """The cron section of the rich screen: what fails now first, the active by their next run,
+    the paused, the completed with the latest run first; every name and schedule as the screen
+    may show them, nothing else of the record."""
+    jobs = [
+        _job(
+            id="d1",
+            name="old-once",
+            state="completed",
+            enabled=False,
+            last_run_at=(NOW - timedelta(days=3)).isoformat(),
+            **_scheduled(ONCE),
+        ),
+        _job(
+            id="a2",
+            name="later",
+            next_run_at=(NOW + timedelta(hours=2)).isoformat(),
+            **_scheduled({"kind": "cron", "expr": "0 15 * * 1", "display": "0 15 * * 1"}),
+        ),
+        _job(
+            id="p1",
+            name="paused",
+            enabled=False,
+            state="paused",
+            next_run_at=None,
+            **_scheduled(INTERVAL),
+        ),
+        _job(id="f1", name="broken", last_status="error", last_error="timed out"),
+        _job(id="a1", name="sooner", next_run_at=(NOW + timedelta(minutes=5)).isoformat()),
+        _job(
+            id="d2",
+            name="new-once",
+            state="completed",
+            enabled=False,
+            last_run_at=(NOW - timedelta(hours=1)).isoformat(),
+        ),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    assert [job.job_id for job in summary.jobs] == ["f1", "a1", "a2", "p1", "d2", "d1"]
+    assert [job.state for job in summary.jobs] == [
+        "active",
+        "active",
+        "active",
+        "paused",
+        "done",
+        "done",
+    ]
+    assert [job.failure for job in summary.jobs] == ["run", None, None, None, None, None]
+    assert summary.jobs[2].schedule == "0 15 * * 1"
+    # How often each runs, for the table to group by; the order above does not follow it.
+    assert [job.frequency.label for job in summary.jobs] == [
+        "Daily",
+        "Daily",
+        "Weekly",
+        "Every 30 min",
+        "Daily",
+        "Once",
+    ]
+    assert not hasattr(summary.jobs[0], "prompt") and not hasattr(summary.jobs[0], "deliver")
+
+
+def test_a_paused_job_due_in_the_past_is_marked_and_the_status_stays_green(
+    tmp_path: Path,
+) -> None:
+    """Decision of 22.10: a paused job whose next run is behind (two of them on the live
+    installation, 17.10) is a mark in the list, not a failure: the ticker does not fire it."""
+    jobs = [
+        _job(id="a1"),
+        _job(
+            id="p1",
+            name="threads",
+            enabled=False,
+            state="paused",
+            next_run_at=(NOW - timedelta(days=6)).isoformat(),
+        ),
+        _job(
+            id="p2",
+            name="ahead",
+            enabled=False,
+            state="paused",
+            next_run_at=(NOW + timedelta(days=1)).isoformat(),
+        ),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), success=_epoch(NOW))
+
+    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+
+    assert (summary.state, summary.failing, incidents) == ("ok", (), ())
+    marks = {job.job_id: job.paused_past_due for job in summary.jobs}
+    assert marks == {"a1": False, "p1": True, "p2": False}
+    assert [job.job_id for job in summary.jobs] == ["a1", "p1", "p2"]
+
+
+def test_a_stalled_ticker_still_lists_the_jobs(tmp_path: Path) -> None:
+    env = _home(
+        tmp_path,
+        [_job()],
+        heartbeat=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 60)),
+        success=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 60)),
+    )
+
+    summary, _source, _incidents = collect_cron(env, {}, now=NOW)
+
+    assert summary.state == "stalled"
+    assert [(job.job_id, job.failure) for job in summary.jobs] == [("b1", None)]
+
+
 def test_a_stale_heartbeat_is_stalled_and_critical(tmp_path: Path) -> None:
     env = _home(
         tmp_path, [_job()], heartbeat=_epoch(NOW - timedelta(seconds=TICKER_STALE_SECONDS + 1))
@@ -421,53 +666,57 @@ def test_failures_make_the_state_failing_and_at_most_three_events(tmp_path: Path
     assert all(i.severity == "warning" for i in incidents)
 
 
-def test_a_long_name_is_cut_so_the_event_fits_the_phone(tmp_path: Path) -> None:
-    """Decision of 01.10: eleven characters and an ellipsis in the event, the full name (up to
-    24) in the details."""
-    job = _job(
-        name="dashboard-probe-check-and-more",
-        last_status="delivery_failed",
-        last_delivery_error="x",
-    )
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+def test_an_event_names_the_job_by_its_full_label(tmp_path: Path) -> None:
+    """1.0.0 (the owner, 23.10): the event names the job by its label in full, the note when
+    there is one, else the name, Cyrillic or not; the rich screen wraps. The incident id stays
+    the job's id."""
+    jobs = [
+        _job(id="a1", name="threads-smm", last_status="error", last_error="x"),
+        _job(
+            id="a2",
+            name="Еженедельный отчёт по проектам",
+            last_status="delivery_failed",
+            last_delivery_error="x",
+        ),
+        _job(id="a3", name="dashboard-probe-check-and-more", state="error", last_status=None),
+    ]
+    notes = (("a1", "Sends Threads topics to SMM"),)
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=notes)
 
     _summary, _source, incidents = collect_cron(env, {}, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: dashboard-p…"
-    assert len("- " + incidents[0].title) <= 32
+    assert [(i.incident_id, i.title) for i in incidents] == [
+        ("cron:run:a1", "Cron run failed: Sends Threads topics to SMM"),
+        ("cron:delivery:a2", "Cron undelivered: Еженедельный отчёт по проектам"),
+        ("cron:run:a3", "Cron run failed: dashboard-probe-check-and-more"),
+    ]
 
 
-def test_a_name_beyond_ascii_is_cut_shorter_in_the_event(tmp_path: Path) -> None:
-    """Decision of 01.10 (0.9.1), from Ilya's phone: Cyrillic glyphs are wider in a proportional
-    font, so an event of 32 characters with a Cyrillic name wrapped where the Latin one of the
-    same count fits. A name with any character beyond ASCII is cut at eight and an ellipsis;
-    the full name (up to 24) stays in the details, as before."""
-    job = _job(name="Еженедельный отчёт", last_status="delivery_failed", last_delivery_error="x")
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
+def test_a_long_name_and_a_long_label_are_cut_at_80(tmp_path: Path) -> None:
+    """Whole up to 80 characters, then 79 and an ellipsis, in the list, the failure, the record
+    and the event alike."""
+    name = "n" * 79 + "-overflow"
+    label = "Label " + "x" * 74 + " overflow"
+    jobs = [
+        _job(id="a1", name=name, last_status="error", last_error="x"),
+        _job(id="a2", name="digest", last_status="error", last_error="x"),
+        _job(id="a3", name="m" * 80),
+    ]
+    env = _home(tmp_path, jobs, heartbeat=_epoch(NOW), notes=(("a2", label),))
+    cache: dict = {}
 
-    summary, _source, incidents = collect_cron(env, {}, now=NOW)
+    summary, _source, incidents = collect_cron(env, cache, now=NOW)
 
-    assert incidents[0].title == "Cron undelivered: Еженедел…"
-    assert len("- " + incidents[0].title) <= 29
-    assert summary.failing[0].name == "Еженедельный отчёт"
-
-
-@pytest.mark.parametrize(
-    ("name", "shown"),
-    [
-        ("Дайджесты", "Дайджесты"),  # nine characters fit whole, as twelve Latin ones do
-        ("Дайджестик", "Дайджест…"),  # the tenth brings the cut: eight and an ellipsis
-    ],
-)
-def test_a_name_beyond_ascii_is_whole_up_to_nine_characters(
-    tmp_path: Path, name: str, shown: str
-) -> None:
-    job = _job(name=name, last_status="delivery_failed", last_delivery_error="x")
-    env = _home(tmp_path, [job], heartbeat=_epoch(NOW))
-
-    _summary, _source, incidents = collect_cron(env, {}, now=NOW)
-
-    assert incidents[0].title == f"Cron undelivered: {shown}"
+    rows = {job.job_id: job for job in summary.jobs}
+    assert rows["a1"].name == "n" * 79 + "…" and rows["a1"].label == rows["a1"].name
+    assert rows["a2"].label == label[:79] + "…" and rows["a2"].name == "digest"
+    assert rows["a3"].name == "m" * 80  # exactly 80: whole
+    assert [f.name for f in summary.failing] == ["n" * 79 + "…", label[:79] + "…"]
+    assert cache["held"]["a2"]["name"] == label[:79] + "…"
+    assert [i.title for i in incidents] == [
+        "Cron run failed: " + "n" * 79 + "…",
+        "Cron run failed: " + label[:79] + "…",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -582,7 +831,9 @@ def test_a_disabled_job_parked_in_error_is_no_failure_and_is_counted_paused(
     assert classify(job_of(off), now=NOW, ticker_alive=True) is None
     assert (summary.state, summary.active, summary.paused) == ("ok", 0, 1)
     assert summary.failing == () and incidents == ()
-    assert "Cron ✓ 0 jobs" in text.splitlines()
+    # Well: cron in the ✓ row (1.0.0), its counts in the details.
+    assert "✓\xa0Cron" in text.splitlines()
+    assert "> Cron 0 active · 1 paused · ticker 12:30" in text.splitlines()
 
 
 def test_a_completed_job_left_enabled_by_hand_is_no_failure(tmp_path: Path) -> None:
@@ -654,3 +905,17 @@ def test_a_failure_recorded_again_moves_to_the_end_of_the_record() -> None:
     hold(cache, (again,), {}, now=NOW)
 
     assert list(cache["held"]) == ["b", "a"]
+
+
+def test_the_fallback_tick_counts_the_skipped_cron_notes_without_their_text(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from telegram_dashboard.__main__ import _environment
+
+    notes = {"a1": "Morning brief", 424242: "Secret label", "a2": ""}
+    with caplog.at_level("WARNING", logger="telegram_dashboard"):
+        env = _environment({"hermes_home": str(tmp_path), "cron_notes": notes})
+
+    assert env.cron_notes == (("a1", "Morning brief"),)
+    assert caplog.text.count("cron_notes: 2 entries skipped") == 1
+    assert "Secret label" not in caplog.text and "424242" not in caplog.text

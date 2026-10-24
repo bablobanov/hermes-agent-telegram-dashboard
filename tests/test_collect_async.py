@@ -870,8 +870,8 @@ def test_a_run_history_unread_or_not_kept_lowers_the_coverage_never_the_status()
         main = render_dashboard(quiet, now=NOW).splitlines()
 
         assert (quiet.overall, loud.overall) == ("normal", "warning"), reason
-        assert main[0].startswith("🟢 Healthy"), main
-        assert f"Not observed: cron history ({reason})" in main
+        assert " 🟢 Healthy · updated " in main[0], main
+        assert f"❔ Not checked: cron history ({reason})" in main
 
     jobs_unread = SourceObservation(
         "cron", "official", "unavailable", detail="jobs.json unreadable"

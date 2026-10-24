@@ -167,7 +167,7 @@ def test_a_bot_token_variable_is_never_a_source_key(monkeypatch) -> None:
 # registers nothing but the platform handler and the one task, and the traffic probe reads
 # the adapter's counters without calling anything on it.
 
-CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_runs.py", "telegram_traffic.py")
+CRON_SOURCE_MODULES = ("cron_jobs.py", "cron_frequency.py", "cron_runs.py", "telegram_traffic.py")
 
 
 def test_the_runs_database_is_opened_read_only_and_query_only() -> None:
@@ -290,6 +290,17 @@ def test_the_plugin_folder_carries_no_invisible_character() -> None:
         assert not [c for c in text if ord(c) in invisible], path.name
 
 
+# Telegram's own rules for the entities it finds in a word (invariant 12).
+_ENTITIES = {
+    "link": re.compile(r"[\w-]+\.[^\W\d_]{2,}(?![\w])"),
+    "url": re.compile(r"://"),
+    "command": re.compile(r"(?<![\w/])/\w"),
+    "mention": re.compile(r"(?<!\w)@\w{3,}"),
+    "hashtag": re.compile(r"(?<!\w)#\w+"),
+    "cashtag": re.compile(r"(?<![\w$])\$[A-Z]{1,8}(?!\w)"),
+}
+
+
 def test_no_word_of_the_screen_becomes_a_link_a_command_a_mention_or_a_hashtag() -> None:
     """12. Telegram turns words into entities by itself, ``parse_mode=HTML`` or not: a word
     ending in a top-level domain into a link (``AGENTS.md`` opened a site in the window of
@@ -303,13 +314,6 @@ def test_no_word_of_the_screen_becomes_a_link_a_command_a_mention_or_a_hashtag()
     from telegram_dashboard.render import render_dashboard, to_telegram_html
     from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
-    entities = {
-        "link": re.compile(r"[\w-]+\.[^\W\d_]{2,}(?![\w])"),
-        "url": re.compile(r"://"),
-        "command": re.compile(r"(?<![\w/])/\w"),
-        "mention": re.compile(r"(?<!\w)@\w{3,}"),
-        "hashtag": re.compile(r"(?<!\w)#\w+"),
-    }
     screens = [
         render_dashboard(s.snapshot, now=s.now, delivery=s.delivery, period_seconds=PERIOD_SECONDS)
         for s in all_states()
@@ -325,7 +329,56 @@ def test_no_word_of_the_screen_becomes_a_link_a_command_a_mention_or_a_hashtag()
         shown = html_module.unescape(
             re.sub(r"<[^>]+>", " ", re.sub(r"<code>.*?</code>", " ", markup))
         )
-        for name, pattern in entities.items():
+        for name, pattern in _ENTITIES.items():
             assert not pattern.findall(shown), (number, name, pattern.findall(shown))
         checked += markup.count("<code>")
     assert checked >= 12  # AGENTS.md (25, 26), /new (26), state.db (8) and the nine forms above
+
+
+def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hashtag() -> None:
+    """12, the rich form (0.12.0): every demo state, and the forms of the test above as cron job
+    names and schedules in each of the three parts of the cron table (the active, the paused,
+    the done), hold no entity outside ``<code>``."""
+    import html as html_module
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from telegram_dashboard.rich import to_telegram_rich
+    from telegram_dashboard.schema import CronJob, CronSummary
+    from telegram_dashboard.states import PERIOD_SECONDS, all_states
+
+    states = all_states()
+    markups = [
+        to_telegram_rich(s.snapshot, now=s.now, delivery=s.delivery, period_seconds=PERIOD_SECONDS)
+        for s in states
+    ]
+    forms = ("send /new-session", "x ./new", "-/new", "/2fa", "see x.com/y", "2.ai")
+    forms += ("AGENTS.md/", "state.db.", "https://api.example.org/b", "@someone", "#tag x")
+    forms += ("report-#weekly", "backup-@ilya", "deploy/#ops", "watch $BTC", "$@user", "@#alerts")
+    last = states[-1]
+    past = (last.now - timedelta(days=2)).isoformat()
+    places = ("active", "paused", "done")
+    jobs = tuple(
+        CronJob(
+            f"t{i}",
+            form,
+            places[i % 3],
+            schedule=form,
+            next_run_at=past,
+            last_run_at=past,
+            paused_past_due=places[i % 3] == "paused",
+        )
+        for i, form in enumerate(forms)
+    )
+    cron = CronSummary("ok", active=4, paused=4, jobs=jobs)
+    markups.append(to_telegram_rich(replace(last.snapshot, cron=cron), now=last.now))
+    for number, markup in enumerate(markups, start=1):
+        assert markup is not None, number
+        shown = html_module.unescape(
+            re.sub(r"<[^>]+>", " ", re.sub(r"<code>.*?</code>", " ", markup))
+        )
+        for name, pattern in _ENTITIES.items():
+            assert not pattern.findall(shown), (number, name, pattern.findall(shown))
+    # Every name; the schedules of the active jobs, all in ``Other`` (1.0.0: the paused and the
+    # done rows show none, a named frequency's header says how often instead).
+    assert markups[-1].count("<code>") == len(forms) + 6

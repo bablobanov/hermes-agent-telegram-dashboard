@@ -1,17 +1,21 @@
 """Exception-first renderer for the pinned message: one phone screen.
 
-The first line is the status with the data stamp (the pinned-message header shows that line),
-then gateway, backup and drift as one short line each, up to five incidents, one line per
+The main screen in blocks (1.0.0, the look Ilya accepted in a live probe): the status with the
+time of the data (the pinned-message header shows that line), what needs attention (up to five
+incidents, then the line of everything that is not well), one row of what works (``✓ Gateway
+✓ Telegram ✓ Backup ✓ Drift ✓ Cron``), one line of what could not be checked, one line per
 provider under "🧠 Limits used" with the time to every reset (plus a line for every model's own
 limit), the Hermes version line after them,
-and everything that explains a line (reasons, per-source stamps, coverage) in a details block
-that Telegram shows collapsed.
+and everything that explains a line (ages, counts, reasons, per-source stamps, coverage) in a
+details block that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
 details. Work and automation blocks render only when the snapshot carries them; ``None`` means
 the block is not observed on this installation and nothing is invented for it.
 
-The text is transport-neutral: ``## `` marks a bold line, ``> `` marks a details line, and
-``to_telegram_html``/``to_telegram_plain`` turn it into what a transport accepts.
+The text is transport-neutral: ``## `` marks a bold line, ``#@`` the top line, ``> `` a details
+line, a blank line parts two blocks, and ``to_telegram_html``/``to_telegram_plain`` turn it into
+what a transport accepts. The rich form (``rich.py``) is built from the same parts
+(``render_parts``), the blocks and the details kept by key.
 """
 
 from __future__ import annotations
@@ -20,14 +24,17 @@ import html
 import math
 import re
 import unicodedata
+from collections.abc import Set
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
+from typing import Literal
 
 from . import __version__
 from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .context_files import platform_label
+from .cron_jobs import NAME_LIMIT as CRON_NAME_LIMIT
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
@@ -47,8 +54,10 @@ from .schema import (
     QuotaWindow,
     Refusal,
     RulesSummary,
+    SourceObservation,
     TrafficSummary,
     VersionSummary,
+    WorkSummary,
 )
 from .timeparse import (
     age_seconds,
@@ -67,6 +76,26 @@ _SAFE_LIMIT = 3900
 # phone (tried on 25.09), the plain glyph reads the same everywhere.
 OK_MARK = "✓"
 WARN_MARK = "⚠️"
+# The ✓ row (1.0.0): a no-break space holds the mark to its name, so the row wraps between two
+# items and never between a mark and the name it belongs to.
+_ROW_SPACE = "\u00a0"
+# What needs attention heads the main screen (1.0.0): the events, then the line of every item
+# the ✓ row leaves out, so a broken item never leaves the screen.
+ATTENTION_HEADING = "🛠 Needs attention"
+# What the screen could not check, in one line (1.0.0): the sources not observed or stale, the
+# profiles not seen, the sources that failed.
+UNCHECKED_MARK = "❔"
+# One coloured circle per screen, the top line's (1.0.0): the freshness banner's red or yellow
+# becomes the warning mark on the dashboard. ``freshness.message_banner`` keeps its words, which
+# are the watchdog's alert as well.
+_BANNER_CIRCLES = ("🔴", "🟡")
+# The top line (1.0.0): the status and the time of the data, bold. The neutral text carries it
+# as a line of its own kind, ``#@<unix> <label> · updated <stamp>``, no number when the time is
+# unreadable: the HTML and rich forms write the stamp as ``<tg-time format="r">``, which Telegram
+# Desktop shows as "18 minutes ago" and Android as the words inside, so the words stay the full
+# date with the zone; the plain form writes the words as they are, never in upper case.
+_TOP_PREFIX = "#@"
+_UPDATED = " · updated "
 # No bar (decision of 25.09): the shade glyphs came from a fallback font and read as noise, the
 # solid ones sat below the letters or wrapped the line, and a bar by fifths added nothing to the
 # number after it. Every percent on the screen is the spent share; the heading says so, and its
@@ -96,6 +125,8 @@ _SCOPE_LABELS = {"Opus week": "Opus", "Sonnet week": "Sonnet"}
 # incidents come from the collectors, not from this number.
 QUOTA_WARN_PERCENT = 90
 _LOUD_SEVERITIES = ("warning", "critical")
+# An expired login is an answer, not "no data": the line and the rich table say it in these words.
+_LOGIN_EXPIRED = "login expired"
 # One-minute resolution on the screen: a stamp within a minute of the data time is the same.
 _STAMP_SLACK_SECONDS = 60.0
 _DETAILS_PREFIX = "> "
@@ -106,6 +137,16 @@ _STATUS_LABELS = {
     "critical": "🔴 Critical",
     "unknown": "⚪ Unknown",
 }
+# The top line as the converters read it: only with one of the labels above, a number of digits
+# alone for the tag, the stamp escaped and coded like every other word.
+_TOP_LINE = re.compile(
+    re.escape(_TOP_PREFIX)
+    + r"(\d*) ("
+    + "|".join(re.escape(label) for label in _STATUS_LABELS.values())
+    + ")"
+    + re.escape(_UPDATED)
+    + "(.+)"
+)
 _PROCESS_LABELS = {
     "running": OK_MARK,
     "stopped": "stopped",
@@ -138,6 +179,24 @@ _SOURCE_LABELS = {
 }
 # The word on the Telegram line when the adapter is connected but the channel is deaf.
 _TRAFFIC_WORDS = {"no_sends": "no sends", "stalled": "stalled", "quiet": "quiet"}
+# What a thing of the ✓ row is (1.0.0): ``well``, in the row; ``broken``, its 0.12.0 line under
+# "Needs attention"; ``unchecked``, in neither, the "❔ Not checked" line says it: no source on
+# this installation, or no data from a source that line names.
+_Verdict = Literal["well", "broken", "unchecked"]
+# The mark a details line takes from its thing's verdict: none for one not checked.
+_VERDICT_MARKS: dict[_Verdict, str] = {
+    "well": f"{OK_MARK} ",
+    "broken": f"{WARN_MARK} ",
+    "unchecked": "",
+}
+# The source a thing of the row is read from, as ``snapshot.sources`` names it.
+_ITEM_SOURCES = {
+    "Gateway": "gateway_state",
+    "Telegram": "gateway_state",
+    "Backup": "backup",
+    "Drift": "drift",
+    "Cron": "cron",
+}
 _FAILURE_WORDS = {
     "run": "run failed",
     "delivery": "not delivered",
@@ -152,10 +211,23 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 @dataclass
-class _Details:
-    """What the collapsed block says, grouped: the screen itself, one group per source, reasons
-    for every "no data", the dashboard's own version last."""
+class _Group:
+    """One source's lines in the details, under the key the rich form titles it by. ``joined``:
+    the text form keeps it in the group before it, with no blank line between them."""
 
+    key: str
+    lines: list[str] = field(default_factory=list)
+    joined: bool = False
+
+
+@dataclass
+class _Details:
+    """What the collapsed block says, grouped (1.0.0, the order of the rich form's Details): one
+    group per source, the reasons for every "no data", then the screen's own stamps and the
+    dashboard's version last."""
+
+    # The time of the top line, to the minute; the first of the screen's own stamps (1.0.0).
+    screen: str | None = None
     confirmed: str | None = None
     data: str | None = None
     period: str | None = None
@@ -163,42 +235,124 @@ class _Details:
     # The dashboard's own version (decision of 01.10): the installed copy, told from the message;
     # the last line of the block, a blank line before it (Ilya, 01.10, 0.9.2).
     version: str | None = None
-    # A blank line between the sources (Ilya, 09.10, 0.11.0): Telegram; backup, drift and cron;
-    # the rules; the memory; the plans; the Hermes version. A source writes into the last group.
-    groups: list[list[str]] = field(default_factory=lambda: [[]])
+    # A blank line between the sources (Ilya, 09.10, 0.11.0), in the order of the rich form's
+    # Details (1.0.0): the plans, logins and refusals; the rules; the memory; Telegram; backup,
+    # drift and cron; the Hermes version. A source writes into the last group.
+    groups: list[_Group] = field(default_factory=lambda: [_Group("limits")])
     missing: list[str] = field(default_factory=list)
 
     @property
     def state(self) -> list[str]:
-        return self.groups[-1]
+        return self.groups[-1].lines
 
-    def section(self) -> None:
-        """Start the next source's group; a source that wrote nothing leaves no blank line."""
-        if self.groups[-1]:
-            self.groups.append([])
+    def section(self, key: str, *, joined: bool = False) -> None:
+        """Start the next source's group; a source that wrote nothing leaves no blank line and no
+        section: the next one takes its place, under its own key. A joined source joins the
+        group it follows in the text; one that takes an empty place joins only what that place
+        joined (cron after no backup and no drift starts a group, as it always did)."""
+        current = self.groups[-1]
+        if current.lines:
+            self.groups.append(_Group(key, joined=joined))
+        else:
+            current.key = key
+            current.joined = current.joined and joined
+
+    def text_groups(self) -> list[list[str]]:
+        """The groups as the text form separates them: a joined one stays in the one before."""
+        merged: list[list[str]] = []
+        for group in self.groups:
+            if group.joined and merged:
+                merged[-1] = [*merged[-1], *group.lines]
+            else:
+                merged.append(list(group.lines))
+        return merged
+
+    def stamps(self) -> list[str]:
+        """The screen's own lines: its time, the confirmation, the data stamps, the period and
+        the coverage."""
+        parts = (self.screen, self.confirmed, self.data, self.period, self.coverage)
+        return [part for part in parts if part]
 
     def lines(self) -> list[str]:
-        parts = (self.confirmed, self.data, self.period, self.coverage)
-        screen = [part for part in parts if part]
         groups = [
-            screen,
-            *self.groups,
+            *self.text_groups(),
             ["## No data", *self.missing] if self.missing else [],
+            self.stamps(),
             [self.version] if self.version else [],
         ]
-        body: list[str] = []
-        for group in groups:
-            if not group:
-                continue
-            if body:
-                body.append("")
-            body.extend(group)
+        body = _blank_separated(groups)
         if not body:
             return []
-        return [
-            "",
-            *(_DETAILS_PREFIX + line if line else ">" for line in ["## Details", *body]),
-        ]
+        return ["", *(_quoted(line) for line in ["## Details", *body])]
+
+    def closing(self) -> str:
+        """The end of the text a cut never takes (0.9.2, 1.0.0): the screen's stamps and the
+        version, each after a blank line, exactly as ``lines`` ends."""
+        tail = _blank_separated([self.stamps(), [self.version] if self.version else []])
+        return "".join(f"\n{_quoted(line)}" for line in ["", *tail]) if tail else ""
+
+
+def _blank_separated(groups: list[list[str]]) -> list[str]:
+    """The lines of the groups that have any, a blank line between two."""
+    out: list[str] = []
+    for group in groups:
+        if not group:
+            continue
+        if out:
+            out.append("")
+        out.extend(group)
+    return out
+
+
+def _quoted(line: str) -> str:
+    """A details line of the neutral text: ``> text``, a bare ``>`` for a blank one."""
+    return _DETAILS_PREFIX + line if line else _DETAILS_PREFIX.rstrip()
+
+
+@dataclass(frozen=True)
+class ScreenBlock:
+    """One block of the main screen (1.0.0): the text form parts two with a blank line, the rich
+    form makes each a section of its own; ``key`` names it (``limits`` is a table there)."""
+
+    key: str
+    lines: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ScreenParts:
+    """One screen before a transport form: the main screen's blocks in order (``## `` a bold
+    line, ``#@`` the top line) and the details by source. ``reference`` is the time the ages are
+    counted to."""
+
+    blocks: tuple[ScreenBlock, ...]
+    details: _Details
+    reference: datetime | None
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """The main screen as the text form writes it."""
+        return tuple(_blank_separated([list(block.lines) for block in self.blocks]))
+
+
+@dataclass(frozen=True)
+class _Item:
+    """A thing the ✓ row names (1.0.0): its name there, its 0.12.0 line and where it goes."""
+
+    name: str
+    line: str
+    verdict: _Verdict
+
+
+def _item(name: str, line: str, well: bool, state: str, unchecked: Set[str]) -> _Item:
+    """The thing with its verdict: ``well`` as its 0.12.0 line says; ``unchecked`` for no source
+    on this installation (``unsupported``) or no data (``unknown``) from a source the ❔ line
+    names, so the screen says it once and nothing vanishes; ``broken`` otherwise."""
+    verdict: _Verdict = "broken"
+    if well:
+        verdict = "well"
+    elif state == "unsupported" or (state == "unknown" and _ITEM_SOURCES[name] in unchecked):
+        verdict = "unchecked"
+    return _Item(name, line, verdict)
 
 
 def render_dashboard(
@@ -209,66 +363,15 @@ def render_dashboard(
     period_seconds: int | None = None,
     zone: tzinfo = UTC,
 ) -> str:
-    details = _Details()
-    reference = now if now is not None else parse_timestamp(snapshot.observed_at)
-    banner = _freshness(details, delivery, now, period_seconds, zone)
-    # The message-staleness banner is the first line: it must be visible above the status label.
-    lines = [banner] if banner else []
-    data_stamp = format_stamp(snapshot.observed_at, zone) or "time unknown"
-    lines.append(f"{_STATUS_LABELS[snapshot.overall]} · {data_stamp}")
-    if snapshot.gateway is not None:
-        lines.append(_gateway_line(snapshot.gateway, snapshot.traffic))
-    if snapshot.traffic is not None:
-        details.state.extend(_traffic_words(snapshot.traffic, zone))
-    details.section()
-    if snapshot.backup is not None:
-        lines.append(_backup_line(snapshot.backup, reference, zone, details))
-    if snapshot.drift is not None:
-        lines.append(_drift_line(snapshot.drift, zone, details))
-    if snapshot.cron is not None:
-        lines.append(_cron_line(snapshot.cron, reference, zone, details))
-    details.section()
-    if snapshot.rules is not None:
-        _rules_in_details(snapshot.rules, zone, details)
-    details.section()
-    if snapshot.memory is not None:
-        _memory_in_details(snapshot.memory, zone, details)
-    details.section()
-    lines.extend(_coverage_lines(snapshot, details))
-    details.version = f"Dashboard {__version__}"
-    if snapshot.incidents:
-        lines.extend(["", "## Needs attention"])
-        lines.extend(
-            f"- {sanitize_public_text(incident.title)}" for incident in snapshot.incidents[:5]
-        )
-    if snapshot.capacity.quotas:
-        lines.extend(["", f"## {LIMITS_HEADING}"])
-        for quota in snapshot.capacity.quotas:
-            lines.extend(_quota_lines(quota, reference, details, zone))
-        details.data = _data_stamps(snapshot, zone)
-        details.state.extend(_account_words(snapshot.capacity.quotas, reference, zone))
-        details.state.extend(_refusal_words(snapshot.capacity.quotas, zone))
-    details.section()
-    if snapshot.version is not None:
-        lines.extend(["", _version_line(snapshot.version, details, zone, reference)])
-    if snapshot.work is not None:
-        work = snapshot.work
-        lines.extend(
-            [
-                "",
-                "## Work",
-                (
-                    f"- Running: {work.executing} · "
-                    f"Queued: {work.queued} · "
-                    f"Waiting for a human: {work.waiting_human}"
-                ),
-                f"- Failed: {work.failed} · Unknown: {work.unknown}",
-            ]
-        )
-    text = "\n".join([*lines, *details.lines()])
-    # The version closes the details (0.9.2): a cut takes the lines before it, never the version.
-    closing = f"\n>\n{_DETAILS_PREFIX}{details.version}"
-    if len(text) <= _SAFE_LIMIT or not text.endswith(closing):
+    parts = render_parts(
+        snapshot, now=now, delivery=delivery, period_seconds=period_seconds, zone=zone
+    )
+    details = parts.details
+    text = "\n".join([*parts.lines, *details.lines()])
+    # The screen's stamps and the version close the details (0.9.2, 1.0.0): a cut takes the
+    # lines before them, never them.
+    closing = details.closing()
+    if len(text) <= _SAFE_LIMIT or not closing or not text.endswith(closing):
         return bound_text(text)
     # A cut at a blank line of the block leaves ``>…``, a line outside the quote that splits it
     # in two (review of 0.11.0): the ellipsis keeps the details prefix, in the one place kept.
@@ -276,6 +379,149 @@ def render_dashboard(
     if cut.endswith("\n>…"):
         cut = cut.removesuffix(">…") + _DETAILS_PREFIX + "…"
     return cut + closing
+
+
+def render_parts(
+    snapshot: DashboardSnapshot,
+    *,
+    now: datetime | None = None,
+    delivery: DeliveryRecord | None = None,
+    period_seconds: int | None = None,
+    zone: tzinfo = UTC,
+) -> ScreenParts:
+    """The blocks of the screen and its details, for any form: the text (``render_dashboard``)
+    and the rich message (``rich.to_telegram_rich``) say the same. The blocks in order (1.0.0):
+    the top line under the freshness banner, what needs attention, the ✓ row, what was not
+    checked, the limits, the Hermes version, the work; an empty one is left out."""
+    details = _Details()
+    reference = now if now is not None else parse_timestamp(snapshot.observed_at)
+    banner = _freshness(details, delivery, now, period_seconds, zone)
+    # The message-staleness banner is the first line: it must be visible above the status label.
+    head = [_dashboard_banner(banner)] if banner else []
+    head.append(_top_line(snapshot, zone))
+    details.screen = f"Screen {format_stamp(snapshot.observed_at, zone) or 'time unknown'}"
+    limits = _limits_block(snapshot, reference, details, zone)
+    _agent_in_details(snapshot, zone, details)
+    items = _items(snapshot, reference, zone, details)
+    details.section("hermes")
+    hermes: tuple[str, ...] = ()
+    if snapshot.version is not None:
+        hermes = (_version_line(snapshot.version, details, zone, reference),)
+    details.version = f"Dashboard {__version__}"
+    unchecked = _unchecked_line(snapshot, details)
+    blocks = (
+        ScreenBlock("head", tuple(head)),
+        ScreenBlock("attention", _attention(snapshot, items)),
+        ScreenBlock("works", _works_row(items)),
+        ScreenBlock("unchecked", (unchecked,) if unchecked else ()),
+        ScreenBlock("limits", limits),
+        ScreenBlock("hermes", hermes),
+        ScreenBlock("work", _work_lines(snapshot.work)),
+    )
+    return ScreenParts(tuple(block for block in blocks if block.lines), details, reference)
+
+
+def _dashboard_banner(banner: str) -> str:
+    """The freshness banner with the warning mark for its red or yellow circle."""
+    for circle in _BANNER_CIRCLES:
+        if banner.startswith(circle):
+            return WARN_MARK + banner.removeprefix(circle)
+    return banner
+
+
+def _top_line(snapshot: DashboardSnapshot, zone: tzinfo) -> str:
+    """``#@1792781160 🟡 Warning · updated Oct 23 23:46 +05``: the status and the time of the
+    data, the moment as a number for the forms that write it as a tag; ``updated time unknown``
+    and no number when the time cannot be read or shown in the screen's zone."""
+    label = _STATUS_LABELS[snapshot.overall]
+    stamp = format_stamp(snapshot.observed_at, zone)
+    moment = parse_timestamp(snapshot.observed_at)
+    # Before 1970 the number would carry a sign the marker does not read: time unknown.
+    if stamp is None or moment is None or moment.timestamp() < 0:
+        return f"{_TOP_PREFIX} {label}{_UPDATED}time unknown"
+    return f"{_TOP_PREFIX}{int(moment.timestamp())} {label}{_UPDATED}{stamp}"
+
+
+def _limits_block(
+    snapshot: DashboardSnapshot, reference: datetime | None, details: _Details, zone: tzinfo
+) -> tuple[str, ...]:
+    """``🧠 Limits used`` and a line per provider; the plans, the logins and the refusals in the
+    details, their first group."""
+    quotas = snapshot.capacity.quotas
+    if not quotas:
+        return ()
+    lines = [f"## {LIMITS_HEADING}"]
+    for quota in quotas:
+        lines.extend(_quota_lines(quota, reference, details, zone))
+    details.data = _data_stamps(snapshot, zone)
+    details.state.extend(_account_words(quotas, reference, zone))
+    details.state.extend(_refusal_words(quotas, zone))
+    return tuple(lines)
+
+
+def _agent_in_details(snapshot: DashboardSnapshot, zone: tzinfo, details: _Details) -> None:
+    """The agent's rules and its memory: a group each in the details, never a screen line."""
+    details.section("rules")
+    if snapshot.rules is not None:
+        _rules_in_details(snapshot.rules, zone, details)
+    details.section("memory")
+    if snapshot.memory is not None:
+        _memory_in_details(snapshot.memory, zone, details)
+
+
+def _items(
+    snapshot: DashboardSnapshot, reference: datetime | None, zone: tzinfo, details: _Details
+) -> list[_Item]:
+    """Gateway, Telegram, backup, drift and cron in the order of the ✓ row; a summary that is
+    absent adds nothing. Their times, ages and counts go to the details: Telegram's group, then
+    one with backup and drift, then cron's."""
+    unchecked = _unchecked_sources(snapshot)
+    details.section("telegram")
+    items = _gateway_items(snapshot.gateway, snapshot.traffic, unchecked)
+    if snapshot.traffic is not None:
+        telegram = next((item.verdict for item in items if item.name == "Telegram"), None)
+        details.state.extend(_traffic_words(snapshot.traffic, zone, telegram))
+    details.section("backup")
+    if snapshot.backup is not None:
+        items.append(_backup_item(snapshot.backup, reference, zone, details, unchecked))
+    if snapshot.drift is not None:
+        items.append(_drift_item(snapshot.drift, zone, details, unchecked))
+    # A fold of its own in the rich form; one group with backup and drift in the text.
+    details.section("cron", joined=True)
+    if snapshot.cron is not None:
+        line = _cron_line(snapshot.cron, reference, zone, details)
+        state = snapshot.cron.state
+        items.append(_item("Cron", line, state == "ok", state, unchecked))
+    return items
+
+
+def _attention(snapshot: DashboardSnapshot, items: list[_Item]) -> tuple[str, ...]:
+    """``🛠 Needs attention``: the first five events in the collectors' order, then the line of
+    every item that is broken, even one an event already names."""
+    lines = [f"- {sanitize_public_text(incident.title)}" for incident in snapshot.incidents[:5]]
+    lines.extend(item.line for item in items if item.verdict == "broken")
+    return (f"## {ATTENTION_HEADING}", *lines) if lines else ()
+
+
+def _works_row(items: list[_Item]) -> tuple[str, ...]:
+    """``✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron``: every item that is well, no row
+    without one."""
+    names = [f"{OK_MARK}{_ROW_SPACE}{item.name}" for item in items if item.verdict == "well"]
+    return (" ".join(names),) if names else ()
+
+
+def _work_lines(work: WorkSummary | None) -> tuple[str, ...]:
+    if work is None:
+        return ()
+    return (
+        "## Work",
+        (
+            f"- Running: {work.executing} · "
+            f"Queued: {work.queued} · "
+            f"Waiting for a human: {work.waiting_human}"
+        ),
+        f"- Failed: {work.failed} · Unknown: {work.unknown}",
+    )
 
 
 def _freshness(
@@ -295,67 +541,84 @@ def _freshness(
     return message_banner(freshness, delivery, now=now, period_seconds=period_seconds)
 
 
-def _coverage_lines(snapshot: DashboardSnapshot, details: _Details) -> list[str]:
-    """Exceptions on the screen, the full count in the details."""
-    lines: list[str] = []
+def _unchecked_line(snapshot: DashboardSnapshot, details: _Details) -> str | None:
+    """``❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3``:
+    every exception of the coverage in one line on the screen (1.0.0), the full count in the
+    details."""
+    coverage = snapshot.coverage
+    missing = [source for source in snapshot.sources if source.state not in ("fresh", "stale")]
+    stale = [source for source in snapshot.sources if source.state == "stale"]
+    items = [f"{_source_label(source)} ({_source_reason(source.state)})" for source in missing]
+    items.extend(f"{_source_label(source)} (stale)" for source in stale)
+    if coverage.expected_profiles and coverage.observed_profiles != coverage.expected_profiles:
+        items.append(f"profiles {coverage.observed_profiles}/{coverage.expected_profiles}")
+    named = _unchecked_sources(snapshot)
+    failed = [name for name in coverage.failed_sources if name not in named]
+    if failed:
+        items.append(f"{_plural(len(failed), 'source', 'sources')} unavailable")
+    details.coverage = _coverage_words(snapshot)
+    return f"{UNCHECKED_MARK} Not checked: " + ", ".join(items) if items else None
+
+
+def _unchecked_sources(snapshot: DashboardSnapshot) -> frozenset[str]:
+    """The sources the ❔ line names: every one not fresh."""
+    return frozenset(source.name for source in snapshot.sources if source.state != "fresh")
+
+
+def _coverage_words(snapshot: DashboardSnapshot) -> str | None:
+    """``Profiles 1/1 · sources 10/10``: the full count, for the details."""
     parts: list[str] = []
     coverage = snapshot.coverage
     if coverage.expected_profiles:
         parts.append(f"profiles {coverage.observed_profiles}/{coverage.expected_profiles}")
-        if coverage.observed_profiles != coverage.expected_profiles:
-            lines.append(
-                f"Profile coverage {coverage.observed_profiles}/{coverage.expected_profiles}"
-            )
-    if coverage.failed_sources:
-        lines.append(f"Sources unavailable: {len(coverage.failed_sources)}")
     if snapshot.sources:
         seen = [source for source in snapshot.sources if source.state in ("fresh", "stale")]
         parts.append(f"sources {len(seen)}/{len(snapshot.sources)}")
-        missing = [
-            f"{_SOURCE_LABELS.get(source.name, source.name)} ({_source_reason(source.state)})"
-            for source in snapshot.sources
-            if source.state not in ("fresh", "stale")
-        ]
-        if missing:
-            lines.append("Not observed: " + ", ".join(missing))
-        stale = [
-            _SOURCE_LABELS.get(source.name, source.name)
-            for source in snapshot.sources
-            if source.state == "stale"
-        ]
-        if stale:
-            lines.append("Stale: " + ", ".join(stale))
-    if parts:
-        joined = " · ".join(parts)
-        details.coverage = joined[0].upper() + joined[1:]
-    return lines
+    if not parts:
+        return None
+    joined = " · ".join(parts)
+    return joined[0].upper() + joined[1:]
+
+
+def _source_label(source: SourceObservation) -> str:
+    return _SOURCE_LABELS.get(source.name, source.name)
 
 
 def _source_reason(state: str) -> str:
     return "not on this installation" if state == "unsupported" else "unavailable"
 
 
-def _gateway_line(gateway: GatewaySummary, traffic: TrafficSummary | None) -> str:
-    """``Gateway ✓ · Telegram ✓``; when the adapter says connected and its own counters say the
-    channel is deaf, the word says so instead (32 columns at most). A disconnected adapter keeps
-    its own word: the deaf verdict is only about a connected one."""
+def _gateway_items(
+    gateway: GatewaySummary | None, traffic: TrafficSummary | None, unchecked: Set[str]
+) -> list[_Item]:
+    """``Gateway ✓`` and ``Telegram ✓``, the 0.12.0 line in two; when the adapter says connected
+    and its own counters say the channel is deaf, the word says so instead. A disconnected
+    adapter keeps its own word: the deaf verdict is only about a connected one."""
+    if gateway is None:
+        return []
     process = _PROCESS_LABELS[gateway.process]
     telegram = _PLATFORM_LABELS[gateway.telegram]
     if traffic is not None and gateway.telegram == "connected" and traffic.state in _TRAFFIC_WORDS:
         telegram = f"{WARN_MARK} {_TRAFFIC_WORDS[traffic.state]}"
-    return f"Gateway {process} · Telegram {telegram}"
+    return [
+        _item("Gateway", f"Gateway {process}", process == OK_MARK, gateway.process, unchecked),
+        _item("Telegram", f"Telegram {telegram}", telegram == OK_MARK, gateway.telegram, unchecked),
+    ]
 
 
-def _traffic_words(traffic: TrafficSummary, zone: tzinfo) -> list[str]:
+def _traffic_words(traffic: TrafficSummary, zone: tzinfo, telegram: _Verdict | None) -> list[str]:
     """The channel's times, always in the details: the last update seen, the last successful
     poll, since when the sends are blocked, how quiet it is against the usual, the last send
-    error the engine logged."""
+    error the engine logged. The first line carries the mark of the Telegram item's verdict
+    (1.0.0), the one the ✓ row and "Needs attention" use: none when it is not checked or no
+    gateway summary judges it."""
     if traffic.state in ("unsupported", "unknown"):
         reason = sanitize_public_text(traffic.detail or "not read", limit=60)
         return [f"Telegram traffic: {reason}"]
     seen = format_day_time(traffic.last_update_seen_at, zone) or "never"
     polling = format_in_zone(traffic.polling_at, zone, "%H:%M") or "unknown"
-    parts = [f"Telegram last update seen {seen} · polling ok {polling}"]
+    mark = _VERDICT_MARKS[telegram] if telegram is not None else ""
+    parts = [f"{mark}Telegram last update seen {seen} · polling ok {polling}"]
     since = format_in_zone(traffic.sends_blocked_since, zone, "%H:%M")
     if since:
         parts.append(f"sends blocked since {since}")
@@ -416,7 +679,8 @@ def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
 
 
 def _failure_words(failure: CronFailure, zone: tzinfo) -> str:
-    name = sanitize_public_text(failure.name, limit=24)
+    # The job's label in full, as "Needs attention" and the cron table name it (1.0.0).
+    name = sanitize_public_text(failure.name, limit=CRON_NAME_LIMIT)
     when = format_day_time(failure.at, zone) or "time unknown"
     text = f"Cron {name}: {_FAILURE_WORDS[failure.kind]} {when}"
     if failure.recovered_at:
@@ -456,15 +720,17 @@ def _rules_in_details(rules: RulesSummary, zone: tzinfo, details: _Details) -> N
 
 
 def _rules_details(rules: PlatformRules, zone: tzinfo) -> str:
-    """One platform in the details: the files, the size, the session, what to do."""
+    """One platform in the details: the files, the size, the session, what to do. Rules the
+    agent sees as they are carry the mark in front (1.0.0)."""
     files = sanitize_public_text(", ".join(rules.files), limit=60) or "context file"
     session = format_day_time(rules.session_started_at, zone) or "time unknown"
     changed = format_day_time(rules.changed_at, zone)
     verdict = rules.verdict
     if verdict == "loaded":
         size = f" · {rules.chars:,} chars" if rules.chars else ""
-        text = f"{OK_MARK} {files}{size} · session {session}"
-    elif verdict == "truncated":
+        platform = platform_label(rules.platform)
+        return f"{OK_MARK} Rules {platform}: {files}{size} · session {session}"
+    if verdict == "truncated":
         kept = f"{rules.kept:,}" if rules.kept else "part"
         total = f" of {rules.chars:,} chars" if rules.chars else ""
         text = f"{files} cut, kept {kept}{total} · session {session}"
@@ -580,59 +846,76 @@ def _rules_none_words(rules: PlatformRules, files: str, changed: str | None, ses
     return f"{files} in the agent's directory, not in the prompt of session {session}"
 
 
-def _backup_line(
-    backup: BackupSummary, reference: datetime | None, zone: tzinfo, details: _Details
-) -> str:
-    """The verdict and the age in words on the screen; the absolute time, the integrity verdict
-    and any reason in the details. Shown in every state; a state without a number names why."""
+def _backup_item(
+    backup: BackupSummary,
+    reference: datetime | None,
+    zone: tzinfo,
+    details: _Details,
+    unchecked: Set[str],
+) -> _Item:
+    """The verdict and the age in words on the 0.12.0 line; the absolute time, the age, the
+    integrity verdict and any reason in the details, the mark in front (1.0.0). Shown in every
+    state; a state without a number names why. Well only with ✓ and no warning: an old backup is
+    a line under "Needs attention"."""
     if backup.state == "unsupported":
         reason = sanitize_public_text(backup.detail or "source not configured", limit=60)
         details.state.append(f"Backup: {reason}")
-        return "Backup: not observed"
+        return _item("Backup", "Backup: not observed", False, backup.state, unchecked)
     if backup.state == "unknown":
         reason = sanitize_public_text(backup.detail or "status not read", limit=60)
         details.state.append(f"Backup: {reason}")
-        return "Backup: no data"
+        return _item("Backup", "Backup: no data", False, backup.state, unchecked)
     stamp = format_day_time(backup.finished_at, zone) or "time unreadable"
+    age, age_words = _backup_age(backup, reference)
+    if backup.state == "failed":
+        detail = sanitize_public_text(backup.detail or "reason not recorded", limit=120)
+        details.state.append(f"{WARN_MARK} Backup {stamp} · {age_words} · {detail}")
+        line = f"Backup {WARN_MARK} failed {age_words}"
+        return _item("Backup", line, False, backup.state, unchecked)
+    verdict = sanitize_public_text(backup.integrity or "unknown", limit=24)
+    stale = age is not None and age > BACKUP_STALE_SECONDS
+    mark = WARN_MARK if stale else OK_MARK
+    details.state.append(f"{mark} Backup {stamp} · {age_words} · integrity {verdict}")
+    line = f"Backup {OK_MARK} {age_words}"
+    if stale:
+        line += f" {WARN_MARK} {BACKUP_STALE_WORDS}"
+    return _item("Backup", line, not stale, backup.state, unchecked)
+
+
+def _backup_age(backup: BackupSummary, reference: datetime | None) -> tuple[float | None, str]:
+    """The age of the run in seconds and in words; ``age unknown`` for a time that cannot be
+    read or lies ahead of the clock."""
     finished = parse_timestamp(backup.finished_at)
     age = None
     if finished is not None and reference is not None:
         age = age_seconds(finished, reference)
     if age is None or is_from_the_future(age):
-        age_words = "age unknown"
-    else:
-        age_words = describe_age(max(age, 0.0))
-    if backup.state == "failed":
-        detail = sanitize_public_text(backup.detail or "reason not recorded", limit=120)
-        details.state.append(f"Backup {stamp} · {detail}")
-        return f"Backup {WARN_MARK} failed {age_words}"
-    verdict = sanitize_public_text(backup.integrity or "unknown", limit=24)
-    details.state.append(f"Backup {stamp} · integrity {verdict}")
-    line = f"Backup {OK_MARK} {age_words}"
-    if age is not None and age > BACKUP_STALE_SECONDS:
-        line += f" {WARN_MARK} {BACKUP_STALE_WORDS}"
-    return line
+        return age, "age unknown"
+    return age, describe_age(max(age, 0.0))
 
 
-def _drift_line(drift: DriftSummary, zone: tzinfo, details: _Details) -> str:
+def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details, unchecked: Set[str]) -> _Item:
+    """``Drift ✓ 0 of 481`` on the 0.12.0 line; the count joins the check time in the details,
+    the mark in front (1.0.0)."""
     checked = format_in_zone(drift.checked_at, zone, "%H:%M") if drift.checked_at else None
-    checked_words = f"Drift checked {checked}" if checked else "Drift: check time unknown"
     if drift.state in ("clean", "drift") and drift.changed_keys is not None:
         if drift.total_keys is not None:
             count = f"{drift.changed_keys} of {drift.total_keys}"
         else:
             count = _plural(drift.changed_keys, "key", "keys")
         marker = OK_MARK if drift.state == "clean" else WARN_MARK
-        details.state.append(checked_words)
-        return f"Drift {marker} {count}"
+        when = f"checked {checked}" if checked else "check time unknown"
+        details.state.append(f"{marker} Drift {count} · {when}")
+        well = drift.state == "clean"
+        return _item("Drift", f"Drift {marker} {count}", well, drift.state, unchecked)
     label = _DRIFT_LABELS.get(drift.state, drift.state)
     if drift.detail:
         # Why there is no number; a check that never finished has no check time to show.
         reason = sanitize_public_text(drift.detail, limit=80)
         details.state.append(f"Drift: {reason}" + (f" · checked {checked}" if checked else ""))
     else:
-        details.state.append(checked_words)
-    return f"Drift: {label}"
+        details.state.append(f"Drift checked {checked}" if checked else "Drift: check time unknown")
+    return _item("Drift", f"Drift: {label}", False, drift.state, unchecked)
 
 
 def _quota_lines(
@@ -646,7 +929,7 @@ def _quota_lines(
     an answer, not "no data"."""
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "expired":
-        return [f"{provider} · login expired"]
+        return [f"{provider} · {_LOGIN_EXPIRED}"]
     if quota.kind != "official" or not quota.windows:
         return [_quota_line(quota, reference, details, zone)]
     own = tuple(window for window in quota.windows if window.scope is None)
@@ -659,6 +942,69 @@ def _quota_lines(
         shown = replace(window, reset_at=None) if _resets_with(window, own) else window
         lines.append(f"{_mark((window,))}{provider} {_window_words(shown, reference)}")
     return lines
+
+
+def _quota_rows(
+    quota: QuotaMetric, reference: datetime | None, zone: tzinfo
+) -> list[tuple[str, list[str]]]:
+    """The rich table's rows for the lines ``_quota_lines`` writes (1.0.0): a row per line, the
+    name as the line shows it, a cell per window (``37% · 3h``, the mark before a share the line
+    marks loud) or the provider's state in words in one cell. The words come from the lines' own
+    helpers, so the two never disagree; a model's limit spells its reset in its row, where its
+    line leaves it to the account's line above. Nothing is written to the details."""
+    provider = sanitize_public_text(quota.provider, limit=40)
+    if quota.kind == "expired":
+        return [(provider, [_LOGIN_EXPIRED])]
+    if quota.kind != "official" or not quota.windows:
+        return [(provider, [_state_cell(quota, reference, zone)])]
+    own = tuple(window for window in quota.windows if window.scope is None)
+    if not own:
+        return [(provider, _line_cells(quota.windows, reference))]
+    rows = [(provider, _line_cells(own, reference))]
+    for window in quota.windows:
+        if window.scope is not None:
+            marked = bool(_mark((window,)))
+            cells = _window_cells((window,), reference, marked=marked, headed=False)
+            rows.append((f"{provider} {window.scope}", cells))
+    return rows
+
+
+def _line_cells(windows: tuple[QuotaWindow, ...], reference: datetime | None) -> list[str]:
+    """The cells of a line ``_windows_line`` writes, marked where that line is."""
+    numbered = any(window.used_percent is not None for window in windows)
+    return _window_cells(windows, reference, marked=numbered and bool(_mark(windows)))
+
+
+def _window_cells(
+    windows: tuple[QuotaWindow, ...],
+    reference: datetime | None,
+    *,
+    marked: bool,
+    headed: bool = True,
+) -> list[str]:
+    """A cell per window, ``⚠️ 93% · 1h20m``: the mark only on a line the text marks, before the
+    share that makes it loud. A line of words alone is one cell, the words as the line has them
+    after its ``·``."""
+    shares = [_share_words(window, reference, headed=headed) for window in windows]
+    if all(window.used_percent is None for window in windows):
+        words = " · ".join(share for share, _reset in shares)
+        return [f"{WARN_MARK} {words}" if marked else words]
+    return [
+        (f"{WARN_MARK} " if marked and _mark((window,)) else "")
+        + (f"{share} · {reset}" if reset else share)
+        for window, (share, reset) in zip(windows, shares, strict=True)
+    ]
+
+
+def _state_cell(quota: QuotaMetric, reference: datetime | None, zone: tzinfo) -> str:
+    """The cell of a provider without windows: the words ``_quota_line`` writes after its name."""
+    if quota.kind == "local":
+        return _local_words(quota)
+    counted = _counted_window(quota) if quota.kind == "official" else None
+    if counted is not None:
+        return _line_cells((counted,), reference)[0]
+    words, loud = _no_data_words(quota.refusal, reference, zone)
+    return f"{WARN_MARK} {words}" if loud else words
 
 
 def _resets_with(window: QuotaWindow, own: tuple[QuotaWindow, ...]) -> bool:
@@ -704,7 +1050,7 @@ def _quota_line(
     provider = sanitize_public_text(quota.provider, limit=40)
     if quota.kind == "local":
         details.missing.append(f"{provider}: remaining unknown, counted locally")
-        return f"{provider} · locally {_plural(quota.used or 0, 'token', 'tokens')}"
+        return f"{provider} · {_local_words(quota)}"
     # "no data" always names its reason: the collector's own words, never a default that
     # reads as "we did not finish" when the truth is "the installation has no credential".
     if quota.kind == "unsupported":
@@ -717,11 +1063,25 @@ def _quota_line(
         return _no_data(provider, quota.refusal, reference, zone)
     if quota.windows:
         return _windows_line(provider, quota.windows, reference)
-    if quota.used is not None and quota.limit:
-        percent = round((quota.used / quota.limit) * 100)
-        return f"{_warn(percent)}{provider} {percent}%{_reset_suffix(quota.reset_at, reference)}"
+    counted = _counted_window(quota)
+    if counted is not None:
+        return _windows_line(provider, (counted,), reference)
     details.missing.append(f"{provider}: windows not received")
     return _no_data(provider, quota.refusal, reference, zone)
+
+
+def _local_words(quota: QuotaMetric) -> str:
+    """``locally 120,000 tokens``: a count kept on this installation, never a share."""
+    return f"locally {_plural(quota.used or 0, 'token', 'tokens')}"
+
+
+def _counted_window(quota: QuotaMetric) -> QuotaWindow | None:
+    """A limit given as used of a limit, as the one window it is: the share to a whole percent
+    and the quota's reset, so its line and its cell come from the windows' own helpers;
+    ``None`` without both numbers."""
+    if quota.used is None or not quota.limit:
+        return None
+    return QuotaWindow("", float(round((quota.used / quota.limit) * 100)), quota.reset_at)
 
 
 def _no_data(
@@ -732,16 +1092,25 @@ def _no_data(
     until a daily quota's reset, in the screen's zone, and ``⚠️ Gemini hit limit 5 min ago`` for
     any other. Only the line: the status and the events come from the collectors, a daily
     refusal's event among them."""
+    words, loud = _no_data_words(refusal, reference, zone)
+    return f"{WARN_MARK} {provider} {words}" if loud else f"{provider} · {words}"
+
+
+def _no_data_words(
+    refusal: Refusal | None, reference: datetime | None, zone: tzinfo
+) -> tuple[str, bool]:
+    """``("paused till 23:00", True)``: what ``_no_data`` says after the provider's name, and
+    whether the line carries the mark; the rich table's cell says the same."""
     if refusal is None or reference is None or not is_active(refusal, reference):
-        return f"{provider} · no data"
+        return "no data", False
     back = format_in_zone(refusal.active_until, zone, "%H:%M") if refusal.daily else None
     if back is not None:
-        return f"{WARN_MARK} {provider} paused till {back}"
+        return f"paused till {back}", True
     moment = parse_timestamp(refusal.at)
     age = age_seconds(moment, reference) if moment is not None else None
     if age is None:
-        return f"{provider} · no data"
-    return f"{WARN_MARK} {provider} hit limit {hit_words(max(0.0, age))}"
+        return "no data", False
+    return f"hit limit {hit_words(max(0.0, age))}", True
 
 
 def _refusal_words(quotas: tuple[QuotaMetric, ...], zone: tzinfo) -> list[str]:
@@ -809,27 +1178,30 @@ def _mark(windows: tuple[QuotaWindow, ...]) -> str:
 def _window_words(window: QuotaWindow, reference: datetime | None) -> str:
     """``37% (3h)``, ``Opus 5% (4d)``, ``Fable 100% (4h)``; the provider's state in words when
     it gave no number; ``?`` otherwise. A state in words never becomes a number."""
-    scope = window.scope or _SCOPE_LABELS.get(window.label)
+    share, reset = _share_words(window, reference)
+    return f"{share} ({reset})" if reset else share
+
+
+def _share_words(
+    window: QuotaWindow, reference: datetime | None, *, headed: bool = True
+) -> tuple[str, str | None]:
+    """``("Opus 37%", "3h")``: the spent share with the scope that narrows it (left out when the
+    rich table's row names it: not ``headed``), and the time to its reset (``_reset_words``);
+    the provider's state in words and no time when it gave no number."""
+    scope = (window.scope or _SCOPE_LABELS.get(window.label)) if headed else None
     head = f"{scope} " if scope else ""
     if window.used_percent is not None:
-        suffix = _reset_suffix(window.reset_at, reference)
-        return f"{head}{window.used_percent:.0f}%{suffix}"
-    return f"{head}{window.note or '?'}"
+        return f"{head}{window.used_percent:.0f}%", _reset_words(window.reset_at, reference)
+    return f"{head}{window.note or '?'}", None
 
 
-def _warn(percent: float) -> str:
-    """The mark from ``QUOTA_WARN_PERCENT`` on, for the most spent window of the line."""
-    return f"{WARN_MARK} " if percent >= QUOTA_WARN_PERCENT else ""
-
-
-def _reset_suffix(value: object, reference: datetime | None) -> str:
-    """`` (3h)``: the time to the reset; `` (?)`` when it cannot be counted; nothing without a
-    reset date at all."""
+def _reset_words(value: object, reference: datetime | None) -> str | None:
+    """``3h``: the time to the reset; ``?`` when it cannot be counted; ``None`` without a reset
+    date at all."""
     if not value:
-        return ""
+        return None
     minutes = _minutes_until(value, reference)
-    words = _duration_words(minutes) if minutes is not None else "?"
-    return f" ({words})"
+    return _duration_words(minutes) if minutes is not None else "?"
 
 
 def _minutes_until(value: object, reference: datetime | None) -> int | None:
@@ -1018,7 +1390,8 @@ def _split_details(line: str) -> tuple[bool, str]:
 
 def to_telegram_plain(text: str) -> str:
     """The screen for a transport that sends plain text: ``#``/``##`` headings become upper-case
-    lines, details lines lose their marker and stay in place, every other line is unchanged.
+    lines, the top line its words as they are (1.0.0), details lines lose their marker and stay
+    in place, every other line is unchanged.
 
     The engine's ``TelegramAdapter.edit_message`` without ``finalize`` sets no parse mode, so a
     heading marker would reach the chat as a literal ``#``. Its ``finalize=True`` path converts
@@ -1028,14 +1401,21 @@ def to_telegram_plain(text: str) -> str:
     out: list[str] = []
     for line in text.split("\n"):
         _, content = _split_details(line)
-        out.append(content.lstrip("#").strip().upper() if content.startswith("#") else content)
+        top = _TOP_LINE.fullmatch(content)
+        if top is not None:
+            out.append(top.group(2) + _UPDATED + top.group(3))
+        elif content.startswith("#"):
+            out.append(content.lstrip("#").strip().upper())
+        else:
+            out.append(content)
     return "\n".join(out)
 
 
 def to_telegram_html(text: str) -> str:
-    """Escape for ``parse_mode=HTML``: headings become bold lines, a run of details lines
-    becomes one ``<blockquote expandable>``, which Telegram shows collapsed, and a file name or
-    a ``/command`` becomes ``<code>`` (``_code_spans``)."""
+    """Escape for ``parse_mode=HTML``: headings become bold lines, the top line too with its
+    stamp a ``<tg-time>`` (``_top_html``), a run of details lines becomes one ``<blockquote
+    expandable>``, which Telegram shows collapsed, and a file name or a ``/command`` becomes
+    ``<code>`` (``_code_spans``)."""
     out: list[str] = []
     quote: list[str] = []
 
@@ -1056,13 +1436,28 @@ def to_telegram_html(text: str) -> str:
 
 
 def _html_line(line: str) -> str:
+    top = _TOP_LINE.fullmatch(line)
+    if top is not None:
+        return _top_html(top)
     if line.startswith("#"):
         return f"<b>{_code_spans(html.escape(line.lstrip('#').lstrip()))}</b>"
     return _code_spans(html.escape(line))
 
 
-# A run of the characters a file name, a path or a command is made of.
-_WORD = re.compile(r"[\w./-]+")
+def _top_html(top: re.Match[str]) -> str:
+    """The top line bold, its stamp a ``<tg-time format="r">`` when the time was read: the one
+    tag a line of the screen makes besides ``<b>`` and ``<code>``, its value digits alone, the
+    words escaped and coded like every other word."""
+    unix, label, stamp = top.groups()
+    words = _code_spans(html.escape(stamp))
+    if unix:
+        words = f'<tg-time unix="{unix}" format="r">{words}</tg-time>'
+    return f"<b>{_code_spans(html.escape(label + _UPDATED))}{words}</b>"
+
+
+# A run of the characters a file name, a path, a command, a mention, a hashtag or a cashtag is
+# made of.
+_WORD = re.compile(r"[\w./@#$-]+")
 # A name with a letter in it, or nothing (a dotfile), then a dot and an extension of two or more
 # characters that starts with a letter: ``AGENTS.md``, ``.hermes.md``, ``.cursorrules``,
 # ``state.db``, a config key ``display.platforms.max.cleanup_progress``. A version (``0.21.3``,
@@ -1072,6 +1467,11 @@ _FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
 # dash (``/new``, ``/2fa``, ``./new``, ``/new-session``; a fraction ``1/1`` is not one), and a
 # domain before the word's end or a slash (``x.com/y``, ``2.ai``, ``AGENTS.md/``).
 _ENTITY_INSIDE = re.compile(r"(?:^|[.-])/\w|\.[^\W\d_]{2,}(?=$|/)")
+# A mention, a hashtag or a cashtag where Telegram finds one (0.12.0: the rich screen lists every
+# cron job by name, and a name is whatever the owner typed): ``@``, ``#`` or ``$`` after no word
+# character (``#weekly``, ``report-#weekly``, ``deploy/@ops``, ``$BTC``, ``$@user``). ``C#`` and
+# ``a@b`` are none of them.
+_MARK_START = re.compile(r"(?<!\w)(?:[@#]\w|\$[^\W\d_])")
 
 
 def _code_spans(escaped: str) -> str:
@@ -1086,7 +1486,9 @@ def _code_spans(escaped: str) -> str:
 
 def _code_word(match: re.Match[str]) -> str:
     word = match.group()
+    if match.start() and match.string[match.start() - 1] == "&":
+        return word  # the inside of an entity (``&#x27;``), never a hashtag
     core = word.rstrip(".")
-    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core):
+    if _FILE_LIKE.fullmatch(core) or _ENTITY_INSIDE.search(core) or _MARK_START.search(core):
         return f"<code>{core}</code>{word[len(core) :]}"
     return word

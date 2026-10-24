@@ -78,7 +78,8 @@ def format_in_zone(value: object, zone: tzinfo, fmt: str = "%Y-%m-%d %H:%M %Z") 
     """``value`` formatted in ``zone``; ``None`` when it cannot be parsed or represented there.
 
     ``fmt`` should hold numeric directives only: ``%b`` and ``%a`` follow the process locale,
-    and the gateway's locale is not the reader's. Day-and-month words come from ``day_words``.
+    and the gateway's locale is not the reader's. Day-and-month words come from ``day_words``,
+    the weekday from ``weekday_word``.
     """
     local = _localized(value, zone)
     return None if local is None else _strftime(local, fmt)
@@ -94,11 +95,38 @@ def _strftime(local: datetime, fmt: str) -> str | None:
 # English month abbreviations by hand: ``strftime("%b")`` answers in the process locale, and
 # the screen must read the same on every host.
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# The weekday words by hand for the same reason (``strftime("%a")``), Monday first as
+# ``datetime.weekday`` counts.
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# A later day closer than this is named by its weekday: within a week the word names one day.
+WEEKDAY_SPAN_DAYS = 7
 
 
 def day_words(local: datetime) -> str:
     """``Sep 5``: the month word and the day without a leading zero, for an already local moment."""
     return f"{MONTHS[local.month - 1]} {local.day}"
+
+
+def weekday_word(local: datetime) -> str:
+    """``Sat``: the weekday word of an already local moment."""
+    return WEEKDAYS[local.weekday()]
+
+
+def format_short(value: object, reference: datetime | None, zone: tzinfo) -> str | None:
+    """One short form against the ``reference`` moment, both in ``zone``: ``06:30`` on its day,
+    ``Sat 22:59`` on a later day less than a week ahead, ``Nov 8`` on any other (further ahead,
+    behind, or no reference to say); ``None`` when ``value`` cannot be parsed or represented."""
+    local = _localized(value, zone)
+    if local is None:
+        return None
+    today = to_zone(reference, zone) if reference is not None else None
+    ahead = (local.date() - today.date()).days if today is not None else -1
+    if not 0 <= ahead < WEEKDAY_SPAN_DAYS:
+        return day_words(local)
+    clock = _strftime(local, "%H:%M")
+    if clock is None or ahead == 0:
+        return clock
+    return f"{weekday_word(local)} {clock}"
 
 
 def format_day(value: object, zone: tzinfo) -> str | None:

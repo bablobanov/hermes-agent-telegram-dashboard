@@ -99,3 +99,41 @@ def test_check_still_reads_the_cron_delivery_record_without_plugin_state_path(
 
     assert main(["--config", str(cfg), "--check"]) == 0
     assert "source=delivery-record" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------------- --demo and --dry-run
+#
+# Fix round 1 of 1.0.0: both print the screen as a reader sees it, the plain form, never the
+# neutral text's ``#@<unix>`` marker of the top line.
+
+
+def test_demo_prints_the_screen_as_a_reader_sees_it(capsys) -> None:
+    assert main(["--demo", "1"]) == 0
+    out = capsys.readouterr().out
+
+    assert out.splitlines()[:4] == [
+        "[1] All normal",
+        "",
+        "🟢 Healthy · updated Sep 9 21:00 UTC",
+        "",
+    ]
+    assert "#" not in out and "DETAILS" in out
+
+
+def test_dry_run_prints_the_screen_as_a_reader_sees_it(tmp_path, capsys) -> None:
+    cfg = tmp_path / "tick.json"
+    settings = {
+        "hermes_home": str(tmp_path),
+        "limits_enabled": False,
+        "state_path": str(tmp_path / "dashboard-delivery.json"),
+    }
+    cfg.write_text(json.dumps(settings), encoding="utf-8")
+
+    assert main(["--config", str(cfg), "--dry-run"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    # A record never confirmed banners the first line; the top line follows it with its date.
+    assert lines[0] == "⚠️ Message never yet confirmed by Telegram"
+    assert " · updated " in lines[1] and not lines[1].startswith("#")
+    assert not any(line.startswith(("#", "> ")) for line in lines)
+    assert "DETAILS" in lines

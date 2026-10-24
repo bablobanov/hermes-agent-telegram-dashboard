@@ -10,6 +10,11 @@ status``): a heartbeat older than three ticks plus slack is a dead ticker, a ``n
 than fifteen minutes in the past is a job that is not firing.
 
 Read only. Never read: ``prompt``, ``script``, ``deliver`` (chat ids), ``skills``, the model.
+The schedule is read twice for the cron section of the rich screen: in the engine's own words
+(``schedule_display``), sanitized like the name, and as how often the job runs, from the stored
+schedule's ``kind`` and ``expr`` or ``minutes`` (``cron_frequency``), never from its display.
+A job is named by the owner's label for it when the plugin's ``cron_notes`` setting has one,
+else by its name; both go through the shared sanitizer and are whole up to ``NAME_LIMIT``.
 The engine's error texts (``last_error``, ``last_delivery_error``, ``ticker_last_error``) never
 reach the screen or the record: each is reduced to the KIND of the error in a word
 (``error_kind``), in the order the engine's own health projection uses (decision of 01.10); the
@@ -21,21 +26,27 @@ cron-doctor (MIT); no code is taken from it.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from .backup import describe_age
 from .compat import Environment
+from .cron_frequency import frequency_of
 from .policy import sanitize_public_text
 from .schema import (
     CronFailure,
     CronFailureKind,
+    CronJob,
+    CronJobState,
     CronState,
     CronSummary,
+    Frequency,
     Incident,
     SourceObservation,
     SourceState,
@@ -58,13 +69,16 @@ RUN_OK_STATUSES = frozenset({"ok", "delivery_failed", "delivery_queued"})
 HOLD_TICKS = 2
 HELD_LIMIT = 50
 MAX_EVENTS = 3
-NAME_LIMIT = 24
-# Eleven characters and an ellipsis: ``- Cron undelivered: dashboard-p…`` is 32 columns. A name
-# with any character beyond ASCII is cut at eight (decision of 01.10, from Ilya's phone): Cyrillic
-# glyphs are wider in a proportional font, and an event of the same count with a Cyrillic name
-# wrapped where the Latin one fits.
-EVENT_NAME_LIMIT = 12
-EVENT_NAME_LIMIT_BEYOND_ASCII = 9
+# A job's name and the owner's label for it (``cron_notes``) are whole up to here: the cron
+# table lists them whole and an event names the job in full, the rich screen wraps (1.0.0;
+# the owner accepted the full label in the event on 23.10).
+NAME_LIMIT = 80
+# ``0 9 * * 1-5``, ``every 30m``, ``once at 2026-10-22 13:00``: whole up to here.
+SCHEDULE_LIMIT = 24
+# The stored schedule's keys the engine falls back to without ``schedule_display``, in its order
+# (``cron/jobs.py`` ``_schedule_display_for_job``, v0.22.2).
+_SCHEDULE_KEYS = ("display", "value", "expr", "run_at")
+_NO_NOTES: Mapping[str, str] = MappingProxyType({})
 EVENT_TITLES: dict[CronFailureKind, str] = {
     "run": "Cron run failed",
     "delivery": "Cron undelivered",
@@ -137,6 +151,10 @@ class RunHistory(Protocol):
 class Job:
     job_id: str
     name: str
+    # The schedule in the engine's own words, sanitized; ``None`` when the record has none.
+    schedule: str | None
+    # How often it runs, from the stored schedule (``cron_frequency.frequency_of``).
+    frequency: Frequency
     enabled: bool
     state: str
     # The engine's pause stamp: with ``state`` one of its two pause markers (``enabled`` gates).
@@ -147,6 +165,14 @@ class Job:
     last_error: str | None
     delivery_error: str | None
     failure_streak: int | None
+    # The owner's label for it from ``cron_notes``, sanitized and cut like the name; ``None``
+    # without one.
+    note: str | None = None
+
+    @property
+    def label(self) -> str:
+        """What the screen names the job by: the owner's note for it, else its name."""
+        return self.note or self.name
 
     @property
     def paused(self) -> bool:
@@ -195,19 +221,20 @@ class Scan:
 # ----------------------------------------------------------------------------- the files
 
 
-def read_jobs(path: Path) -> list[Job]:
-    """The jobs of ``jobs.json``; ``OSError``/``ValueError`` are the caller's to name."""
+def read_jobs(path: Path, notes: Mapping[str, str] = _NO_NOTES) -> list[Job]:
+    """The jobs of ``jobs.json``, each with the owner's note for its id when ``notes`` (the
+    ``cron_notes`` setting) has one; ``OSError``/``ValueError`` are the caller's to name."""
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
         raise ValueError("jobs.json is not an object")
-    return [job for job in (job_of(raw) for raw in payload["jobs"]) if job is not None]
+    return [job for job in (job_of(raw, notes) for raw in payload["jobs"]) if job is not None]
 
 
-def job_of(raw: object) -> Job | None:
+def job_of(raw: object, notes: Mapping[str, str] = _NO_NOTES) -> Job | None:
     """One record, its pause fields read as the ticker reads them (``cron/jobs.py``
     ``is_job_runnable`` and ``_has_pause_marker``, v2026.9.14; 0.9.2): ``enabled`` and
     ``paused_at`` by their truth (``null`` is off, a number is a stamp), ``state`` as written
-    (``Paused`` is no pause marker)."""
+    (``Paused`` is no pause marker). The note for its id in ``notes`` becomes its label."""
     if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not raw["id"]:
         return None
     streak = raw.get("failure_streak")
@@ -216,6 +243,8 @@ def job_of(raw: object) -> Job | None:
     return Job(
         job_id=raw["id"],
         name=_name(raw.get("name") or raw["id"]),
+        schedule=_schedule(raw),
+        frequency=frequency_of(raw.get("schedule")),
         enabled=bool(raw.get("enabled", True)),
         state=_text(raw.get("state")) or "scheduled",
         paused_at=str(stamp) if stamp else None,
@@ -225,6 +254,7 @@ def job_of(raw: object) -> Job | None:
         last_error=_text(raw.get("last_error")),
         delivery_error=_text(raw.get("last_delivery_error")),
         failure_streak=streak if counted else None,
+        note=_note(notes.get(raw["id"])),
     )
 
 
@@ -236,6 +266,29 @@ def _name(value: object) -> str:
     """The job's name for the screen: the shared sanitizer (secrets, paths, chat ids and
     delivery targets), cut to ``NAME_LIMIT``."""
     return sanitize_public_text(str(value), limit=NAME_LIMIT) or "?"
+
+
+def _note(value: str | None) -> str | None:
+    """The owner's label for a job, through the same sanitizer and cut as the name: a secret,
+    a path or a chat id typed into ``cron_notes`` never reaches the screen or the record. ``None``
+    without a note, or for one the sanitizer leaves empty: the name is shown then."""
+    if not value:
+        return None
+    return sanitize_public_text(value, limit=NAME_LIMIT) or None
+
+
+def _schedule(raw: Mapping[str, object]) -> str | None:
+    """The schedule as ``hermes cron list`` words it (``cron/jobs.py``
+    ``_schedule_display_for_job``, v0.22.2): ``schedule_display``, else the first of the stored
+    schedule's own words, else a schedule stored as text; through the shared sanitizer, cut to
+    ``SCHEDULE_LIMIT``. The engine's ``?`` for none is ``None`` here."""
+    text = _text(raw.get("schedule_display"))
+    stored = raw.get("schedule")
+    if text is None and isinstance(stored, Mapping):
+        text = next((word for word in map(_text, map(stored.get, _SCHEDULE_KEYS)) if word), None)
+    elif text is None:
+        text = _text(stored)
+    return sanitize_public_text(text, limit=SCHEDULE_LIMIT) or None if text else None
 
 
 def error_kind(text: object, *, default: str = "error") -> str:
@@ -310,19 +363,82 @@ def classify(job: Job, *, now: datetime, ticker_alive: bool) -> CronFailure | No
             fallback = _literal(status) if status not in ("", "error") else "error"
         reason = error_kind(job.last_error, default=fallback)
         return CronFailure(
-            job.job_id, job.name, kind, at=job.last_run_at, streak=job.failure_streak, reason=reason
+            job.job_id,
+            job.label,
+            kind,
+            at=job.last_run_at,
+            streak=job.failure_streak,
+            reason=reason,
         )
     if status == "delivery_failed" or job.delivery_error:
         reason = error_kind(job.delivery_error, default="delivery error")
         return CronFailure(
-            job.job_id, job.name, "delivery", at=job.last_run_at, streak=None, reason=reason
+            job.job_id, job.label, "delivery", at=job.last_run_at, streak=None, reason=reason
         )
     if ticker_alive and job.active:
         due = parse_timestamp(job.next_run_at)
         late = age_seconds(due, now) if due is not None else None
         if late is not None and late > OVERDUE_SECONDS:
-            return CronFailure(job.job_id, job.name, "overdue", at=job.next_run_at)
+            return CronFailure(job.job_id, job.label, "overdue", at=job.next_run_at)
     return None
+
+
+# ----------------------------------------------------------------------------- the list
+
+
+def job_rows(
+    jobs: Sequence[Job], failing: Sequence[CronFailure], *, now: datetime
+) -> tuple[CronJob, ...]:
+    """Every job for the cron section, in the order a reader looks: what fails now in the order
+    the line counts it, the active by their next run, the paused by theirs, the completed with
+    the latest run first. A paused job whose next run is behind is marked, not failed: the
+    ticker does not fire it, so nothing is missed until someone resumes it (decision of 22.10)."""
+    position = {failure.job_id: index for index, failure in enumerate(failing)}
+    kinds = {failure.job_id: failure.kind for failure in failing}
+    rows = (_row(job, kinds.get(job.job_id), now=now) for job in jobs)
+    return tuple(sorted(rows, key=lambda row: _order(row, position)))
+
+
+def _row(job: Job, failure: CronFailureKind | None, *, now: datetime) -> CronJob:
+    state: CronJobState = "active"
+    if not job.active:
+        state = "done" if job.state == "completed" else "paused"
+    behind = False
+    if state == "paused":
+        due = parse_timestamp(job.next_run_at)
+        late = age_seconds(due, now) if due is not None else None
+        behind = late is not None and late > 0
+    return CronJob(
+        job.job_id,
+        job.name,
+        state,
+        schedule=job.schedule,
+        next_run_at=job.next_run_at,
+        last_run_at=job.last_run_at,
+        failure=failure,
+        paused_past_due=behind,
+        frequency=job.frequency,
+        note=job.note,
+    )
+
+
+def _order(row: CronJob, position: Mapping[str, int]) -> tuple[int, float, str]:
+    if row.job_id in position:
+        return 0, float(position[row.job_id]), row.name
+    if row.state == "done":
+        last = _epoch(row.last_run_at)
+        return 3, -last if last is not None else math.inf, row.name
+    upcoming = _epoch(row.next_run_at)
+    return (
+        (1 if row.state == "active" else 2),
+        upcoming if upcoming is not None else math.inf,
+        row.name,
+    )
+
+
+def _epoch(stamp: str | None) -> float | None:
+    moment = parse_timestamp(stamp)
+    return moment.timestamp() if moment is not None else None
 
 
 # ----------------------------------------------------------------------------- the scan
@@ -333,7 +449,7 @@ def scan_cron(env: Environment, *, now: datetime) -> Scan:
     if not cron_dir.is_dir():
         return Scan(state="unsupported", detail="no cron directory")
     try:
-        jobs = tuple(read_jobs(cron_dir / JOBS_FILE))
+        jobs = tuple(read_jobs(cron_dir / JOBS_FILE, dict(env.cron_notes)))
     except FileNotFoundError:
         return Scan(state="unsupported", detail="jobs.json not found")
     except ValueError as exc:
@@ -464,6 +580,7 @@ def assemble_cron(
         ticker_ok_at=scan.ticker.success_at,
         ticker_error=scan.ticker.error,
         detail=scan.detail,
+        jobs=job_rows(scan.jobs, current, now=now),
     )
     source = SourceObservation(
         SOURCE_NAME, "official", "fresh", observed_at=scan.ticker.heartbeat_at or now.isoformat()
@@ -496,7 +613,7 @@ def _with_history(
         out.append(
             CronFailure(
                 run.job_id,
-                job.name,
+                job.label,
                 kind,
                 at=run.finished_at or run.claimed_at,
                 recovered_at=job.last_run_at or now.isoformat(),
@@ -505,18 +622,9 @@ def _with_history(
     return tuple(out)
 
 
-def _event_name(name: str) -> str:
-    """The job's name for an event line: whole up to ``EVENT_NAME_LIMIT``, else cut with an
-    ellipsis; ``EVENT_NAME_LIMIT_BEYOND_ASCII`` when any character of it is beyond ASCII, the
-    ellipsis of the sanitizer's own cut at ``NAME_LIMIT`` aside."""
-    beyond = not name.replace("…", "").isascii()
-    limit = EVENT_NAME_LIMIT_BEYOND_ASCII if beyond else EVENT_NAME_LIMIT
-    if len(name) <= limit:
-        return name
-    return name[: limit - 1].rstrip() + "…"
-
-
 def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...]:
+    """A dead or failing ticker, else the first ``MAX_EVENTS`` failures, each naming the job by
+    its label in full (``Cron run failed: Sends Threads topics to SMM``)."""
     if summary.state in ("stalled", "ticks_failing"):
         stamp = summary.ticker_at if summary.state == "stalled" else summary.ticker_ok_at
         age = _age(stamp, now)
@@ -527,7 +635,7 @@ def incidents_for(summary: CronSummary, *, now: datetime) -> tuple[Incident, ...
         return (Incident("cron:ticker", "critical", title),)
     events: list[Incident] = []
     for failure in summary.failing[:MAX_EVENTS]:
-        name = _event_name(sanitize_public_text(failure.name, limit=NAME_LIMIT))
+        name = sanitize_public_text(failure.name, limit=NAME_LIMIT)
         title = f"{EVENT_TITLES[failure.kind]}: {name}"
         events.append(Incident(f"cron:{failure.kind}:{failure.job_id}", "warning", title))
     return tuple(events)
