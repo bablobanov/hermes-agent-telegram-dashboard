@@ -66,8 +66,9 @@ def test_probes_answer_capability_not_version(tmp_path: Path) -> None:
 
 
 def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> None:
-    """0.8.0: the external limit sources are engine-independent and say so; the Codex plan is a
-    field of the facade the limits row already calls, read in the engine source."""
+    """0.8.0: the external limit sources say what they take from the engine (1.1.0: the key
+    through get_secret, in the tick's own context); the Codex plan is a field of the facade the
+    limits row already calls, read in the engine source."""
     sources = load_matrix()["sources"]
     external = sources["external_limits"]
     codex = sources["codex_plan"]
@@ -79,7 +80,11 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
     assert "UnscopedSecretError" in external["key_probe"] and "read-by-code" in str(
         external["verified"]
     )
-    assert {"0.21.1", "0.22.5"} == set(external["verified"])
+    assert "tick's own context" in external["key_probe"]
+    assert "if that connect ran inside one" in external["key_probe"]
+    assert {"0.21.1", "0.21.6", "0.22.5"} == set(external["verified"])
+    assert "f27cdbce5a" in external["verified"]["0.21.6"]
+    assert ":219" in external["verified"]["0.21.6"] and ":115" in external["verified"]["0.21.6"]
     assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
     assert {"0.21.1", "0.21.3"} <= set(codex["verified"])
 
@@ -148,7 +153,7 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
 def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
     """0.11.0: the audit of 08.10 read every engine touchpoint of 0.21.6 against 0.21.5; the
     plugin's own scripts and the engine-free sources have no engine to verify against."""
-    engine_free = {"drift", "backup", "external_limits"}  # external_limits: 0.21.1 and 0.22.5 only
+    engine_free = {"drift", "backup"}
     for name, entry in load_matrix()["sources"].items():
         if name not in engine_free:
             assert "0.21.6" in entry["verified"], name

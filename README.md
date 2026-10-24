@@ -994,10 +994,11 @@ The guards, and why:
   environment and follows no redirect: a redirect would carry the key to wherever it points. An
   answer other than 200, over 64 KB or not JSON is `no data` with the reason; the body of an
   error answer is not read
-- `key_env` names a variable, never a bot token. It is read with Hermes' `get_secret`: the active
-  profile's value, the process environment on a single-profile gateway. On a gateway that
-  multiplexes profiles the dashboard's tick runs outside any profile's scope, so `get_secret`
-  refuses and a source with `key_env` shows no data. Outside Hermes (the standalone CLI) the
+- `key_env` names a variable, never a bot token. It is read with Hermes' `get_secret`: the
+  process environment on a single-profile gateway. On a gateway that multiplexes profiles the
+  key is the one of the profile whose Telegram connection started the dashboard, when that
+  connection ran in a profile's scope; where the dashboard's tick carries no profile scope,
+  `get_secret` refuses and the source shows no data. Outside Hermes (the standalone CLI) the
   process environment is read.
   `TELEGRAM_BOT_TOKEN` (the engine's Telegram adapter reads it), `HERMES_DASHBOARD_BOT_TOKEN` (the
   fallback tick's token) and any name ending in `_BOT_TOKEN`, in any case, are refused and never
