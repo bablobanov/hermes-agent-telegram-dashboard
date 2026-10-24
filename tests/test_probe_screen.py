@@ -572,6 +572,26 @@ def test_a_package_copy_from_before_the_cron_notes_is_refused_at_load(tmp_path: 
     assert dashboard.origin == "installed"
 
 
+def test_a_package_copy_from_before_1_1_0_is_refused_at_load(tmp_path: Path) -> None:
+    """The 1.1.0 tick hands no cache to the providers an older copy read by itself, so that copy
+    would ask them on every tick. A copy without ``EXTERNAL_DEFAULT_INTERVAL_SECONDS`` is refused
+    at load and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    name = "EXTERNAL_DEFAULT_INTERVAL_SECONDS"
+    assert f"{name} = 900.0\n" in text
+    # Renamed, not removed: the copy still imports, only the name the plugin requires is gone.
+    collect_py.write_text(text.replace(name, "_OLDER_DEFAULT_INTERVAL_SECONDS"), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_1_1_0_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""

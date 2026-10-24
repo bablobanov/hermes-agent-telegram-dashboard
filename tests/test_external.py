@@ -369,6 +369,29 @@ def test_without_the_engine_module_the_process_environment_is_read(
     assert len(get.calls) == 1
 
 
+def test_a_missing_module_inside_the_engine_does_not_fall_back_to_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine is there but one of its own imports is not (``hermes_constants``): a failed
+    lookup, not the standalone CLI. The process environment is not read."""
+    real_import = external.importlib.import_module
+
+    def import_module(name: str, package: str | None = None) -> ModuleType:
+        if name == "agent.secret_scope":
+            raise ModuleNotFoundError("No module named 'hermes_constants'", name="hermes_constants")
+        return real_import(name, package)
+
+    monkeypatch.setattr(external.importlib, "import_module", import_module)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key lookup failed: ModuleNotFoundError"
+    assert "process-key" not in str(item)
+
+
 @pytest.mark.parametrize(
     "key", ["sk-0123\r4567", "sk-0123\n4567", "sk-0123 4567"], ids=["cr", "lf", "space"]
 )
