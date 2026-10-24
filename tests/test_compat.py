@@ -75,7 +75,11 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
     assert "limits_sources" in external["probe"] and "loopback" in external["probe"]
     assert "_BOT_TOKEN" in external["probe"]
     assert "contract 1" in external["contract"] and "25 s" in external["contract"]
-    assert "no engine import" in external["caveat"]
+    assert "agent.secret_scope.get_secret" in external["key_probe"]
+    assert "UnscopedSecretError" in external["key_probe"] and "read-by-code" in str(
+        external["verified"]
+    )
+    assert {"0.21.1", "0.22.5"} == set(external["verified"])
     assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
     assert {"0.21.1", "0.21.3"} <= set(codex["verified"])
 
@@ -144,7 +148,7 @@ def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None
 def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
     """0.11.0: the audit of 08.10 read every engine touchpoint of 0.21.6 against 0.21.5; the
     plugin's own scripts and the engine-free sources have no engine to verify against."""
-    engine_free = {"drift", "backup", "external_limits"}
+    engine_free = {"drift", "backup", "external_limits"}  # external_limits: 0.21.1 and 0.22.5 only
     for name, entry in load_matrix()["sources"].items():
         if name not in engine_free:
             assert "0.21.6" in entry["verified"], name

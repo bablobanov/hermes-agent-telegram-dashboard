@@ -11,8 +11,9 @@ failure as "no account lines". This module does the same and nothing more:
   facade's OAuth token refresh.
 
 Nothing here reads or stores credentials; the facade uses the account's own material inside the
-engine. This is the named exception to "no engine imports": one public function with the same
-signature on 0.20.5 and 0.21.1, recorded as such in ``compat_matrix.json``.
+engine. This is one of the two named exceptions to "no engine imports": one public function with
+the same signature on 0.20.5 and 0.21.1, recorded as such in ``compat_matrix.json``. The other is
+``agent.secret_scope.get_secret`` for the key of a ``limits_sources`` entry (``external.py``).
 """
 
 from __future__ import annotations

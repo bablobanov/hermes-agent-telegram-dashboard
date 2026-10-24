@@ -214,10 +214,12 @@ stays in the gateway. A gateway under `host` has the fallback cron tick with its
 Three prohibitions, learned from a predecessor that died of them: no imports of engine
 **internals**, no replacement of core files, no post-merge hooks or `assume-unchanged`.
 
-One named exception: account limits come from `agent.account_usage.fetch_account_usage`, a public
+Two named exceptions. Account limits come from `agent.account_usage.fetch_account_usage`, a public
 function with the same signature on every verified version, called exactly the way the gateway's
 own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`). An import
-failure makes the source `unsupported`. The exception is a row in the matrix, not a habit.
+failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
+`agent.secret_scope.get_secret`, so that the active profile's value is the one used
+(`external.py`). Each exception is a row in the matrix, not a habit.
 
 ## The plugin: the screen inside the gateway
 
@@ -1041,7 +1043,11 @@ The guards, and why:
   environment and follows no redirect: a redirect would carry the key to wherever it points. An
   answer other than 200, over 64 KB or not JSON is `no data` with the reason; the body of an
   error answer is not read
-- `key_env` names a variable in the gateway's environment, never a bot token.
+- `key_env` names a variable, never a bot token. It is read with Hermes' `get_secret`: the active
+  profile's value, the process environment on a single-profile gateway. On a gateway that
+  multiplexes profiles the dashboard's tick runs outside any profile's scope, so `get_secret`
+  refuses and a source with `key_env` shows no data. Outside Hermes (the standalone CLI) the
+  process environment is read.
   `TELEGRAM_BOT_TOKEN` (the engine's Telegram adapter reads it), `HERMES_DASHBOARD_BOT_TOKEN` (the
   fallback tick's token) and any name ending in `_BOT_TOKEN`, in any case, are refused and never
   read: the plugin does not read the bot token itself, and a setting must not become a way to

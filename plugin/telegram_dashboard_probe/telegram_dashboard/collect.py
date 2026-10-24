@@ -1,7 +1,9 @@
 """Read-only collectors on stable surfaces.
 
-Gateway state and drift are files and a script. Limits are the one named exception: the engine's
-public usage facade, imported at call time and called the way ``/usage`` calls it (``limits.py``).
+Gateway state and drift are files and a script. Limits are the named exception, with two engine
+imports at call time: the public usage facade, called the way ``/usage`` calls it (``limits.py``),
+and ``agent.secret_scope.get_secret``, which reads the key of a ``limits_sources`` entry
+(``external.py``).
 
 Each collector returns three things: the block for the snapshot, a ``SourceObservation`` that
 says how much to trust it, and the incidents it noticed. A source that cannot prove a value says
