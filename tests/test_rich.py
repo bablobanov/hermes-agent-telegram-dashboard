@@ -216,7 +216,7 @@ def test_details_is_a_section_per_source_a_thin_line_between_and_the_stamps_last
     )
     assert sections[-1] == (
         "<p>Screen Sep 26 21:00 UTC<br>Confirmed 20:58<br>Period 5 min<br>"
-        f"Profiles 1/1 · sources 10/10<br>Dashboard {__version__}</p>"
+        f"Profiles 1/1 · sources 8/8<br>Dashboard {__version__}</p>"
     )
     assert "windows and resets" not in markup and "⚪ No data" not in markup
     assert "<th>At</th>" not in markup
@@ -242,8 +242,6 @@ def test_the_limits_table_has_a_row_per_line_and_a_cell_per_window() -> None:
         '<tr><td>Claude Sonnet</td><td colspan="2">20% · 3d</td>',
         "<tr><td>Codex</td><td>⚠️ 93% · 1h20m</td><td>58% · 5d</td>",
         '<tr><td>Gemini</td><td colspan="2">no data</td>',
-        '<tr><td>Grok</td><td colspan="2">31% · 6d</td>',
-        "<tr><td>Kimi</td><td>8% · 3h40m</td><td>46% · 21d</td>",
     ]
 
 

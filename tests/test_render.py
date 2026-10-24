@@ -1565,7 +1565,7 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
     from telegram_dashboard import __version__
     from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
-    state = all_states()[0]  # the normal state, with "No data" for Gemini and Grok
+    state = all_states()[0]  # the normal state, with "No data" for Gemini
     full = render_dashboard(
         state.snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
     ).splitlines()
@@ -1574,7 +1574,7 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
     ).splitlines()
 
     assert full[-8:] == [
-        "> Grok: source not confirmed",
+        "> Gemini: source not confirmed",
         ">",
         "> Screen Sep 9 21:00 UTC",
         "> Confirmed 20:58",
