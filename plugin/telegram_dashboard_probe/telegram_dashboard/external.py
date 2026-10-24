@@ -37,8 +37,8 @@ MAX_BODY_BYTES = 64 * 1024
 DEFAULT_TIMEOUT_SECONDS = 20.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 120.0
-# The tick waits for a source no longer than for Grok or Kimi. The request itself runs on in its
-# worker with the source's own timeout; a late answer is the next tick's line.
+# The tick waits this long for a source at most. The request itself runs on in its worker with
+# the source's own timeout; a late answer is the next tick's line.
 TICK_TIMEOUT_SECONDS = 25.0
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 BOT_TOKEN_VARIABLES = frozenset({"TELEGRAM_BOT_TOKEN", "HERMES_DASHBOARD_BOT_TOKEN"})
@@ -173,9 +173,9 @@ def fetch_item(
     get: HttpGet = http_get,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """One attempt at the source as a payload item like ``grok.py`` and ``kimi.py`` build, plus
-    ``provider``, ``plan``, ``login_expires_at`` and per-window ``scope`` and ``severity``.
-    Never raises."""
+    """One attempt at the source as a payload item (the shape ``collect._quota_from_item``
+    reads) with ``provider``, ``plan``, ``login_expires_at`` and per-window ``scope`` and
+    ``severity``. Never raises."""
     item = _empty_item()
     if source.problem:
         item["reason"] = source.problem

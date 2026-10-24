@@ -6,9 +6,9 @@ from telegram_dashboard.policy import sanitize_public_text
 
 
 # Decision of 01.10 (0.9.0): a chat id and a delivery target are as private as a secret or a
-# path. The reasons of the external sources, Grok and Kimi, the incident titles and the backup
-# details all pass through here, so the mask is the second line behind "the kind of the error in
-# a word" that the cron sources apply first.
+# path. The reasons of the limit sources, the incident titles and the backup details all pass
+# through here, so the mask is the second line behind "the kind of the error in a word" that the
+# cron sources apply first.
 @pytest.mark.parametrize(
     "text, expected",
     [

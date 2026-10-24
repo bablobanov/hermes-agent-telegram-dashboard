@@ -74,7 +74,7 @@ def _source(**fields: Any) -> Source:
 # ---------------------------------------------------------------- the contract
 
 
-def test_the_reference_answer_parses_into_an_item_like_grok_s_and_kimi_s() -> None:
+def test_the_reference_answer_parses_into_a_payload_item() -> None:
     item = parse_contract(REFERENCE_ANSWER, now=NOW)
 
     assert item["status"] == "available" and item["reason"] is None
