@@ -607,7 +607,7 @@ def test_a_key_that_is_a_protocol_word_leaves_a_valid_answer_valid(key: str) -> 
 PIECE_KEY = "kq7Zr4p9XwLm2Vt8"
 # Header-safe (no whitespace, no control character), with characters markup rewrites.
 MARKUP_KEY = 'Ab<c&d"e12345678'
-HIDDEN = "[hidden: may contain the key]"
+HIDDEN = "[key hidden]"
 
 
 def _answer(**fields: Any) -> bytes:

@@ -55,7 +55,7 @@ KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
 # What a keyed source's answer shows where it echoed the key, and instead of a displayed string
 # that still holds KEY_PIECE characters of the key in a row after cleaning and cutting.
 KEY_PLACEHOLDER = "[key]"
-KEY_HIDDEN = "[hidden: may contain the key]"
+KEY_HIDDEN = "[key hidden]"
 KEY_PIECE = 8
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
