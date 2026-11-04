@@ -907,11 +907,13 @@ less than the number after it; Telegram has no text colour either, so the mark i
 emphasis. The countdown counts from the data time on the first line: a message that stopped
 updating is the freshness banner's business, not the countdown's. An external source's number
 is read on its own cadence and must not borrow the screen's stamp: the details line
-`Data 12:21 · Claude 12:16` names every number read at another minute than the screen, and a
-source's cached number is never shown older than its refresh interval (`quota_cache.py`), after
-two intervals the ❔ line says so
-(`Claude limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is the one thing a limits
-block must never do.
+`Data 12:21 · Mistral 12:16` names every number read at another minute than the screen.
+`quota_cache.tick` decides when the source is asked again (once per `limits_refresh_seconds`);
+the record's `external_cache` keeps its last answer, which stands in for a missed one, with its
+own stamp, while it is younger than two ticks or two `limits_refresh_seconds`, whichever is
+longer. No number older than that passes for fresh: the ❔ line names the source
+(`Mistral limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is
+the one thing a limits block must never do.
 
 **Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
 `Prolite`), in the details beside the others. The engine names Codex's first window `Session`
