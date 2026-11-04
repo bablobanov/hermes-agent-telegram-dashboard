@@ -409,9 +409,11 @@ def _key_echo(key: str) -> re.Pattern[str]:
 
 def _holds_key_piece(text: str, key: str) -> bool:
     """Any ``KEY_PIECE`` characters of the key in a row, case aside (every key that is sent has
-    at least that many, ``_source_key``)."""
-    folded, piece = text.casefold(), key.casefold()
-    return any(piece[i : i + KEY_PIECE] in folded for i in range(len(piece) - KEY_PIECE + 1))
+    at least that many, ``_source_key``). The windows are cut from the key's own characters and
+    folded one by one: folding the key first would shift them where a character folds to two."""
+    folded = text.casefold()
+    windows = (key[i : i + KEY_PIECE].casefold() for i in range(len(key) - KEY_PIECE + 1))
+    return any(window in folded for window in windows)
 
 
 def _empty_item() -> dict[str, Any]:

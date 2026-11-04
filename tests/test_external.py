@@ -791,6 +791,26 @@ def test_an_echo_of_the_key_in_another_case_is_replaced_before_the_cut() -> None
         assert not _caseless_runs(key, strings_in(item))
 
 
+def test_the_piece_check_cuts_its_windows_from_the_key_s_own_characters() -> None:
+    """Codex re-check 3: the 8-character windows are cut from the key as it is and folded one
+    by one. Folding the key first shifts them where a character folds to two (``ß`` -> ``ss``):
+    ``sabcdefg`` holds only 7 of the key's own characters and is an honest string."""
+    key = "ßabcdefgh"
+
+    def reason_of(reason: str) -> str:
+        item = fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=_answer(state="unavailable", reason=reason)),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        return str(item["reason"])
+
+    assert reason_of("code sabcdefg") == "code sabcdefg"
+    assert reason_of("code ABCDEFGH") == HIDDEN
+    assert reason_of("code ßABCDEFG") == HIDDEN
+
+
 def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
     """An answer nested deeper than the interpreter's json takes is "no data" with the reason,
     never an exception, keyed or not; a json that takes such a depth (newer interpreters guard
