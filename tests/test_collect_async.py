@@ -510,6 +510,29 @@ def test_a_keyed_source_echoing_its_key_leaves_it_out_of_the_cache_and_the_scree
         assert key[:6] not in text
 
 
+@pytest.mark.parametrize("name", ["contract-object", "contract-text", "state", "severity"])
+def test_a_control_field_holding_the_key_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, name: str
+) -> None:
+    """Codex re-check: the fixed reason for a malformed control field, never an echo of it,
+    through the tick into the record's ``external_cache``, the snapshot and the screen."""
+    from test_external import malformed_answers
+
+    key = "kq7Zr4p9XwLm2Vt8"
+    answer, reason = malformed_answers(key)[name]
+    body = json.dumps(answer).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    if reason is not None:
+        assert reason in stored and reason in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 

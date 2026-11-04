@@ -968,7 +968,8 @@ The answer is `200` with a JSON object of at most 64 KB:
 }
 ```
 
-- `contract` is `1`; any other version is `no data` with `contract N not supported`
+- `contract` is `1`; another number is `no data` with `unsupported contract`, anything else
+  with `answer shape: contract` (a reason never quotes the value it refuses)
 - `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex)
   takes that line's place; any other gets a line of its own before Gemini
 - `state`: `ok` puts the windows on the screen; `login_expired` reads `Claude · login expired`

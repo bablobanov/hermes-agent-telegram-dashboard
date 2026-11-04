@@ -323,7 +323,9 @@ def parse_contract(payload: object, *, now: datetime) -> dict[str, Any]:
         return item
     version = payload.get("contract")
     if version != CONTRACT or isinstance(version, bool):
-        item["reason"] = f"contract {sanitize_public_text(str(version), limit=8)} not supported"
+        # Fixed text: a refused control field is never quoted, it can hold anything (the key).
+        whole = isinstance(version, int) and not isinstance(version, bool)
+        item["reason"] = "unsupported contract" if whole else "answer shape: contract"
         return item
     provider = _text(payload.get("provider"), 24)
     if provider is None:

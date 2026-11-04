@@ -108,13 +108,15 @@ def test_the_reference_answer_parses_into_a_payload_item() -> None:
     ]
 
 
-def test_another_contract_version_is_no_data_with_the_reason() -> None:
+def test_another_contract_version_is_no_data_with_a_fixed_reason() -> None:
+    """The reason never quotes the value it refuses (Codex re-check of 1.1.0): another number
+    is an unsupported contract, anything else is the wrong shape."""
     item = parse_contract({**REFERENCE_ANSWER, "contract": 2}, now=NOW)
 
-    assert item["status"] == "unavailable" and item["reason"] == "contract 2 not supported"
-    assert (
-        parse_contract({**REFERENCE_ANSWER, "contract": True}, now=NOW)["status"] == "unavailable"
-    )
+    assert item["status"] == "unavailable" and item["reason"] == "unsupported contract"
+    for odd in (True, "1", "v2", 1.5, None, [1], {"version": 1}):
+        refused = parse_contract({**REFERENCE_ANSWER, "contract": odd}, now=NOW)
+        assert (refused["status"], refused["reason"]) == ("unavailable", "answer shape: contract")
 
 
 def test_extra_keys_are_ignored_and_strings_are_sanitized() -> None:
@@ -486,7 +488,7 @@ def test_a_get_that_takes_the_header_away_still_gets_the_class_only(bare: bool) 
 
 def echoing_answers(key: str) -> dict[str, dict[str, Any]]:
     """Contract-1 answers from a source that echoes the key it was sent, in a reason, a plan,
-    a window's label and scope, and the contract version (cut to 8 characters in its reason)."""
+    a window's label and scope."""
     return {
         "unavailable": {
             "contract": 1,
@@ -503,8 +505,39 @@ def echoing_answers(key: str) -> dict[str, dict[str, Any]]:
             "plan": key,
             "windows": [{"label": f"w {key}", "used_percent": 5, "scope": "m" * 16 + key}],
         },
-        "contract": {"contract": key, "provider": "Claude", "state": "ok", "windows": []},
     }
+
+
+def malformed_answers(key: str) -> dict[str, tuple[dict[str, Any], str | None]]:
+    """Answers whose control fields hold the key, each with the fixed reason it gives (None: the
+    answer stands, the field is dropped)."""
+    base = {"contract": 1, "provider": "Claude", "state": "ok", "windows": []}
+    return {
+        "contract-object": ({**base, "contract": {key: 0}}, "answer shape: contract"),
+        "contract-text": ({**base, "contract": key}, "answer shape: contract"),
+        "state": ({**base, "state": key}, "answer shape: state"),
+        "severity": ({**base, "windows": [{"used_percent": 5, "severity": key}]}, None),
+    }
+
+
+@pytest.mark.parametrize("name", list(malformed_answers("k")))
+def test_a_control_field_holding_the_key_gives_a_fixed_reason(name: str) -> None:
+    """Codex re-check: a reason about a malformed control field never quotes it, so a key in a
+    contract object, a contract string, a state or a severity cannot reach the item."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    answer, reason = malformed_answers(key)[name]
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    assert item["reason"] == reason
+    if reason is None:
+        assert item["status"] == "available" and item["windows"][0]["severity"] is None
+    assert key[:6] not in json.dumps(item)
 
 
 def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
@@ -530,7 +563,6 @@ def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
     assert items["ok"]["plan"] == "[key]"
     assert items["ok"]["windows"][0]["label"] == "w [key]"
     assert items["ok"]["windows"][0]["scope"] == "m" * 16 + "[key]"
-    assert items["contract"]["reason"] == "contract [key] not supported"
     unkeyed = RecordingGet(body=json.dumps(echoing_answers(key)["ok"]).encode("utf-8"))
     assert fetch_item(_source(), now=NOW, get=unkeyed)["plan"] == key
 
@@ -550,9 +582,9 @@ def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
     assert unkeyed["reason"] in ("answer shape: nested too deep", "answer shape: not an object")
 
 
-def test_a_key_of_digits_is_scrubbed_from_a_number_too() -> None:
-    """The contract version is cut to 8 characters in its reason: a number that holds a key
-    of digits must not put it there."""
+def test_a_key_of_digits_never_reaches_a_reason_through_a_number() -> None:
+    """The reason for another contract number is fixed text: a number that holds a key of
+    digits does not reach it."""
     key = "48151623"
     body = json.dumps({"contract": 48151623, "provider": "Claude", "state": "ok"})
 
@@ -563,7 +595,7 @@ def test_a_key_of_digits_is_scrubbed_from_a_number_too() -> None:
         environ={"LIMITS_SOURCE_KEY": key},
     )
 
-    assert item["reason"] == "contract [key] not supported"
+    assert item["reason"] in ("unsupported contract", "answer shape: contract")
     assert "481516" not in json.dumps(item)
 
 
