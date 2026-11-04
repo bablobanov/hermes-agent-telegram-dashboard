@@ -249,10 +249,13 @@ class _NarrowerUnscopedError(UnscopedSecretError):
     """A subclass the engine might raise one day: still an unscoped read."""
 
 
-def _engine_scope(monkeypatch: pytest.MonkeyPatch, get_secret: Any) -> None:
+def _engine_scope(
+    monkeypatch: pytest.MonkeyPatch, get_secret: Any, *, expose_class: bool = True
+) -> None:
     """Install a fake ``agent.secret_scope``; ``import_module`` finds the leaf in sys.modules."""
     module = ModuleType("agent.secret_scope")
-    module.UnscopedSecretError = UnscopedSecretError  # type: ignore[attr-defined]
+    if expose_class:
+        module.UnscopedSecretError = UnscopedSecretError  # type: ignore[attr-defined]
     if get_secret is not None:
         module.get_secret = get_secret  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "agent.secret_scope", module)
@@ -299,6 +302,37 @@ def test_a_subclass_of_the_engine_s_unscoped_error_is_an_unscoped_read(
         raise _NarrowerUnscopedError("no scope")
 
     _engine_scope(monkeypatch, get_secret)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+
+
+def _raising_lookalike(name: str, default: str = "") -> str:
+    """get_secret raising a class that is not the engine's but bears its name."""
+    raise type("UnscopedSecretError", (RuntimeError,), {})("no scope")
+
+
+def test_a_lookalike_of_the_engine_s_class_is_another_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex re-check: where the module exposes the class, only it (or a subclass) is an
+    unscoped read; another class of the same name is a failed lookup named by its class."""
+    _engine_scope(monkeypatch, _raising_lookalike)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key lookup failed: UnscopedSecretError"
+
+
+def test_without_the_class_in_the_module_the_class_name_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _engine_scope(monkeypatch, _raising_lookalike, expose_class=False)
     get = RecordingGet()
 
     item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)

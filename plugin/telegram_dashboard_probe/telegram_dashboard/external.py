@@ -205,12 +205,13 @@ def _read_key(name: str) -> str:
 
 
 def _is_unscoped(module: object, exc: Exception) -> bool:
-    """The engine's ``UnscopedSecretError`` or a subclass of it; by the class's name along the
-    MRO when the module does not expose the class. Never raises."""
+    """The engine's ``UnscopedSecretError`` or a subclass of it, by ``isinstance`` when the
+    module exposes the class; by the class's name along the MRO only when it does not. Never
+    raises."""
     try:
         engine_class = getattr(module, "UnscopedSecretError", None)
-        if isinstance(engine_class, type) and isinstance(exc, engine_class):
-            return True
+        if isinstance(engine_class, type):
+            return isinstance(exc, engine_class)
         return any(c.__name__ == "UnscopedSecretError" for c in type(exc).__mro__)
     except Exception:
         return False
