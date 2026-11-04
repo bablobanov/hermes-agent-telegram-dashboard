@@ -377,15 +377,22 @@ def _percent(used: object) -> float | None:
 def _fetched(payload: dict[str, Any], now: datetime) -> str:
     """The source's own stamp of its numbers; the time of reading when it has none or it is
     ahead of the clock (a stamp from the future cannot be proven)."""
-    stamp = payload.get("fetched_at")
-    moment = parse_timestamp(stamp)
+    moment = _parsed_moment(payload.get("fetched_at"))
     if moment is None or is_from_the_future((now - moment).total_seconds()):
         return now.isoformat()
-    return str(stamp)
+    return moment.isoformat()
 
 
 def _moment(value: object) -> str | None:
-    return value if isinstance(value, str) and parse_timestamp(value) is not None else None
+    """A moment of the answer as this code renders the parsed time (UTC, ``isoformat``), never
+    the received text: a key that is itself a valid moment does not pass through verbatim."""
+    moment = _parsed_moment(value)
+    return moment.isoformat() if moment is not None else None
+
+
+def _parsed_moment(value: object) -> datetime | None:
+    """The check on the received value: ISO-8601 text only."""
+    return parse_timestamp(value) if isinstance(value, str) else None
 
 
 def _text(value: object, limit: int, key: str | None = None) -> str | None:

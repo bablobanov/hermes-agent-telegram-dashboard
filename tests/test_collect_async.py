@@ -604,6 +604,26 @@ def test_an_echo_of_the_key_in_another_case_stays_out_of_the_cache_and_the_scree
     assert "[key]" in json.dumps(cache["item"]) and "[key hidden]" not in json.dumps(cache["item"])
 
 
+def test_a_key_that_is_a_moment_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex re-check 3: a key that is itself a valid moment, returned in every moment field,
+    reaches the record's ``external_cache``, the snapshot and the screen only as this code
+    renders the time, never as the received text."""
+    from test_external import STAMP_KEY, stamp_echo
+
+    body = json.dumps(stamp_echo(STAMP_KEY)).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, STAMP_KEY)
+
+    assert "2025-01-02T03:04:05+00:00" in stored
+    for text in (stored, screen, snapshot):
+        assert STAMP_KEY not in text
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 

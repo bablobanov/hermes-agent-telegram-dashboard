@@ -81,27 +81,27 @@ def test_the_reference_answer_parses_into_a_payload_item() -> None:
 
     assert item["status"] == "available" and item["reason"] is None
     assert item["provider"] == "Claude" and item["plan"] == "Max 5x"
-    assert item["login_expires_at"] == "2026-10-27T21:07:24Z"
-    assert item["fetched_at"] == "2026-09-29T06:59:30Z"
+    assert item["login_expires_at"] == "2026-10-27T21:07:24+00:00"
+    assert item["fetched_at"] == "2026-09-29T06:59:30+00:00"
     assert item["windows"] == [
         {
             "label": "session",
             "used_percent": 42.0,
-            "reset_at": "2026-09-29T09:00:00Z",
+            "reset_at": "2026-09-29T09:00:00+00:00",
             "scope": None,
             "severity": "normal",
         },
         {
             "label": "week",
             "used_percent": 86.0,
-            "reset_at": "2026-09-29T23:00:00Z",
+            "reset_at": "2026-09-29T23:00:00+00:00",
             "scope": None,
             "severity": "warning",
         },
         {
             "label": "week",
             "used_percent": 100.0,
-            "reset_at": "2026-09-29T23:00:00Z",
+            "reset_at": "2026-09-29T23:00:00+00:00",
             "scope": "Fable",
             "severity": "critical",
         },
@@ -150,9 +150,9 @@ def test_states_login_expired_and_unavailable() -> None:
     odd = parse_contract({**REFERENCE_ANSWER, "state": "sleeping"}, now=NOW)
 
     assert (expired["status"], expired["plan"]) == ("expired", "Max 5x")
-    assert expired["fetched_at"] == "2026-09-29T06:59:30Z"
+    assert expired["fetched_at"] == "2026-09-29T06:59:30+00:00"
     assert (down["status"], down["reason"]) == ("unavailable", "runner busy")
-    assert down["login_expires_at"] == "2026-10-27T21:07:24Z", "a date survives a bad tick"
+    assert down["login_expires_at"] == "2026-10-27T21:07:24+00:00", "a date survives a bad tick"
     assert (odd["status"], odd["reason"]) == ("unavailable", "answer shape: state")
 
 
@@ -809,6 +809,38 @@ def test_the_piece_check_cuts_its_windows_from_the_key_s_own_characters() -> Non
     assert reason_of("code sabcdefg") == "code sabcdefg"
     assert reason_of("code ABCDEFGH") == HIDDEN
     assert reason_of("code ßABCDEFG") == HIDDEN
+
+
+STAMP_KEY = "2025-01-02T03:04:05Z"
+
+
+def stamp_echo(key: str) -> dict[str, Any]:
+    """An answer that returns the key, itself a valid moment, in every moment field."""
+    return {
+        "contract": 1,
+        "provider": "Claude",
+        "state": "ok",
+        "login_expires_at": key,
+        "fetched_at": key,
+        "windows": [{"used_percent": 5, "resets_at": key}],
+    }
+
+
+def test_a_moment_is_stored_as_rendered_never_as_received() -> None:
+    """Codex re-check 3: a moment is checked as received and stored as this code renders the
+    parsed time, never as the received text, so a key that is itself a valid moment does not
+    pass through verbatim."""
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=json.dumps(stamp_echo(STAMP_KEY)).encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": STAMP_KEY},
+    )
+
+    rendered = "2025-01-02T03:04:05+00:00"
+    assert (item["login_expires_at"], item["fetched_at"]) == (rendered, rendered)
+    assert item["windows"][0]["reset_at"] == rendered
+    assert STAMP_KEY not in json.dumps(item)
 
 
 def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:

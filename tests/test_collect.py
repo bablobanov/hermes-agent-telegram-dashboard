@@ -681,7 +681,7 @@ def test_login_events_come_from_the_contract_and_survive_a_failed_tick() -> None
     down = {"contract": 1, "provider": "Claude", "state": "unavailable", "reason": "HTTP 503"}
     cache["attempted_at"] = "2026-09-09T00:00:00+00:00"
     metric, source, events = _ext({**down, "windows": []}, cache, now=later)
-    assert source.state == "unavailable" and metric.login_expires_at == "2026-09-11T20:00:00Z"
+    assert source.state == "unavailable" and metric.login_expires_at == "2026-09-11T20:00:00+00:00"
     assert [i.incident_id for i in events] == ["claude:login_expiring"]
 
     _metric, _source, calm = _ext({**EXT_ANSWER, "login_expires_at": "2026-12-01T00:00:00Z"})
