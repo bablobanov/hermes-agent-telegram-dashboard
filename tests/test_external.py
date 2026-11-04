@@ -450,6 +450,89 @@ def test_a_get_that_takes_the_header_away_still_gets_the_class_only(bare: bool) 
     assert len(passed) == 1
 
 
+def echoing_answers(key: str) -> dict[str, dict[str, Any]]:
+    """Contract-1 answers from a source that echoes the key it was sent, in a reason, a plan,
+    a window's label and scope, and the contract version (cut to 8 characters in its reason)."""
+    return {
+        "unavailable": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "unavailable",
+            "reason": f"denied for Bearer {key}",
+            "plan": f"Pro {key}",
+            "windows": [],
+        },
+        "ok": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "ok",
+            "plan": key,
+            "windows": [{"label": f"w {key}", "used_percent": 5, "scope": "m" * 16 + key}],
+        },
+        "contract": {"contract": key, "provider": "Claude", "state": "ok", "windows": []},
+    }
+
+
+def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
+    """Codex re-check: a source that was sent the key can answer with it. Every occurrence of
+    the key (and ``Bearer <key>``) is replaced by ``[key]`` before anything is cleaned or cut,
+    so no cut leaves a prefix of it either. A source without a key is read as it answers."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+    items = {
+        name: fetch_item(
+            source,
+            now=NOW,
+            get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        for name, answer in echoing_answers(key).items()
+    }
+
+    for item in items.values():
+        assert key[:6] not in json.dumps(item)
+    assert items["unavailable"]["reason"] == "denied for [key]"
+    assert items["unavailable"]["plan"] == "Pro [key]"
+    assert items["ok"]["plan"] == "[key]"
+    assert items["ok"]["windows"][0]["label"] == "w [key]"
+    assert items["ok"]["windows"][0]["scope"] == "m" * 16 + "[key]"
+    assert items["contract"]["reason"] == "contract [key] not supported"
+    unkeyed = RecordingGet(body=json.dumps(echoing_answers(key)["ok"]).encode("utf-8"))
+    assert fetch_item(_source(), now=NOW, get=unkeyed)["plan"] == key
+
+
+def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
+    """The scrub walks the parsed answer; an answer nested deeper than the interpreter's limit
+    is "no data" with the reason, never an exception. Unkeyed, a json that takes such a depth
+    (newer interpreters guard the C stack instead of counting) sees a list, not an object."""
+    body = b"[" * 30000 + b"]" * 30000
+    environ = {"LIMITS_SOURCE_KEY": "kq7Zr4p9XwLm2Vt8"}
+    get = RecordingGet(body=body)
+
+    keyed = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ=environ)
+    unkeyed = fetch_item(_source(), now=NOW, get=get)
+
+    assert keyed["reason"] == "answer shape: nested too deep"
+    assert unkeyed["reason"] in ("answer shape: nested too deep", "answer shape: not an object")
+
+
+def test_a_key_of_digits_is_scrubbed_from_a_number_too() -> None:
+    """The contract version is cut to 8 characters in its reason: a number that holds a key
+    of digits must not put it there."""
+    key = "48151623"
+    body = json.dumps({"contract": 48151623, "provider": "Claude", "state": "ok"})
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=body.encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    assert item["reason"] == "contract [key] not supported"
+    assert "481516" not in json.dumps(item)
+
+
 def test_a_failed_request_without_a_key_keeps_the_error_text() -> None:
     def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
         raise OSError("connection refused")

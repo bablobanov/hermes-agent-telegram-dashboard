@@ -52,6 +52,8 @@ BOT_TOKEN_REFUSAL = "key_env names a bot token variable"
 SECRET_SCOPE_MODULE = "agent.secret_scope"
 UNSCOPED_REFUSAL = "key not readable outside a profile scope"
 KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
+# What a keyed source's answer shows where it echoed the key.
+KEY_PLACEHOLDER = "[key]"
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -250,25 +252,29 @@ def fetch_item(
         item["reason"] = source.problem
         return item
     headers = {"Accept": "application/json"}
-    # Decided when the header is built, never read back from what ``get`` was handed.
-    keyed = False
+    # Set when the header is built, never read back from what ``get`` was handed.
+    key: str | None = None
     if source.key_env:
         try:
-            headers["Authorization"] = f"Bearer {_source_key(source.key_env, environ)}"
+            key = _source_key(source.key_env, environ)
         except _KeyUnavailable as unavailable:
             item["reason"] = str(unavailable)
             return item
-        keyed = True
+        headers["Authorization"] = f"Bearer {key}"
     try:
         status, body = get(source.url, dict(headers), source.timeout_seconds)
     except Exception as exc:
         # With the key in the request the error's text may carry the header: the class alone.
-        item["reason"] = f"request failed: {type(exc).__name__ if keyed else _public(exc)}"
+        item["reason"] = f"request failed: {type(exc).__name__ if key else _public(exc)}"
         return item
-    return _read_answer(status, body, now=now)
+    return _read_answer(status, body, now=now, key=key)
 
 
-def _read_answer(status: int, body: bytes, *, now: datetime) -> dict[str, Any]:
+def _read_answer(
+    status: int, body: bytes, *, now: datetime, key: str | None = None
+) -> dict[str, Any]:
+    """The answer as an item; a source that was sent ``key`` has it taken out of the answer
+    first, before any string is cleaned or cut."""
     item = _empty_item()
     if status != 200:
         item["reason"] = f"HTTP {status}"
@@ -278,10 +284,30 @@ def _read_answer(status: int, body: bytes, *, now: datetime) -> dict[str, Any]:
         return item
     try:
         payload = json.loads(body.decode("utf-8"))
+        if key:
+            payload = _scrub_key(payload, key)
     except (UnicodeDecodeError, ValueError):
         item["reason"] = "answer shape: not JSON"
         return item
+    except RecursionError:
+        item["reason"] = "answer shape: nested too deep"
+        return item
     return parse_contract(payload, now=now)
+
+
+def _scrub_key(value: object, key: str) -> object:
+    """``value`` with ``Bearer <key>`` and the key itself replaced by ``[key]`` in every string,
+    through objects and lists, in one pass; a number whose digits hold the key is ``[key]`` as a
+    whole (the contract version is cut to 8 characters in its reason)."""
+    if isinstance(value, str):
+        return re.sub(rf"(?:\b(?i:bearer)\s+)?{re.escape(key)}", KEY_PLACEHOLDER, value)
+    if isinstance(value, dict):
+        return {name: _scrub_key(part, key) for name, part in value.items()}
+    if isinstance(value, list):
+        return [_scrub_key(part, key) for part in value]
+    if isinstance(value, int | float) and not isinstance(value, bool) and key in str(value):
+        return KEY_PLACEHOLDER
+    return value
 
 
 # ----------------------------------------------------------------------------- the contract

@@ -486,6 +486,30 @@ def test_a_get_that_takes_the_header_away_leaves_the_key_out_of_the_cache_and_th
         assert key[:6] not in text and "Bearer" not in text
 
 
+@pytest.mark.parametrize("state", ["unavailable", "ok"])
+def test_a_keyed_source_echoing_its_key_leaves_it_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, state: str
+) -> None:
+    """Codex re-check: a source that was sent the key answers with it in its reason, plan and
+    windows. Through the tick, the record's ``external_cache``, the snapshot and the screen carry
+    ``[key]`` where the key was, and no 6-character prefix of it."""
+    from test_external import echoing_answers
+
+    key = "kq7Zr4p9XwLm2Vt8"
+    body = json.dumps(echoing_answers(key)[state]).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    assert "[key]" in stored and "[key]" in screen
+    if state == "unavailable":
+        assert "denied for [key]" in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 
