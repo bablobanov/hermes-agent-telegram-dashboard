@@ -556,6 +556,31 @@ def test_a_key_that_is_a_protocol_word_keeps_the_line_and_stays_out_of_its_text(
     assert f"Max {key}" not in stored and f"Max {key}" not in screen
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["prefix", "fragment", "ansi-split", "markup-exact", "markup-piece", "json-escape", "honest"],
+)
+def test_a_piece_of_the_key_stays_out_of_the_cache_the_snapshot_and_the_screen(
+    tmp_path: Path, pid_alive: None, name: str
+) -> None:
+    """Codex re-check: through the tick, no 8 characters of the key in a row reach the
+    record's ``external_cache``, the snapshot or the screen, whatever piece or form of the key
+    the source echoed; an honest reason reaches the screen as it was."""
+    from test_external import key_runs, partial_echoes, strings_in
+
+    key, body = partial_echoes()[name]
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    texts = [*strings_in(json.loads(stored)), screen, snapshot]
+    assert not [run for run in key_runs(key) for text in texts if run in text]
+    if name == "honest":
+        assert "upstream busy, retry later" in screen
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 

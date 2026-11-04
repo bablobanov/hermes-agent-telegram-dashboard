@@ -52,8 +52,11 @@ BOT_TOKEN_REFUSAL = "key_env names a bot token variable"
 SECRET_SCOPE_MODULE = "agent.secret_scope"
 UNSCOPED_REFUSAL = "key not readable outside a profile scope"
 KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
-# What a keyed source's answer shows where it echoed the key.
+# What a keyed source's answer shows where it echoed the key, and instead of a displayed string
+# that still holds KEY_PIECE characters of the key in a row after cleaning and cutting.
 KEY_PLACEHOLDER = "[key]"
+KEY_HIDDEN = "[hidden: may contain the key]"
+KEY_PIECE = 8
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -383,17 +386,30 @@ def _moment(value: object) -> str | None:
 
 def _text(value: object, limit: int, key: str | None = None) -> str | None:
     """A displayed string of the answer, stripped, cleaned and cut. From a source that was sent
-    ``key``, ``Bearer <key>`` and the key are ``[key]`` before that (one pass, so no cut can
-    leave a prefix of an exact echo)."""
+    ``key``: ``Bearer <key>`` and the key are ``[key]`` before that (one pass, so no cut can
+    leave a prefix of an exact echo), and a result that still holds a piece of the key (a
+    service printing part of a token, a key cleaning put back together) is hidden as a whole."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = _key_echo(key).sub(KEY_PLACEHOLDER, value.strip()) if key else value.strip()
-    return sanitize_public_text(text, limit=limit) or None
+    shown = sanitize_public_text(text, limit=limit) or None
+    if shown is not None and key and _holds_key_piece(shown, key):
+        return KEY_HIDDEN
+    return shown
 
 
 def _key_echo(key: str) -> re.Pattern[str]:
     """``Bearer <key>`` (``Bearer`` in any case) or the key itself."""
     return re.compile(rf"(?:\b(?i:bearer)\s+)?{re.escape(key)}")
+
+
+def _holds_key_piece(text: str, key: str) -> bool:
+    """Any ``KEY_PIECE`` characters of the key in a row, case aside; a key shorter than that,
+    as a word of its own."""
+    folded, piece = text.casefold(), key.casefold()
+    if len(piece) < KEY_PIECE:
+        return re.search(rf"(?<!\w){re.escape(piece)}(?!\w)", folded) is not None
+    return any(piece[i : i + KEY_PIECE] in folded for i in range(len(piece) - KEY_PIECE + 1))
 
 
 def _empty_item() -> dict[str, Any]:

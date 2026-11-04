@@ -604,6 +604,95 @@ def test_a_key_that_is_a_protocol_word_leaves_a_valid_answer_valid(key: str) -> 
     assert not [text for text in _shown_strings(keyed) if word.search(text)]
 
 
+PIECE_KEY = "kq7Zr4p9XwLm2Vt8"
+# Header-safe (no whitespace, no control character), with characters markup rewrites.
+MARKUP_KEY = 'Ab<c&d"e12345678'
+HIDDEN = "[hidden: may contain the key]"
+
+
+def _answer(**fields: Any) -> bytes:
+    return json.dumps({"contract": 1, "provider": "Claude", **fields}).encode("utf-8")
+
+
+def partial_echoes() -> dict[str, tuple[str, bytes]]:
+    """``(key, body)`` of answers that echo a piece of the key, or the key in a form an exact
+    match before cleaning cannot see, or not at all (``honest``)."""
+    k = PIECE_KEY
+    escaped = "".join(f"\\u{ord(ch):04x}" for ch in k)
+    return {
+        "prefix": (k, _answer(state="unavailable", reason=f"invalid key {k[:8]}...")),
+        "fragment": (
+            k,
+            _answer(
+                state="ok", windows=[{"label": k[4:16], "scope": f"m{k[2:12]}", "used_percent": 5}]
+            ),
+        ),
+        "ansi-split": (k, _answer(state="unavailable", reason=f"denied {k[:5]}\x1b[0m{k[5:]}")),
+        "markup-exact": (MARKUP_KEY, _answer(state="unavailable", reason=f"denied {MARKUP_KEY}")),
+        "markup-piece": (
+            MARKUP_KEY,
+            _answer(state="unavailable", reason=f"denied {MARKUP_KEY[:9]}"),
+        ),
+        "json-escape": (
+            k,
+            b'{"contract": 1, "provider": "Claude", "state": "unavailable", "reason": "denied '
+            + escaped.encode("ascii")
+            + b'"}',
+        ),
+        "honest": (k, _answer(state="unavailable", reason="upstream busy, retry later")),
+    }
+
+
+def key_runs(key: str) -> set[str]:
+    """Every 8 characters of the key in a row."""
+    return {key[i : i + 8] for i in range(len(key) - 7)}
+
+
+def strings_in(value: object) -> list[str]:
+    """Every string in a decoded JSON value, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*strings_in(k), *strings_in(v))]
+    if isinstance(value, list):
+        return [s for part in value for s in strings_in(part)]
+    return []
+
+
+_PIECE_EXPECTED = {
+    "prefix": ("reason", HIDDEN),
+    "fragment": ("window", (HIDDEN, HIDDEN)),
+    "ansi-split": ("reason", HIDDEN),
+    "markup-exact": ("reason", "denied [key]"),
+    "markup-piece": ("reason", HIDDEN),
+    "json-escape": ("reason", "denied [key]"),
+    "honest": ("reason", "upstream busy, retry later"),
+}
+
+
+@pytest.mark.parametrize("name", list(_PIECE_EXPECTED))
+def test_a_piece_of_the_key_in_a_displayed_string_hides_the_whole_field(name: str) -> None:
+    """Codex re-check: honest services print part of a token, and cleaning can change a
+    string. After cleaning and cutting, a displayed string that still holds 8 characters of the
+    key in a row is replaced as a whole; an exact echo is ``[key]`` before that; an honest
+    reason passes unchanged."""
+    key, body = partial_echoes()[name]
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=body),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    field, expected = _PIECE_EXPECTED[name]
+    if field == "window":
+        assert (item["windows"][0]["label"], item["windows"][0]["scope"]) == expected
+    else:
+        assert item["reason"] == expected
+    assert not [run for run in key_runs(key) for text in strings_in(item) if run in text]
+
+
 def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
     """An answer nested deeper than the interpreter's json takes is "no data" with the reason,
     never an exception, keyed or not; a json that takes such a depth (newer interpreters guard
