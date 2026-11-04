@@ -81,6 +81,11 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
         external["verified"]
     )
     assert "tick's own context" in external["key_probe"]
+    for field in ("key_probe", "caveat"):
+        assert "agent.secret_scope.get_secret" in external[field], field
+        assert "agent.secret_scope.UnscopedSecretError" in external[field], field
+    assert "isinstance" in external["key_probe"]
+    assert "only where the module has no such class" in external["key_probe"]
     assert "if that connect ran inside one" in external["key_probe"]
     assert {"0.21.1", "0.21.6", "0.22.5"} == set(external["verified"])
     assert "f27cdbce5a" in external["verified"]["0.21.6"]
