@@ -233,11 +233,11 @@ def test_the_key_comes_from_the_named_variable_and_nowhere_else() -> None:
     get = RecordingGet()
     source = _source(key_env="LIMITS_SOURCE_KEY", timeout_seconds=90)
 
-    item = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": "k-123"})
+    item = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": "k-123456"})
 
     assert item["status"] == "available"
     assert get.calls == [
-        (URL, {"Accept": "application/json", "Authorization": "Bearer k-123"}, 90.0)
+        (URL, {"Accept": "application/json", "Authorization": "Bearer k-123456"}, 90.0)
     ]
     missing = fetch_item(source, now=NOW, get=get, environ={})
     assert missing["reason"] == "LIMITS_SOURCE_KEY not set" and len(get.calls) == 1
@@ -450,6 +450,38 @@ def test_a_key_a_header_cannot_carry_is_never_sent(
         assert "sk-0123" not in str(item) and "4567" not in str(item)
 
 
+@pytest.mark.parametrize("key", ["k", "key", "1", "1234567"])
+def test_a_key_shorter_than_8_characters_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """Codex re-check 3: a key of fewer than 8 characters is refused before any request,
+    whether it came from the environment or from get_secret. Every key that is sent has at
+    least 8 characters, which the check for pieces of the key in displayed text relies on."""
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    given = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key})
+    _engine_scope(monkeypatch, lambda name, default="": key)
+    scoped = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    assert given["reason"] == scoped["reason"] == "key shorter than 8 characters"
+
+
+def test_a_key_of_8_characters_is_sent() -> None:
+    get = RecordingGet()
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=get,
+        environ={"LIMITS_SOURCE_KEY": "12345678"},
+    )
+
+    assert item["status"] == "available"
+    assert get.calls[0][1]["Authorization"] == "Bearer 12345678"
+
+
 def test_a_failed_request_with_a_key_names_only_the_exception_class() -> None:
     key = "sk-0123456789abcdef"
 
@@ -567,7 +599,8 @@ def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
     assert fetch_item(_source(), now=NOW, get=unkeyed)["plan"] == key
 
 
-PROTOCOL_WORD_KEYS = ["1", "ok", "normal", "warning", "critical"]
+# Protocol words long enough to be a key (a key has at least 8 characters, Codex re-check 3).
+PROTOCOL_WORD_KEYS = ["critical", "unavailable", "login_expired"]
 
 
 def _protocol_view(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -587,21 +620,32 @@ def _shown_strings(item: dict[str, Any]) -> list[str]:
 @pytest.mark.parametrize("key", PROTOCOL_WORD_KEYS)
 def test_a_key_that_is_a_protocol_word_leaves_a_valid_answer_valid(key: str) -> None:
     """Codex re-check, a regression of wave 2: the control fields are checked as received and
-    only displayed strings are kept free of the key. A legal key such as ``1``, ``ok`` or a
-    severity word leaves the state, the windows and the severities as they are without a key."""
-    body = json.dumps({**REFERENCE_ANSWER, "plan": f"Max {key}"}).encode("utf-8")
+    only displayed strings are kept free of the key. A key that is a severity or a state word
+    leaves the state, the windows and the severities as they are without a key."""
+    answers = [
+        {**REFERENCE_ANSWER, "plan": f"Max {key}"},
+        {**REFERENCE_ANSWER, "state": "unavailable", "reason": "maintenance", "plan": f"Max {key}"},
+        {**REFERENCE_ANSWER, "state": "login_expired", "plan": f"Max {key}"},
+    ]
     environ = {"LIMITS_SOURCE_KEY": key}
+    statuses = []
 
-    keyed = fetch_item(
-        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=RecordingGet(body=body), environ=environ
-    )
-    plain = fetch_item(_source(), now=NOW, get=RecordingGet(body=body))
+    for answer in answers:
+        body = json.dumps(answer).encode("utf-8")
+        keyed = fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=body),
+            environ=environ,
+        )
+        plain = fetch_item(_source(), now=NOW, get=RecordingGet(body=body))
 
-    assert keyed["status"] == "available"
-    assert _protocol_view(keyed) == _protocol_view(plain)
-    assert keyed["plan"] == "Max [key]"
-    word = re.compile(rf"(?<!\w){re.escape(key)}(?!\w)")
-    assert not [text for text in _shown_strings(keyed) if word.search(text)]
+        statuses.append(keyed["status"])
+        assert _protocol_view(keyed) == _protocol_view(plain)
+        assert keyed["plan"] == "Max [key]"
+        shown = [text.casefold() for text in _shown_strings(keyed)]
+        assert not [run for run in key_runs(key) for text in shown if run.casefold() in text]
+    assert statuses == ["available", "unavailable", "expired"]
 
 
 PIECE_KEY = "kq7Zr4p9XwLm2Vt8"
@@ -824,7 +868,7 @@ def test_a_real_answer_over_loopback(server: _Server) -> None:
 def test_a_redirect_is_not_followed(server: _Server) -> None:
     (source,) = read_sources([{"url": server.url("/moved"), "key_env": "LIMITS_SOURCE_KEY"}])
 
-    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "k-123"})
+    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "k-123456"})
 
     assert item["reason"] == "HTTP 302"
     assert server.seen == ["/moved"], "the key must not travel on to another path"  # type: ignore[attr-defined]

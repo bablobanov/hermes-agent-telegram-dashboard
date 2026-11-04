@@ -57,6 +57,8 @@ KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
 KEY_PLACEHOLDER = "[key]"
 KEY_HIDDEN = "[key hidden]"
 KEY_PIECE = 8
+# A key shorter than a piece is never sent: every displayed string can then be checked for pieces.
+KEY_SHORT_REFUSAL = f"key shorter than {KEY_PIECE} characters"
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -232,6 +234,8 @@ def _source_key(name: str, environ: Mapping[str, str] | None) -> str:
         raise _KeyUnavailable(f"{name} not set")
     if not _header_safe(key):
         raise _KeyUnavailable(KEY_CHARACTERS_REFUSAL)
+    if len(key) < KEY_PIECE:
+        raise _KeyUnavailable(KEY_SHORT_REFUSAL)
     return key
 
 
@@ -404,11 +408,9 @@ def _key_echo(key: str) -> re.Pattern[str]:
 
 
 def _holds_key_piece(text: str, key: str) -> bool:
-    """Any ``KEY_PIECE`` characters of the key in a row, case aside; a key shorter than that,
-    as a word of its own."""
+    """Any ``KEY_PIECE`` characters of the key in a row, case aside (every key that is sent has
+    at least that many, ``_source_key``)."""
     folded, piece = text.casefold(), key.casefold()
-    if len(piece) < KEY_PIECE:
-        return re.search(rf"(?<!\w){re.escape(piece)}(?!\w)", folded) is not None
     return any(piece[i : i + KEY_PIECE] in folded for i in range(len(piece) - KEY_PIECE + 1))
 
 
