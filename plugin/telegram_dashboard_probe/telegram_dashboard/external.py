@@ -403,8 +403,8 @@ def _text(value: object, limit: int, key: str | None = None) -> str | None:
 
 
 def _key_echo(key: str) -> re.Pattern[str]:
-    """``Bearer <key>`` (``Bearer`` in any case) or the key itself."""
-    return re.compile(rf"(?:\b(?i:bearer)\s+)?{re.escape(key)}")
+    """``Bearer <key>`` or the key itself, in any case."""
+    return re.compile(rf"(?:\bbearer\s+)?{re.escape(key)}", re.IGNORECASE)
 
 
 def _holds_key_piece(text: str, key: str) -> bool:

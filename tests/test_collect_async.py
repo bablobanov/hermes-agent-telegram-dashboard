@@ -581,6 +581,29 @@ def test_a_piece_of_the_key_stays_out_of_the_cache_the_snapshot_and_the_screen(
         assert "upstream busy, retry later" in screen
 
 
+@pytest.mark.parametrize("state", ["unavailable", "ok"])
+def test_an_echo_of_the_key_in_another_case_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, state: str
+) -> None:
+    """Codex re-check 3: through the tick, an echo of the key in another case in any displayed
+    field leaves no 8 characters of the key in a row, in any case, in the record's
+    ``external_cache``, the snapshot or the screen; ``[key]`` stands where it was."""
+    from test_external import PIECE_KEY, key_runs, mixed_case_echoes, strings_in
+
+    key = PIECE_KEY
+    body = json.dumps(mixed_case_echoes(key)[state]).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    texts = [text.casefold() for text in [*strings_in(json.loads(stored)), screen, snapshot]]
+    assert not [run for run in key_runs(key) for text in texts if run.casefold() in text]
+    (cache,) = json.loads(stored).values()
+    assert "[key]" in json.dumps(cache["item"]) and "[key hidden]" not in json.dumps(cache["item"])
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 

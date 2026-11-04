@@ -737,6 +737,60 @@ def test_a_piece_of_the_key_in_a_displayed_string_hides_the_whole_field(name: st
     assert not [run for run in key_runs(key) for text in strings_in(item) if run in text]
 
 
+def mixed_case_echoes(key: str) -> dict[str, dict[str, Any]]:
+    """Answers echoing the key in other cases in every displayed field, two of them placed where
+    the 60- and 24-character cuts would fall inside the key."""
+    return {
+        "unavailable": {
+            "contract": 1,
+            "provider": f"P{key.upper()}",
+            "state": "unavailable",
+            "reason": "x" * 50 + key.upper(),
+            "plan": f"bearer {key.swapcase()}",
+        },
+        "ok": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "ok",
+            "windows": [
+                {
+                    "label": "w" * 18 + key.lower(),
+                    "scope": "m" * 16 + key.swapcase(),
+                    "used_percent": 5,
+                }
+            ],
+        },
+    }
+
+
+def _caseless_runs(key: str, texts: list[str]) -> list[str]:
+    folded = [text.casefold() for text in texts]
+    return [run for run in key_runs(key) for text in folded if run.casefold() in text]
+
+
+def test_an_echo_of_the_key_in_another_case_is_replaced_before_the_cut() -> None:
+    """Codex re-check 3: the exact replace before cleaning ignores case, ``Bearer`` included, so
+    an echo in another case is ``[key]`` where it was, even where a cut would have left a
+    piece shorter than the check after it can see."""
+    key = PIECE_KEY
+    items = {
+        name: fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        for name, answer in mixed_case_echoes(key).items()
+    }
+
+    down, window = items["unavailable"], items["ok"]["windows"][0]
+    assert (down["provider"], down["plan"]) == ("P[key]", "[key]")
+    assert down["reason"] == "x" * 50 + "[key]"
+    assert (window["label"], window["scope"]) == ("w" * 18 + "[key]", "m" * 16 + "[key]")
+    for item in items.values():
+        assert not _caseless_runs(key, strings_in(item))
+
+
 def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
     """An answer nested deeper than the interpreter's json takes is "no data" with the reason,
     never an exception, keyed or not; a json that takes such a depth (newer interpreters guard
