@@ -533,6 +533,29 @@ def test_a_control_field_holding_the_key_stays_out_of_the_cache_and_the_screen(
         assert key[:6] not in text
 
 
+@pytest.mark.parametrize("key", ["1", "ok", "normal", "warning", "critical"])
+def test_a_key_that_is_a_protocol_word_keeps_the_line_and_stays_out_of_its_text(
+    tmp_path: Path, pid_alive: None, key: str
+) -> None:
+    """Codex re-check, a regression of wave 2: through the tick, a legal key such as ``ok``
+    leaves the source's windows and severities on the record and the screen, and the plan that
+    echoed it says ``[key]``."""
+    from test_external import REFERENCE_ANSWER
+
+    body = json.dumps({**REFERENCE_ANSWER, "plan": f"Max {key}"}).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, _snapshot = _keyed_tick(tmp_path, get, key)
+
+    (cache,) = json.loads(stored).values()
+    assert cache["item"]["status"] == "available"
+    assert [w["severity"] for w in cache["item"]["windows"]] == ["normal", "warning", "critical"]
+    assert cache["plan"] == "Max [key]" and "Max [key]" in screen
+    assert f"Max {key}" not in stored and f"Max {key}" not in screen
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 

@@ -567,10 +567,47 @@ def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
     assert fetch_item(_source(), now=NOW, get=unkeyed)["plan"] == key
 
 
+PROTOCOL_WORD_KEYS = ["1", "ok", "normal", "warning", "critical"]
+
+
+def _protocol_view(item: dict[str, Any]) -> tuple[Any, ...]:
+    """What the control fields made of an answer: status, stamps, and per window the number,
+    the reset and the severity."""
+    windows = [(w["used_percent"], w["reset_at"], w["severity"]) for w in item["windows"]]
+    return item["status"], item["fetched_at"], item["login_expires_at"], windows
+
+
+def _shown_strings(item: dict[str, Any]) -> list[str]:
+    windows = item["windows"]
+    texts = [item["provider"], item["plan"], item["reason"]]
+    texts += [w["label"] for w in windows] + [w["scope"] for w in windows]
+    return [text for text in texts if isinstance(text, str)]
+
+
+@pytest.mark.parametrize("key", PROTOCOL_WORD_KEYS)
+def test_a_key_that_is_a_protocol_word_leaves_a_valid_answer_valid(key: str) -> None:
+    """Codex re-check, a regression of wave 2: the control fields are checked as received and
+    only displayed strings are kept free of the key. A legal key such as ``1``, ``ok`` or a
+    severity word leaves the state, the windows and the severities as they are without a key."""
+    body = json.dumps({**REFERENCE_ANSWER, "plan": f"Max {key}"}).encode("utf-8")
+    environ = {"LIMITS_SOURCE_KEY": key}
+
+    keyed = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=RecordingGet(body=body), environ=environ
+    )
+    plain = fetch_item(_source(), now=NOW, get=RecordingGet(body=body))
+
+    assert keyed["status"] == "available"
+    assert _protocol_view(keyed) == _protocol_view(plain)
+    assert keyed["plan"] == "Max [key]"
+    word = re.compile(rf"(?<!\w){re.escape(key)}(?!\w)")
+    assert not [text for text in _shown_strings(keyed) if word.search(text)]
+
+
 def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
-    """The scrub walks the parsed answer; an answer nested deeper than the interpreter's limit
-    is "no data" with the reason, never an exception. Unkeyed, a json that takes such a depth
-    (newer interpreters guard the C stack instead of counting) sees a list, not an object."""
+    """An answer nested deeper than the interpreter's json takes is "no data" with the reason,
+    never an exception, keyed or not; a json that takes such a depth (newer interpreters guard
+    the C stack instead of counting) sees a list, not an object."""
     body = b"[" * 30000 + b"]" * 30000
     environ = {"LIMITS_SOURCE_KEY": "kq7Zr4p9XwLm2Vt8"}
     get = RecordingGet(body=body)
@@ -578,8 +615,8 @@ def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
     keyed = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ=environ)
     unkeyed = fetch_item(_source(), now=NOW, get=get)
 
-    assert keyed["reason"] == "answer shape: nested too deep"
-    assert unkeyed["reason"] in ("answer shape: nested too deep", "answer shape: not an object")
+    for item in (keyed, unkeyed):
+        assert item["reason"] in ("answer shape: nested too deep", "answer shape: not an object")
 
 
 def test_a_key_of_digits_never_reaches_a_reason_through_a_number() -> None:
@@ -595,7 +632,7 @@ def test_a_key_of_digits_never_reaches_a_reason_through_a_number() -> None:
         environ={"LIMITS_SOURCE_KEY": key},
     )
 
-    assert item["reason"] in ("unsupported contract", "answer shape: contract")
+    assert item["reason"] == "unsupported contract"
     assert "481516" not in json.dumps(item)
 
 

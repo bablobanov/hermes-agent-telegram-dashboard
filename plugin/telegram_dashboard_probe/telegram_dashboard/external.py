@@ -274,49 +274,34 @@ def fetch_item(
 def _read_answer(
     status: int, body: bytes, *, now: datetime, key: str | None = None
 ) -> dict[str, Any]:
-    """The answer as an item; a source that was sent ``key`` has it taken out of the answer
-    first, before any string is cleaned or cut."""
+    """The answer as an item. From a source that was sent ``key`` every displayed string is
+    kept free of it (``_text``); the control fields are read as received."""
     item = _empty_item()
     if status != 200:
-        item["reason"] = f"HTTP {status}"
+        item["reason"] = _text(f"HTTP {status}", 16, key)
         return item
     if len(body) > MAX_BODY_BYTES:
         item["reason"] = "answer over 64 KB"
         return item
     try:
         payload = json.loads(body.decode("utf-8"))
-        if key:
-            payload = _scrub_key(payload, key)
     except (UnicodeDecodeError, ValueError):
         item["reason"] = "answer shape: not JSON"
         return item
     except RecursionError:
         item["reason"] = "answer shape: nested too deep"
         return item
-    return parse_contract(payload, now=now)
-
-
-def _scrub_key(value: object, key: str) -> object:
-    """``value`` with ``Bearer <key>`` and the key itself replaced by ``[key]`` in every string,
-    through objects and lists, in one pass; a number whose digits hold the key is ``[key]`` as a
-    whole (the contract version is cut to 8 characters in its reason)."""
-    if isinstance(value, str):
-        return re.sub(rf"(?:\b(?i:bearer)\s+)?{re.escape(key)}", KEY_PLACEHOLDER, value)
-    if isinstance(value, dict):
-        return {name: _scrub_key(part, key) for name, part in value.items()}
-    if isinstance(value, list):
-        return [_scrub_key(part, key) for part in value]
-    if isinstance(value, int | float) and not isinstance(value, bool) and key in str(value):
-        return KEY_PLACEHOLDER
-    return value
+    return parse_contract(payload, now=now, key=key)
 
 
 # ----------------------------------------------------------------------------- the contract
 
 
-def parse_contract(payload: object, *, now: datetime) -> dict[str, Any]:
-    """Contract 1 as a payload item. Unknown keys are ignored, every string is sanitized, a
-    shape the contract does not allow is "no data" with the reason."""
+def parse_contract(payload: object, *, now: datetime, key: str | None = None) -> dict[str, Any]:
+    """Contract 1 as a payload item. Unknown keys are ignored. The control fields (contract,
+    state, windows, severity, numbers, stamps) are checked as received, and a reason about one
+    never quotes it; every displayed string is cleaned, and kept free of ``key`` when the
+    source was sent one (``_text``). A shape the contract does not allow is "no data"."""
     item = _empty_item()
     if not isinstance(payload, dict):
         item["reason"] = "answer shape: not an object"
@@ -327,22 +312,24 @@ def parse_contract(payload: object, *, now: datetime) -> dict[str, Any]:
         whole = isinstance(version, int) and not isinstance(version, bool)
         item["reason"] = "unsupported contract" if whole else "answer shape: contract"
         return item
-    provider = _text(payload.get("provider"), 24)
+    provider = _text(payload.get("provider"), 24, key)
     if provider is None:
         item["reason"] = "answer without provider"
         return item
     item.update(
         provider=provider,
-        plan=_text(payload.get("plan"), 24),
+        plan=_text(payload.get("plan"), 24, key),
         login_expires_at=_moment(payload.get("login_expires_at")),
     )
-    return _with_state(item, payload, now=now)
+    return _with_state(item, payload, now=now, key=key)
 
 
-def _with_state(item: dict[str, Any], payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+def _with_state(
+    item: dict[str, Any], payload: dict[str, Any], *, now: datetime, key: str | None
+) -> dict[str, Any]:
     state = payload.get("state")
     if state == "unavailable":
-        item["reason"] = _text(payload.get("reason"), 60) or "source unavailable"
+        item["reason"] = _text(payload.get("reason"), 60, key) or "source unavailable"
         return item
     if state == "login_expired":
         item.update(status="expired", fetched_at=_fetched(payload, now))
@@ -357,18 +344,18 @@ def _with_state(item: dict[str, Any], payload: dict[str, Any], *, now: datetime)
     item.update(
         status="available",
         fetched_at=_fetched(payload, now),
-        windows=[_window(raw) for raw in windows if isinstance(raw, dict)][:MAX_WINDOWS],
+        windows=[_window(raw, key) for raw in windows if isinstance(raw, dict)][:MAX_WINDOWS],
     )
     return item
 
 
-def _window(raw: dict[str, Any]) -> dict[str, Any]:
+def _window(raw: dict[str, Any], key: str | None) -> dict[str, Any]:
     severity = raw.get("severity")
     return {
-        "label": _text(raw.get("label"), 24) or "window",
+        "label": _text(raw.get("label"), 24, key) or "window",
         "used_percent": _percent(raw.get("used_percent")),
         "reset_at": _moment(raw.get("resets_at")),
-        "scope": _text(raw.get("scope"), 24),
+        "scope": _text(raw.get("scope"), 24, key),
         "severity": severity if severity in SEVERITIES else None,
     }
 
@@ -394,10 +381,19 @@ def _moment(value: object) -> str | None:
     return value if isinstance(value, str) and parse_timestamp(value) is not None else None
 
 
-def _text(value: object, limit: int) -> str | None:
+def _text(value: object, limit: int, key: str | None = None) -> str | None:
+    """A displayed string of the answer, stripped, cleaned and cut. From a source that was sent
+    ``key``, ``Bearer <key>`` and the key are ``[key]`` before that (one pass, so no cut can
+    leave a prefix of an exact echo)."""
     if not isinstance(value, str) or not value.strip():
         return None
-    return sanitize_public_text(value.strip(), limit=limit) or None
+    text = _key_echo(key).sub(KEY_PLACEHOLDER, value.strip()) if key else value.strip()
+    return sanitize_public_text(text, limit=limit) or None
+
+
+def _key_echo(key: str) -> re.Pattern[str]:
+    """``Bearer <key>`` (``Bearer`` in any case) or the key itself."""
+    return re.compile(rf"(?:\b(?i:bearer)\s+)?{re.escape(key)}")
 
 
 def _empty_item() -> dict[str, Any]:
