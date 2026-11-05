@@ -967,7 +967,7 @@ class ProbeRuntime:
     async def run(self) -> None:
         self._load_record()
         loop = asyncio.get_running_loop()
-        while True:
+        while self._serves():
             started = loop.time()
             try:
                 await self.tick()
@@ -986,6 +986,19 @@ class ProbeRuntime:
             # message banners "lagging" on a healthy system.
             elapsed = loop.time() - started
             await asyncio.sleep(max(0.0, self._pause() - elapsed))
+
+    def _serves(self) -> bool:
+        """Whether the loop goes on: its registration was not unloaded and still serves its
+        profile (issue #12). Read before every tick, so one loop per profile does not hang on
+        timing: a loop that a takeover left running, or one spawned right after its
+        registration was unloaded, ends at its next tick instead of editing on."""
+        if self._retired:
+            logger.info("probe: tick loop ends: this registration was unloaded")
+            return False
+        if not self._owns_profile():
+            logger.info("probe: tick loop ends: a newer registration serves this profile")
+            return False
+        return True
 
     def _pause(self) -> float:
         """The whole period after a tick that got to Telegram; a short retry while waiting for

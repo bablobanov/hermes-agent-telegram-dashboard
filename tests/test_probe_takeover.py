@@ -117,7 +117,7 @@ def test_a_second_registration_takes_the_loop_over_in_its_own_profile_only(
         second_a = await asyncio.to_thread(load_plugin().register, ctx_a)
         await until(lambda: second_a.task is not None and first_a.task.done())
 
-        assert first_a.task.cancelled()  # one loop per profile, even with no unload before it
+        assert first_a.task.done()  # one loop per profile, even with no unload before it
         assert second_a.latest is adapter_a and second_a.generation == 1
         assert first_b.task is loop_b and not loop_b.done()
         assert sorted(map(id, _loops())) == sorted(map(id, (second_a.task, loop_b)))
@@ -161,7 +161,8 @@ def test_a_registration_unloaded_before_its_takeover_ran_takes_nothing_over(
     tmp_path: Path,
 ) -> None:
     """The engine unloads the new registration (``ctx.on_unload``) before the gateway loop ran
-    the takeover it scheduled: nothing starts, the earlier loop is not cancelled by it."""
+    the takeover it scheduled: nothing starts. The earlier loop, which no longer serves the
+    profile, ends at its next tick: no loop at all, as after the engine's own unload of both."""
     plugin = load_plugin()
     ctx = _context(tmp_path / "home")
     callbacks: list[Any] = []
@@ -183,10 +184,9 @@ def test_a_registration_unloaded_before_its_takeover_ran_takes_nothing_over(
         await asyncio.sleep(0.05)
 
         assert second.task is None
-        assert _loops() == [first.task]
+        assert _loops() == [] and first.task.done() and not first.task.cancelled()
         second.wire(object(), adapter)  # its factory does nothing either
         assert second.task is None
-        first.task.cancel()
 
     asyncio.run(scenario())
     assert callbacks[0].__self__ is first and callbacks[1].__self__ is not first
@@ -249,6 +249,72 @@ def test_a_load_the_engine_abandoned_takes_nothing_over(tmp_path: Path) -> None:
         assert _loops() == [first.task]
         assert sys.modules[LIVE_MODULE].profiles[first.key]["owner"]() is first
         first.task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_a_loop_whose_registration_no_longer_serves_the_profile_ends_at_its_next_tick(
+    tmp_path: Path,
+) -> None:
+    """Review M3 (a): a reconnect wires the new registration before its takeover ran, and the
+    earlier loop is still alive (no unload before it, as on fakes). The takeover then has
+    nothing to do, and the earlier loop ends by itself: one loop per profile."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    old, new = FakeAdapter(), FakeAdapter()
+
+    async def scenario() -> None:
+        first.wire(object(), old)
+        await until(lambda: old.html_edits)
+        second = plugin.register(ctx)  # the takeover is scheduled, not run yet
+        second.wire(object(), new)  # a reconnect wires the new registration first
+
+        await until(lambda: first.task.done())
+        await asyncio.sleep(0.05)
+
+        assert not first.task.cancelled()  # it ended on its own check
+        assert _loops() == [second.task] and second.latest is new
+        seen = len(old.texts)
+        await until(lambda: len(new.html_edits) >= 2)
+        assert len(old.texts) == seen
+        second.task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_a_loop_spawned_just_after_its_registration_was_unloaded_never_ticks(
+    tmp_path: Path,
+) -> None:
+    """Review M3 (b): the engine's unload lands between the takeover's checks and its
+    ``spawn_task`` (emulated inside ``spawn_task``). The task exists, but the loop ends before
+    its first tick: nothing outlives the unload."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    adapter = FakeAdapter()
+    second_of: list[Any] = []
+
+    async def scenario() -> None:
+        first.wire(object(), adapter)
+        await until(lambda: adapter.html_edits)
+        first.retire()  # the engine's unload of the first registration
+        first.task.cancel()
+        again = _context(tmp_path / "home")
+        spawn = again.spawn_task
+
+        def spawn_after_unload(coro: Any, name: str | None = None) -> asyncio.Task[None]:
+            second_of[0].retire()  # the engine unloads the new registration right here
+            return spawn(coro, name=name)
+
+        again.spawn_task = spawn_after_unload  # type: ignore[method-assign]
+        second_of.append(plugin.register(again))
+        await until(lambda: second_of[0].task is not None and second_of[0].task.done())
+        edits = len(adapter.texts)
+        await asyncio.sleep(0.05)
+
+        assert not second_of[0].task.cancelled() and _loops() == []
+        assert len(adapter.texts) == edits
 
     asyncio.run(scenario())
 
