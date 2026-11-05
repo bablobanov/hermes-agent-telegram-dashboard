@@ -61,6 +61,23 @@ def test_check_on_plugin_state_reports_lagging_and_stale(tmp_path) -> None:
     )
 
 
+def test_check_takes_a_deferred_tick_as_no_failure_and_judges_by_the_last_confirmation(
+    tmp_path, capsys
+) -> None:
+    """``deferred``: the engine held the plugin's edit back while the chat's outbound slot was
+    busy. Not a failure by itself, and no confirmation either: the age of the last confirmation
+    decides, as for any other tick."""
+    fresh = _plugin_state(tmp_path, **_record(2, last_status="deferred"))
+    assert main(["--config", _config(tmp_path, fresh), "--check"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("confirmed") and "error=None" in out
+
+    for minutes, code, word in ((7, 1, "lagging"), (11, 2, "stale")):
+        held = _plugin_state(tmp_path, **_record(minutes, last_status="deferred"))
+        assert main(["--config", _config(tmp_path, held), "--check"]) == code
+        assert capsys.readouterr().out.startswith(word)
+
+
 def test_check_on_plugin_state_sees_a_lost_message_that_was_not_recreated(tmp_path, capsys) -> None:
     lost = _record(
         1,

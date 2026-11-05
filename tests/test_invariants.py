@@ -11,7 +11,8 @@ Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 
 their tests; 6 widened and 10 and 11 added in 0.10.0 (the rules line reads ``state.db``; no
 invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a command), 13 in
 0.11.0 (the memory section reads the notebooks, the queue and the log, and writes nothing), 14
-in 1.1.0 (issue #16: the usage facade's answers kept in the record are read field by field).
+in 1.1.0 (issue #16: the usage facade's answers kept in the record are read field by field) and
+15 (the engine's pacing of the chat is kept: no ``finalize``, nothing of its slot touched).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -439,3 +440,20 @@ def test_the_facade_s_answer_is_read_by_field_and_its_secrets_stay_out_of_the_re
     assert '"used_percent": 12.0' in stored and '"reason": "RuntimeError"' in stored
     for text in ("sk-ant-oat01", "PLANTED", "principal@", "99.10", "credits", "access_token"):
         assert text not in stored, text
+
+
+# ------------------------------------------------------------------------- 1.1.0, the chat's slot
+
+
+def test_the_plugin_keeps_to_the_engine_s_pacing_of_the_chat() -> None:
+    """15. The engine paces each chat's sends and edits through one shared slot (telegram
+    adapter, #116312) and holds back an interim ``edit_message`` while a reply in the same chat
+    has it; the plugin takes that as a deferred edit and tries again on its next tick. It never
+    gets past the slot: no ``finalize`` (the engine never holds back a final edit) and nothing
+    of the slot itself, read or written, so the agent's replies and the dashboard stay within
+    Telegram's flood limits together."""
+    entry = ENTRY.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(entry)):
+        if isinstance(node, ast.Call):
+            assert all(kw.arg != "finalize" for kw in node.keywords), ast.unparse(node)
+    assert not re.search(r"outbound_slot|_slot_secs|_slot_until", _code_only(entry))

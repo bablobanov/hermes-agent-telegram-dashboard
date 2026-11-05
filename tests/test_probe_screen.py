@@ -1404,6 +1404,181 @@ def test_when_plain_fails_too_there_is_no_verdict_and_html_is_tried_next_tick(
     assert not adapter.sent  # a network failure is not a lost message
 
 
+# The engine paces each chat's sends and edits through one shared slot (telegram adapter,
+# #116312): while a reply in the same chat holds it, ``edit_message`` without ``finalize`` edits
+# nothing and answers success with ``raw_response={"skipped": True}``. That is no edit: the tick
+# is ``deferred``, keeps its last confirmation, draws no verdict on a form, and the next tick
+# edits again.
+
+HELD_SINCE = "2026-09-09T20:59:00+00:00"
+
+
+def _remembered_confirmed(ctx: FakeContext) -> None:
+    _remembered(ctx)
+    ctx.state.data["probe"]["last_confirmed_at"] = HELD_SINCE
+
+
+def test_a_plain_edit_the_engine_held_back_is_deferred_and_draws_no_html_verdict(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The HTML edit is refused and the plain edit after it is held back: no plain edit landed,
+    so nothing says the form was refused. No ``edited``, no confirmation, HTML asked again on
+    every tick; the first tick the slot is free, the plain edit lands and the verdict follows the
+    usual rule. One line in the journal for a run of held-back ticks, not one per tick."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter(
+        reject_html="Bad Request: can't parse entities: unsupported start tag", busy=True
+    )
+    held: dict[str, Any] = {}
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+        held.update(record=dict(ctx.state.data["probe"]), html=runtime.html)
+        held.update(html_edits=len(adapter.html_edits), skipped=len(adapter.skipped))
+        held.update(texts=list(adapter.texts))
+        adapter.busy = False  # the agent's reply is out; the slot is free again
+        await until(lambda: len(adapter.edits) >= 2)
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    record = held["record"]
+    assert record["last_status"] == "deferred" and record["last_error"] is None
+    assert record["last_confirmed_at"] == HELD_SINCE  # the screen did not change
+    assert "screen_format" not in record and "html_error" not in record
+    assert held["html"] is None  # no verdict: HTML is asked again on the next tick
+    assert held["html_edits"] >= held["skipped"] >= 3
+    assert held["texts"] == [] and adapter.sent == []  # nothing reached Telegram while held
+    deferred = [r for r in caplog.records if "deferred" in r.getMessage()]
+    assert len(deferred) == 1, "one line for a run of held-back ticks"
+    assert "-100" not in deferred[0].getMessage()
+
+    # Then the plain edit landed right after a refused HTML one: now the form was refused.
+    final = ctx.state.data["probe"]
+    assert final["last_status"] == "edited" and final["last_confirmed_at"] != HELD_SINCE
+    assert (final["screen_format"], final["html_error"]) == ("plain", "RuntimeError")
+    refused = [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
+    assert len(refused) == 1
+
+
+def test_with_no_html_verb_a_held_back_plain_edit_is_deferred_too(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Plain is the only form here, so every edit goes through the gated verb: held back, the
+    record says ``deferred`` and nothing about the form; free, the plain edit lands."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PlainOnlyAdapter(busy=True)
+    held: dict[str, Any] = {}
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 2)
+        held.update(dict(ctx.state.data["probe"]))
+        adapter.busy = False
+        await until(lambda: len(adapter.edits) >= 1)
+
+    _run(runtime, adapter, scenario)
+
+    assert (held["last_status"], held["last_confirmed_at"]) == ("deferred", HELD_SINCE)
+    assert "screen_format" not in held and "html_error" not in held
+    assert ctx.state.data["probe"]["last_status"] == "edited"
+    assert ctx.state.data["probe"]["html_error"] == plugin.NO_HTML_VERB
+
+
+def test_an_html_edit_the_public_verb_held_back_is_deferred_without_a_plain_one(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A public verb that takes a parse mode is gated by the same slot. Held back, it is no
+    confirmation of the HTML form, and the plain edit after it would be held back as well: the
+    tick ends there, deferred."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PublicHtmlAdapter(busy=True)
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert set(adapter.skipped) == {"html"}  # never a plain attempt in a held-back tick
+    assert adapter.public_html_edits == [] and adapter.html_edits == [] and adapter.texts == []
+    assert runtime.html is None
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_confirmed_at"]) == ("deferred", HELD_SINCE)
+    assert "screen_format" not in record and "html_verb" not in record
+
+
+def test_a_held_back_plain_edit_after_a_refused_rich_one_draws_no_rich_verdict(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The rich verdict follows the HTML rule: only when the edit right after it landed. A
+    held-back plain edit did not land: rich is asked again on the next tick."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(
+        refuse={"editMessageText": BadRequest("Bad Request: unsupported")},
+        reject_html="Bad Request: can't parse entities",
+        busy=True,
+    )
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert runtime.rich is None and runtime.html is None
+    assert len(adapter.rich_calls) >= len(adapter.skipped)  # rich asked on every tick
+    record = ctx.state.data["probe"]
+    assert record["last_status"] == "deferred" and "rich_error" not in record
+
+
+def test_a_held_back_plain_edit_of_a_rich_message_is_deferred_not_a_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """On a message that is rich, a refused rich edit and a refused HTML one end in the plain
+    edit, which a failure there would answer as ``edit_failed``. Held back, it answered nothing:
+    deferred, and no message is sent."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(
+        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
+        reject_html="Bad Request: message can't be edited",
+        busy=True,
+    )
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.sent == [] and [m for m, _ in adapter.rich_calls].count("sendRichMessage") == 0
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_error"]) == ("deferred", None)
+    assert (record["screen_format"], record["message_id"]) == ("rich", "4242")
+    assert runtime.rich is None
+
+
 def test_external_sources_reach_the_collector_with_their_own_cache_and_the_period(
     monkeypatch, tmp_path: Path, caplog
 ) -> None:

@@ -47,6 +47,14 @@ verb carries the HTML when one does (``html_verb``), and HTML is tried again aft
 could not be built is replaced by a loud one-screen plain notice with the time, never left as
 yesterday's text.
 
+An edit the engine held back is no edit. The engine paces each chat's sends and edits through
+one shared slot (telegram adapter, #116312, read on 0.22.2 and 0.22.7): while a reply in the
+same chat holds it, ``edit_message`` without ``finalize`` edits nothing and answers success with
+``raw_response={"skipped": True}`` (``_skipped``). The tick records ``deferred``: no
+confirmation, no verdict on a form, and the next tick edits again. The plugin never asks for
+``finalize``, which the slot does not hold back, so the agent's replies and the dashboard keep
+within Telegram's flood limits together; ``_edit_text`` and the rich call are not gated by it.
+
 Before HTML comes the rich form (0.12.0, Bot API 10.1+ Rich Messages, ``rich.py``): the same
 first lines and a collapsed section per source. No verb of the adapter carries it; the call is the
 engine bot's own raw Bot API call, ``adapter._bot.do_api_request``, the way the engine sends its
@@ -209,6 +217,10 @@ NO_HTML_VERB = "no HTML verb (edit_message without parse_mode, no _edit_text)"
 # After a refused HTML edit the screen is plain for this many ticks, then HTML is tried once
 # more: an hour at the pilot's period, so a transient failure does not lock plain in for good.
 HTML_RETRY_TICKS = 12
+# The flag in ``raw_response`` of an edit the engine held back while the chat's outbound slot
+# was busy, and the status the tick records for it: not an edit, not a failure.
+SKIPPED_FLAG = "skipped"
+DEFERRED_STATUS = "deferred"
 # The rich form (0.12.0): the engine bot's raw Bot API call, the way the engine sends its own rich
 # messages (telegram adapter ``_bot_supports_rich``, v0.22.2); no verb of the adapter carries it.
 RICH_BOT_ATTRIBUTE = "_bot"
@@ -322,11 +334,13 @@ class _RichOutcome:
 class _EditResult:
     """What ``_edit`` and ``_send_rich`` answer when the plugin itself made the call: the public
     verb's ``SendResult`` is not constructed by the plugin, so a shape with the fields the tick
-    reads."""
+    reads. ``deferred``: the engine held the edit back (``_skipped``); ``success`` is false
+    then, so nothing that reads only ``success`` takes it for an edit."""
 
     success: bool
     error: str | None = None
     message_id: str | None = None
+    deferred: bool = False
 
 
 def read_settings(ctx: Any) -> Settings | None:
@@ -641,6 +655,20 @@ def _says(result: Any, markers: tuple[str, ...]) -> bool:
     """Whether a failed edit's error carries one of ``markers``."""
     error = str(getattr(result, "error", None) or "").lower()
     return any(marker in error for marker in markers)
+
+
+def _skipped(result: Any) -> bool:
+    """Whether the public verb answered success without editing: the engine held the edit back
+    while the chat's outbound slot was busy (``raw_response`` carries ``SKIPPED_FLAG``)."""
+    raw = getattr(result, "raw_response", None)
+    held = isinstance(raw, dict) and bool(raw.get(SKIPPED_FLAG))
+    return held and bool(getattr(result, "success", False))
+
+
+def _deferred(result: Any) -> bool:
+    """Whether this tick's edit was held back (``_EditResult.deferred``), neither made nor
+    failed."""
+    return getattr(result, "deferred", False) is True
 
 
 def _rich_message(markup: str) -> dict[str, Any]:
@@ -989,6 +1017,9 @@ class ProbeRuntime:
             if result.success:
                 self._note(status="edited", error=None, generation=generation, confirmed=True)
                 return
+            if _deferred(result):
+                self._defer(generation)
+                return
             error = str(result.error or "")
             if any(marker in error.lower() for marker in LOST_MARKERS):
                 logger.error("probe: message %s lost (%s); sending a new one", message_id, error)
@@ -1020,6 +1051,16 @@ class ProbeRuntime:
             status="send_failed", error=str(result.error or "no message id"), generation=generation
         )
 
+    def _defer(self, generation: int) -> None:
+        """The engine held this tick's edit back: the screen did not change, so no confirmation
+        and no error; the next tick edits again. One journal line for a run of them."""
+        if self.record.get("last_status") != DEFERRED_STATUS:
+            logger.info(
+                "probe: edit deferred: the engine held it back while the chat's outbound slot "
+                "was busy; the next tick edits again"
+            )
+        self._note(status=DEFERRED_STATUS, error=None, generation=generation)
+
     # ------------------------------------------------------------------ the edit
 
     async def _edit(self, live: Any, chat: str, message_id: str, screen: Screen) -> Any:
@@ -1031,7 +1072,8 @@ class ProbeRuntime:
         is lost: an edit in another form may be refused in the words of a lost one
         (LOST_MARKERS), and the tick would send a second message; an HTML or plain answer counts
         only when it says the message is not there (GONE_MARKERS). A rich edit there that may
-        have reached Telegram ends the tick; rich again next tick."""
+        have reached Telegram ends the tick; rich again next tick. An edit the engine held back
+        answered nothing: deferred, no verdict, whatever the message is."""
         rich_message = self.record.get("screen_format") == "rich"
         outcome = await self._try_rich_edit(live, chat, message_id, screen, rich_message)
         if outcome is not None and outcome.reason is None:
@@ -1040,6 +1082,8 @@ class ProbeRuntime:
             return _EditResult(success=False, error=f"rich edit: {outcome.lost or outcome.reason}")
         refused = outcome.reason if outcome is not None else None
         result = await self._edit_html_or_plain(live, chat, message_id, screen)
+        if _deferred(result):
+            return result
         if result.success and refused is not None:
             self._rich_verdict(False, refused)
         if not result.success and rich_message and not _says(result, GONE_MARKERS):
@@ -1186,7 +1230,9 @@ class ProbeRuntime:
 
         The verbs cannot tell "HTML refused" from "network down" on their own: the plain edit
         right after a failed HTML one does. Plain succeeded, HTML did not: the form was refused.
-        Both failed: no verdict, the tick's own error handling takes the plain result."""
+        Both failed: no verdict, the tick's own error handling takes the plain result. The
+        public verb held back by the engine (``_skipped``) landed nothing: deferred, no verdict,
+        and the record keeps the form it had."""
         reason: str | None = None
         if screen.html is not None and self._html_wanted():
             verb = _html_verb(live)
@@ -1199,6 +1245,9 @@ class ProbeRuntime:
                         result = await edit_html(
                             chat, message_id, screen.html, parse_mode=HTML_PARSE_MODE
                         )
+                        if _skipped(result):
+                            # A plain edit right after it would be held back the same way.
+                            return _EditResult(success=False, deferred=True)
                         if result.success:
                             self._html_verdict(True, None, name)
                             return result
@@ -1220,6 +1269,8 @@ class ProbeRuntime:
                     # Class name only: the message may carry chat ids.
                     reason = type(exc).__name__
         result = await live.edit_message(chat, message_id, screen.plain)
+        if _skipped(result):
+            return _EditResult(success=False, deferred=True)
         if result.success:
             # Plain on the screen now, the notice too; the verdict below says why when HTML failed.
             self.record["screen_format"] = "plain"

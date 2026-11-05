@@ -116,7 +116,10 @@ def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) ->
 
     The plugin keeps ``last_status``/``last_error`` and clears ``message_id`` when the message is
     lost; ``lost`` here therefore means lost and not recreated. ``never`` for a missing key or a
-    foreign file: a watchdog pointed at the wrong file must fail, not pass.
+    foreign file: a watchdog pointed at the wrong file must fail, not pass. Only a status ending
+    in ``_failed`` is an error; any other (``edited``, ``created``, ``waiting``, ``deferred``: an
+    edit the engine held back while the chat's outbound slot was busy) leaves the verdict to
+    the age of the last confirmation.
     """
     if not isinstance(payload, dict):
         return DeliveryRecord()

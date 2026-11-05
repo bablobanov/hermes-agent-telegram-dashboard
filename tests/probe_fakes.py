@@ -89,19 +89,35 @@ class FakeAdapter:
     """The two verbs the plugin uses on the engine's Telegram adapter, the way 0.21.x has them:
     the public ``edit_message`` (plain text, a ``SendResult``) and the private ``_edit_text``
     (a parse mode, raises on refusal). ``reject_html`` is the message Telegram would answer the
-    HTML edit with; ``fail_plain`` makes the public edit fail the same way every time."""
+    HTML edit with; ``fail_plain`` makes the public edit fail the same way every time.
+
+    ``busy`` is the engine's shared per-chat slot (telegram adapter, #116312) held by a reply in
+    the same chat: the public verb then edits nothing and answers success with
+    ``raw_response={"skipped": True}``, as ``edit_message`` without ``finalize`` does on 0.22.2
+    and 0.22.7. ``_edit_text`` is not gated by the slot, as in the engine."""
 
     platform = "telegram"
 
-    def __init__(self, *, reject_html: str | None = None, fail_plain: str | None = None) -> None:
+    def __init__(
+        self, *, reject_html: str | None = None, fail_plain: str | None = None, busy: bool = False
+    ) -> None:
         self.gateway_runner = SimpleNamespace(adapters={"telegram": self})
         self.is_connected = True
         self.reject_html = reject_html
         self.fail_plain = fail_plain
+        self.busy = busy
         self.sent: list[str] = []
         self.edits: list[str] = []  # plain, through edit_message
         self.html_edits: list[tuple[str, Any]] = []  # (text, parse_mode), through _edit_text
         self.texts: list[str] = []  # everything that reached Telegram, in order
+        self.skipped: list[str] = []  # the form of each edit the slot held back: plain or html
+
+    def _skip(self, form: str, message_id: str) -> Any:
+        """The engine's answer to an edit it held back: success, the same id, nothing edited."""
+        self.skipped.append(form)
+        return SimpleNamespace(
+            success=True, message_id=message_id, error=None, raw_response={"skipped": True}
+        )
 
     async def send(self, chat: str, text: str, metadata: Any = None) -> Any:
         self.sent.append(text)
@@ -109,6 +125,8 @@ class FakeAdapter:
         return SimpleNamespace(success=True, message_id="101", error=None)
 
     async def edit_message(self, chat: str, message_id: str, text: str) -> Any:
+        if self.busy:
+            return self._skip("plain", message_id)
         if self.fail_plain is not None:
             return SimpleNamespace(success=False, error=self.fail_plain)
         self.edits.append(text)
@@ -152,6 +170,8 @@ class PublicHtmlAdapter(FakeAdapter):
     ) -> Any:
         if parse_mode is None:
             return await super().edit_message(chat, message_id, text)
+        if self.busy:
+            return self._skip("html", message_id)
         self.public_html_edits.append((text, parse_mode))
         if self.reject_public_html is not None:
             return SimpleNamespace(success=False, error=self.reject_public_html)

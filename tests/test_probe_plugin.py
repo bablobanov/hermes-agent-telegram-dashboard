@@ -282,7 +282,9 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     manager.unload()
 
 
-def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
+def test_lost_message_is_recreated_once_and_recorded(
+    probe_env, caplog: pytest.LogCaptureFixture
+) -> None:
     manager, ctx = _context()
     runtime = _load_plugin().register(ctx)
     assert runtime is not None
@@ -295,31 +297,95 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         runner.adapters[Platform.TELEGRAM] = adapter
         await _until(lambda: bot.edit_message_text.await_count >= 1)
         assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
+        assert runtime.html is True  # the first edit went out as HTML
 
-        async def gone_until_recreated(**kwargs: object) -> bool:
-            # Only the lost message is gone: the one sent in its place can be edited.
-            if kwargs.get("message_id") == 101:
-                raise BadRequest("Message to edit not found")
-            return True
-
-        bot.edit_message_text.side_effect = gone_until_recreated
+        bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
         bot.send_message.return_value = MagicMock(message_id=102)
         # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
-        # to is skipped by the engine's chat slot, which the first send still holds, and comes
-        # back as a success (raw_response {"skipped": True}). The plugin today misreads that: a
-        # false "HTML refused" verdict, and no loss seen until a later tick. That is a plugin
-        # defect, fixed in the next pull request. This test pins only that the message is
-        # recreated once: when the slot frees, an edit fires and confirms the loss, and the new
-        # send waits for the slot that edit took (SLOT_WAIT).
+        # to is held back by the engine's chat slot while the first send still holds it, and
+        # answers success with raw_response {"skipped": True}: the plugin takes that as a
+        # deferred edit, with no "HTML refused" verdict, and tries again on the next tick. When
+        # the slot frees, the plain edit fires and confirms the loss, and the new send waits for
+        # the slot that edit took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
-        # The ticks after the recreate edit the new message. Waiting for that edit, not reading
-        # the status of the recreate itself, keeps the test independent of how many ticks a
-        # runner fits in before the checks (a fast runner had already edited 102).
-        await _until(lambda: runtime.record.get("last_status") == "edited", timeout=SLOT_WAIT)
 
         assert bot.send_message.await_count == 2  # recreated once
         assert runtime.record["lost_at"] and runtime.record["recreated_at"]
+        assert runtime.record["last_status"] == "created"
+        # No false verdict on the form: a failed HTML edit and a plain one that never fired (or
+        # failed) say nothing about HTML.
+        assert runtime.html is True and runtime.record.get("html_error") is None
+        assert not [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
         manager.unload()
 
     asyncio.run(scenario())
+
+
+def test_an_edit_the_engine_holds_back_for_a_busy_chat_is_deferred_and_the_next_tick_edits(
+    probe_env, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The engine's shared per-chat slot (adapter.py, #116312): while a reply in the same chat
+    holds it, an interim edit_message edits nothing and answers success with raw_response
+    {"skipped": True}. Here Telegram refuses the HTML form, so the tick falls to that plain verb
+    while the slot is held: the record says deferred, not edited, keeps its last confirmation,
+    and no "HTML refused" verdict comes of it; the first tick the slot is free, the plain edit
+    reaches the Bot and the verdict follows. The loop ticks once (the message is created), then
+    sleeps an hour; the test drives the two ticks after it by hand."""
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_PERIOD", "3600")
+    manager, ctx = _context()
+    runtime = _load_plugin().register(ctx)
+    assert runtime is not None
+    runner = SimpleNamespace(adapters={})
+    from telegram_dashboard.__main__ import run_check
+
+    def refuse_html(**kwargs):
+        if kwargs.get("parse_mode") is not None:
+            raise BadRequest("Can't parse entities: unsupported start tag at byte offset 0")
+        return True
+
+    def plain_edits(bot: MagicMock) -> list:
+        return [c for c in bot.edit_message_text.await_args_list if "parse_mode" not in c.kwargs]
+
+    async def scenario() -> None:
+        adapter, bot = _adapter(101, runner)
+        _wire(adapter, manager)
+        adapter._mark_connected()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        await _until(lambda: runtime.record.get("last_status") == "created")
+        created = runtime.record["last_confirmed_at"]
+        bot.edit_message_text.side_effect = refuse_html
+
+        # An agent's reply in the same chat holds the slot: the engine's own call, with its
+        # tunable budget raised so that no slow tick outlives it.
+        adapter._telegram_chat_outbound_slot_secs = 60.0
+        adapter._hold_chat_outbound_slot(CHAT)
+        await runtime.tick()
+
+        assert bot.edit_message_text.await_count == 1  # the refused HTML edit, nothing else
+        assert plain_edits(bot) == []  # the engine held the plain edit back
+        record = ctx.state.get("probe")
+        assert (record["last_status"], record["last_error"]) == ("deferred", None)
+        assert record["last_confirmed_at"] == created
+        assert runtime.html is None and "html_error" not in record
+        assert record["screen_format"] == "plain"  # as the creation left it
+        # Not a failure by itself: the watchdog judges by the last confirmation.
+        assert run_check({"plugin_state_path": str(ctx.state.path), "period_seconds": 300}) == 0
+
+        # The reply is out and the slot is free: the next tick's plain edit goes through.
+        adapter._telegram_chat_outbound_slot_secs = 0.0
+        adapter._hold_chat_outbound_slot(CHAT)
+        await runtime.tick()
+
+        assert [c.kwargs["message_id"] for c in plain_edits(bot)] == [101]
+        record = ctx.state.get("probe")
+        assert record["last_status"] == "edited" and record["last_confirmed_at"] != created
+        assert (record["screen_format"], record["html_error"]) == ("plain", "BadRequest")
+        manager.unload()
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        asyncio.run(scenario())
+
+    said = [r.getMessage() for r in caplog.records if r.name.endswith("telegram_dashboard_probe")]
+    assert sum("deferred" in line for line in said) == 1
+    assert sum("HTML edit refused" in line for line in said) == 1  # once the plain edit landed
