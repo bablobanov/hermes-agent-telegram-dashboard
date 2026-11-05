@@ -265,8 +265,9 @@ register(ctx) → ctx.register_platform_handler("telegram", wire)
              → each tick: the traffic counters read off the adapter as attributes, then
                collect_all_async → render_dashboard → to_telegram_html,
                to_telegram_plain and to_telegram_rich, then adapter =
-               runner.adapters["telegram"] if connected and handed to wire, else the
-               adapter wire was handed last, the message created once
+               runner.adapters["telegram"] if connected and handed to wire (the launch
+               profile also takes up one it was not handed), else the adapter wire was
+               handed last, the message created once
                (with rich: true sendRichMessage through the engine's bot, else
                adapter.send(plain)), then every tick, with rich: true, the rich form
                (_bot.do_api_request("editMessageText", ...)), and without it or on a
@@ -285,13 +286,20 @@ against the real engine objects with the Telegram `Bot` mocked and simulates the
 **Restarts, reloads and profiles.** A gateway restart edits the same message (the record below).
 A reload of plugins in a running gateway (`hermes plugins install/enable/update` asks for one, so
 may a tool's forced provider lookup) unloads the plugin, which stops its loop, and registers it
-again; since 1.1.0 the new registration takes the loop over on the adapter the old one had, so
-the screen keeps moving without a restart, one loop per profile (issue #12). Two limits: a stop
-that lands in the middle of a send may leave one extra message, as a gateway stop at that moment
-would; and the first such reload onto 1.1.0 from 1.0.0 or earlier has nothing to take over:
-restart the gateway once, or let the adapter reconnect. In a gateway that serves several
-profiles, each profile that enables the plugin has its own loop and its own message, sent
-through that profile's bot.
+again; the new registration takes the loop over on the adapter the old one had, so the screen
+keeps moving without a restart, one loop per profile (issue #12). In a gateway that serves
+several profiles, each profile that enables the plugin has its own loop and its own message,
+sent through that profile's bot. The limits:
+
+- the registry that hands the loop over first ships in the 1.1.0 release: the first reload onto
+  it from 1.0.0 or earlier, or from a copy of `main` taken before it (that copy already says
+  1.1.0), has nothing to take over; restart the gateway once, or let the adapter reconnect
+- a stop that lands in the middle of a send may leave one extra message, as a gateway stop at
+  that moment would
+- when Telegram reconnects while the plugin is being loaded again, the launch profile's loop
+  takes the new connection up, unless the reload comes before the first tick after Telegram
+  connected at start (at most 30 s); a secondary profile's loop never takes up a connection it
+  was not handed. Both then wait for the next reconnect or a restart
 
 **Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
 snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
