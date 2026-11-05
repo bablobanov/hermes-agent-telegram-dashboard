@@ -59,8 +59,8 @@ THROWAWAY = {
         def test_tzset():
             pytest.skip("time.tzset is POSIX only")
         """,
-    # An xfail that stops its test, and one that never starts it; a test that runs to its end
-    # under an xfail marker did run, and stays an xfail.
+    # An xfail that stops its test, and one that never starts it; a test under an xfail marker
+    # that fails with any exception stays an xfail.
     "test_xfail.py": """\
         import pytest
         def test_imperative():

@@ -86,8 +86,9 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 def _refusal(report: pytest.CollectReport | pytest.TestReport, call: Any = None) -> str | None:
     """The failure text for a test an engine job did not run to its end and does not allow;
     ``None`` for anything else. A skip, and an xfail that stopped the test: ``pytest.xfail`` in
-    it, or ``xfail(run=False)``, which never starts it. A test under an xfail marker that ran to
-    its end and failed as the marker expects did run, and stays an xfail."""
+    it, or ``xfail(run=False)``, which never starts it. A test under an xfail marker that fails
+    with any exception (anywhere in its body, or a fixture at setup) stays an xfail under the
+    variable too; the suite has no xfail today."""
     if not ENGINE_JOB or not report.skipped:
         return None
     where = ""
@@ -201,7 +202,12 @@ def _install_network_guard() -> None:
     Python's own ways off the machine: a connect, a datagram sent to an address, a name or
     address lookup. A client written in C that opens its own sockets or resolves on its own
     (uvloop, grpc, c-ares, pycurl) passes under any Python-level guard; none is on the test
-    path today."""
+    path today.
+
+    A reverse lookup of this machine's own name is refused too, so socket.getfqdn() without an
+    argument, email.utils.make_msgid(), smtplib.SMTP() and a server bound to "" raise
+    NetworkBlockedError ("gethostbyaddr <hostname>"): tests bind and connect to 127.0.0.1 or
+    localhost."""
     global _guard_installed
     if _guard_installed:
         return

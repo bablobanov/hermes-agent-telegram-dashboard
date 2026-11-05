@@ -298,12 +298,13 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
 
         bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
         bot.send_message.return_value = MagicMock(message_id=102)
-        # The HTML edit's "not found" reads as a refused HTML edit first (by design). The plain
-        # edit_message after it may be skipped by the engine's chat slot, which the first send
-        # still holds: the engine answers success with raw_response {"skipped": True}, and the
-        # plugin counting that as an edit is a plugin defect PR-B handles. Once the slot frees,
-        # the edit fires and confirms the loss, and the new send waits for the slot that edit
-        # took (SLOT_WAIT).
+        # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
+        # to is skipped by the engine's chat slot, which the first send still holds, and comes
+        # back as a success (raw_response {"skipped": True}). The plugin today misreads that: a
+        # false "HTML refused" verdict, and no loss seen until a later tick. That is a plugin
+        # defect, fixed in PR-B. This test pins only that the message is recreated once: when
+        # the slot frees, an edit fires and confirms the loss, and the new send waits for the
+        # slot that edit took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
 
