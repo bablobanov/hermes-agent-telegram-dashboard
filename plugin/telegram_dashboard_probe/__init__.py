@@ -5,7 +5,8 @@ calls ``wire(native, adapter)`` from its ``connect()`` → ``wire`` spawns ONE s
 ``ctx.spawn_task`` → every tick composes the first screen (collect → render → plain text) and
 edits the same message through ``adapter.edit_message``.
 
-Two traps this plugin is built around (found by reading 0.21.1, see the report):
+Three traps this plugin is built around (the first two found by reading 0.21.1, see the report;
+the third is issue #12, read on 0.22.2 to 0.22.7):
 
 * ``connect()`` runs the factory again on every reconnect with a NEW adapter instance, so a naive
   plugin would spawn a second loop each time. The guard keeps the first task and only records the
@@ -14,6 +15,17 @@ Two traps this plugin is built around (found by reading 0.21.1, see the report):
   (``send`` does). A loop holding the adapter it was born with would answer "Not connected"
   forever while looking alive. Each tick therefore asks ``runner.adapters`` for the current one
   and only uses an adapter that reports ``is_connected``.
+* Registered again after a forced re-discovery (``discover_and_load(force=True)``: the gateway's
+  ``reload-plugins`` verb that ``hermes plugins install/enable/update`` sends, a tool's forced
+  provider lookup). The unload cancels the loop and evicts this module with its globals, then
+  ``register()`` runs again with a new runtime, and the adapter never calls the new factory on a
+  client it wired already: no loop at all, the record frozen at ``waiting``. What a registration
+  hands to the next one therefore lives outside the evicted namespace, in a registry module of its
+  own name keyed by the profile's state file (``_live``): ``wire()`` publishes the adapter, the
+  gateway loop, the task and the generation; ``register()`` claims the profile and, when an
+  earlier registration was handed an adapter, takes its loop over on the gateway loop
+  (``ProbeRuntime.claim_profile``). One loop per profile, run by the newest registration; the
+  factory of an earlier one does nothing.
 
 Also: the factory fires BEFORE the adapter finishes ``initialize()``/``start()``, so the first
 tick waits for ``is_connected`` instead of sending into a bot that is not initialised yet.
@@ -60,6 +72,10 @@ import inspect
 import logging
 import math
 import os
+import sys
+import threading
+import types
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
@@ -213,6 +229,18 @@ _RICH_SETUP_ERRORS = (AttributeError, TypeError, NotImplementedError)
 _RICH_REFUSED_WORDS = ("bad request", "unsupported", "not implemented", "no such method")
 
 Collector = Callable[[datetime], Awaitable[Any]]
+
+# Issue #12: the registry of live tick loops, one entry per profile, in a module of its own name in
+# ``sys.modules``. A forced re-discovery evicts ``hermes_plugins.<slug>`` and its submodules with
+# every global of this file; this name is outside that namespace, so it survives. A later release
+# reads what this one wrote, and this one what a later one writes: an entry carries ``version``,
+# and a reader takes only the keys it knows (``LIVE_KEYS``), whatever else is there. The module
+# has ``version``, ``lock`` (a ``threading.Lock``) and ``profiles`` (key -> entry); an entry has
+# ``version``, ``owner`` and ``adapter`` (references: call one for the object, ``None`` once it
+# is gone), ``loop`` (the gateway's event loop), ``task`` and ``generation``.
+LIVE_MODULE = "_telegram_dashboard_probe_live"
+LIVE_VERSION = 1
+LIVE_KEYS = ("adapter", "loop", "task", "generation")
 
 
 @dataclass(frozen=True)
@@ -637,6 +665,96 @@ def _rich_plain(text: str) -> str:
     return "<p>" + "<br>".join(escape(line) for line in text.split("\n")) + "</p>"
 
 
+@dataclass(frozen=True)
+class _Live:
+    """The registry module's lock and entries, as this release reads them."""
+
+    lock: Any
+    profiles: dict[Any, Any]
+
+
+@dataclass(frozen=True)
+class _Handover:
+    """What a registration takes over from an earlier one of its profile."""
+
+    loop: asyncio.AbstractEventLoop
+    adapter: Any
+    task: Any
+    generation: int
+
+
+def _live() -> _Live | None:
+    """The process's registry of live tick loops, created on first use (``LIVE_MODULE``).
+    ``None`` when a module of that name has another shape: no takeover then, as before #12."""
+    module = sys.modules.get(LIVE_MODULE)
+    if module is None:
+        fresh = types.ModuleType(LIVE_MODULE, "telegram_dashboard_probe: live tick loops (#12)")
+        vars(fresh).update(version=LIVE_VERSION, lock=threading.Lock(), profiles={})
+        module = sys.modules.setdefault(LIVE_MODULE, fresh)
+    lock, profiles = getattr(module, "lock", None), getattr(module, "profiles", None)
+    if not isinstance(profiles, dict) or not callable(getattr(lock, "__enter__", None)):
+        return None
+    return _Live(lock, profiles)
+
+
+def profile_key(ctx: Any, settings: Settings) -> str:
+    """The registry key of the profile a registration serves: the resolved path of its own state
+    file (``<home>/plugin-data/<namespace>/state.json``, one per profile; ``register()`` reads it
+    under the profile's scope), case-folded where the file system is. Without one, the home the
+    settings name. The process's ``HERMES_HOME`` is not the key: under the multiplex it names the
+    launch profile, not this one."""
+    state_path = getattr(getattr(ctx, "state", None), "path", None)
+    path = Path(state_path) if isinstance(state_path, (str, Path)) else settings.hermes_home
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError):  # an unreadable link: the path as given, made absolute
+        resolved = path.expanduser().absolute()
+    return os.path.normcase(str(resolved))
+
+
+def _ref(target: object) -> Callable[[], Any]:
+    """A weak reference where the object takes one, else a strong one: what an entry holds."""
+    try:
+        return weakref.ref(target)
+    except TypeError:
+        return lambda: target
+
+
+def _deref(reference: object) -> Any:
+    """What an entry's reference points at; ``None`` for a dead or missing one."""
+    return reference() if callable(reference) else None
+
+
+def _alive(task: object) -> bool:
+    """A task that has not finished, read by its ``done()``; anything else is not one."""
+    done = getattr(task, "done", None)
+    return callable(done) and not done()
+
+
+def _known(entry: object) -> dict[str, Any]:
+    """The keys of a registry entry this release knows, whichever release wrote it."""
+    if not isinstance(entry, dict):
+        return {}
+    return {key: entry[key] for key in LIVE_KEYS if key in entry}
+
+
+def _owner(entry: object) -> Any:
+    """The registration an entry names as its profile's, ``None`` when it names none alive."""
+    return _deref(entry.get("owner")) if isinstance(entry, dict) else None
+
+
+def _handover(entry: dict[str, Any]) -> _Handover | None:
+    """What a takeover needs from an earlier registration's entry: the gateway loop, still open,
+    and the adapter that registration was handed, still alive; ``None`` without either."""
+    loop, adapter = entry.get("loop"), _deref(entry.get("adapter"))
+    if adapter is None or not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+        return None
+    generation = entry.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        generation = 1
+    return _Handover(loop, adapter, entry.get("task"), generation)
+
+
 class ProbeRuntime:
     """One per ``register()``; survives adapter replacement, owns exactly one task."""
 
@@ -656,6 +774,10 @@ class ProbeRuntime:
         self.latest: Any = None
         self.generation = 0
         self._generations: dict[int, int] = {}
+        # The registry key of the profile this registration serves (issue #12), and whether the
+        # engine unloaded it since (``retire``).
+        self.key = profile_key(ctx, settings)
+        self._retired = False
         self.ticks = 0
         self.record: dict[str, Any] = {}
         # ``None`` until the first edit answers; ``False`` while HTML is refused, with the tick
@@ -674,18 +796,110 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ factory (connect-time)
 
     def wire(self, native: Any, adapter: Any) -> None:
-        """Called by the adapter's ``connect()``; a reconnect calls it AGAIN with a new adapter."""
+        """Called by the adapter's ``connect()``; a reconnect calls it AGAIN with a new adapter.
+        The factory of a registration that was unloaded, or that a newer one of its profile
+        replaced, does nothing (issue #12)."""
+        if self._retired or not self._owns_profile():
+            logger.warning("probe: handler factory of an earlier registration called; ignored")
+            return
         self.generation += 1
-        self.latest = adapter
-        self._generations[id(adapter)] = self.generation
-        if self.task is not None and not self.task.done():
+        self._hand(adapter)
+        if _alive(self.task):
+            self._publish()
             logger.warning(
                 "probe: adapter generation %d wired while the loop runs; keeping one loop",
                 self.generation,
             )
             return
-        self.task = self._ctx.spawn_task(self.run(), name=TASK_NAME)
+        self._start()
         logger.info("probe: tick loop spawned on adapter generation %d", self.generation)
+
+    def _hand(self, adapter: Any) -> None:
+        self.latest = adapter
+        self._generations[id(adapter)] = self.generation
+
+    def _start(self) -> None:
+        """The one place the loop is spawned: through the engine, so an unload cancels it."""
+        self.task = self._ctx.spawn_task(self.run(), name=TASK_NAME)
+        self._publish()
+
+    # ------------------------------------------------------------------ registered again (#12)
+
+    def claim_profile(self) -> None:
+        """At ``register()``, on the engine's load worker thread: this registration serves its
+        profile from now on. When an earlier one in this process was handed an adapter, its loop
+        is taken over on the gateway loop (``_adopt``): the engine never calls this
+        registration's factory on a client it wired already."""
+        live = _live()
+        if live is None:
+            return
+        with live.lock:
+            previous = _known(live.profiles.get(self.key))
+            live.profiles[self.key] = {**previous, "version": LIVE_VERSION, "owner": _ref(self)}
+        handover = _handover(previous)
+        if handover is None:
+            return
+        try:
+            handover.loop.call_soon_threadsafe(self._adopt, handover)
+        except RuntimeError as exc:  # the loop closed after the check: nothing left to take over
+            logger.warning("probe: earlier tick loop not taken over (%s)", type(exc).__name__)
+
+    def _adopt(self, handover: _Handover) -> None:
+        """On the gateway loop: the earlier registration's loop stops (if the unload has not
+        stopped it yet) and this one's starts on the adapter that one was handed. Nothing when
+        this registration was unloaded meanwhile, no longer serves the profile, or runs a loop
+        already (a reconnect wired it first)."""
+        if self._retired or _alive(self.task) or not self._owns_profile():
+            return
+        if _alive(handover.task):
+            handover.task.cancel()
+        self.generation = handover.generation
+        self._hand(handover.adapter)
+        self._start()
+        logger.info(
+            "probe: plugin registered again; tick loop taken over on adapter generation %d",
+            self.generation,
+        )
+
+    def retire(self) -> None:
+        """``ctx.on_unload``: the engine unloaded this registration (a disable, an update, a
+        forced re-discovery). Its factory and a takeover scheduled for it do nothing from now
+        on; the registry entry stays for the next registration of the profile."""
+        self._retired = True
+
+    def _owns_profile(self) -> bool:
+        """Whether this registration serves its profile: the newest one claimed it. With no
+        registry, or no entry for the profile, every registration does, as before #12."""
+        live = _live()
+        if live is None:
+            return True
+        with live.lock:
+            entry = live.profiles.get(self.key)
+        return not isinstance(entry, dict) or _owner(entry) is self
+
+    def _publish(self) -> None:
+        """What a later registration of this profile needs to take the loop over: the adapter
+        last handed here, the gateway loop (``wire`` and ``_adopt`` run on it), the task and the
+        generation. Only the registration that serves the profile writes."""
+        live = _live()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if live is None:
+            return
+        entry = {
+            "version": LIVE_VERSION,
+            "owner": _ref(self),
+            "adapter": _ref(self.latest),
+            "loop": loop,
+            "task": self.task,
+            "generation": self.generation,
+        }
+        with live.lock:
+            current = live.profiles.get(self.key)
+            if not isinstance(current, dict) or _owner(current) is self:
+                live.profiles[self.key] = entry
 
     # ------------------------------------------------------------------ resolution
 
@@ -1287,6 +1501,18 @@ def _announce_sources(runtime: ProbeRuntime) -> None:
     logger.info("probe: %d external limits source(s) configured", len(sources))
 
 
+def _on_unload(ctx: Any, callback: Callable[[], None]) -> None:
+    """``callback`` at the engine's unload of this registration, through ``ctx.on_unload``
+    (0.21.1 on); without it the ownership rule alone keeps one loop per profile."""
+    subscribe = getattr(ctx, "on_unload", None)
+    if not callable(subscribe):
+        return
+    try:
+        subscribe(callback)
+    except Exception as exc:
+        logger.warning("probe: unload callback not registered (%s)", type(exc).__name__)
+
+
 def register(ctx: Any) -> ProbeRuntime | None:
     settings = read_settings(ctx)
     if settings is None:
@@ -1297,6 +1523,8 @@ def register(ctx: Any) -> ProbeRuntime | None:
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
     _announce_sources(runtime)
     ctx.register_platform_handler(PLATFORM, runtime.wire)
+    _on_unload(ctx, runtime.retire)
+    runtime.claim_profile()
     logger.info(
         "probe: registered Telegram handler factory (period %.0fs)", settings.period_seconds
     )

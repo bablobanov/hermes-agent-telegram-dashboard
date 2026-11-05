@@ -114,7 +114,11 @@ def test_state_goes_through_the_engine_s_plugin_state_only() -> None:
 def test_the_one_task_is_spawned_through_the_context_and_nothing_else() -> None:
     entry = _code_only(ENTRY.read_text(encoding="utf-8"))
     assert entry.count("spawn_task(") == 1
-    assert not re.search(r"create_task\(|ensure_future\(|threading|Thread\(|atexit|signal\.", entry)
+    assert not re.search(r"create_task\(|ensure_future\(|Thread\(|Timer\(|atexit|signal\.", entry)
+    # threading for one lock only, the registry's (issue #12): register() runs on the engine's
+    # load worker thread, wire() on the gateway loop. No thread is started.
+    assert re.findall(r"threading\.\w+", entry) == ["threading.Lock"]
+    assert not re.search(r"from threading import|import threading as", entry)
     assert not re.search(r"subprocess|Popen", entry)
 
 
