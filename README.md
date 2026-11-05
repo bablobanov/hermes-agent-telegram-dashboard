@@ -407,7 +407,8 @@ file, not on the journal; an empty `grep probe:` in the journal means nothing.
 
 A record written by 1.0.0 may still carry `limits_cache` (the old per-provider cache of two
 built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads the record.
-`release_cache` holds the once-a-day check of the latest Hermes release the same way
+`release_cache` holds the check of the latest Hermes release (at most one per 15 minutes, see
+"The Hermes version line") the same way
 (`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
 with the provider, the plan and the login date it last named. `gemini_log_cache` keeps the last

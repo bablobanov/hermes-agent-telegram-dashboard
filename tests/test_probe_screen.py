@@ -860,9 +860,9 @@ def test_every_keyword_the_tick_passes_is_one_the_collector_takes(
 def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The once-a-day upstream check keeps its attempt in the record under its own key:
-    the same dict on every tick, written to the state file, and read back after a restart, so a
-    restart does not ask GitHub again."""
+    """The upstream release check (at most one per 15 minutes) keeps its attempt in the record
+    under its own key: the same dict on every tick, written to the state file, and read back
+    after a restart, so a restart does not ask GitHub again."""
     from datetime import datetime
 
     plugin = load_plugin()
