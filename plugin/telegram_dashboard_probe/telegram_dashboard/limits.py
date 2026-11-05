@@ -32,7 +32,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any
 
-from .quota_cache import cache_for, last_answer
+from .quota_cache import cache_for, current, last_answer
 from .quota_cache import tick as quota_tick
 from .workers import Flights, StillRunning, failure_name
 
@@ -114,9 +114,9 @@ async def fetch_limits_payload_off_loop(
     A deadline hit reports ``unavailable`` for this tick; the worker thread itself cannot be
     interrupted and finishes on its own, which is the price ``/usage`` pays too. With ``flights``
     shared across ticks the abandoned worker is not duplicated until it returns. With a
-    ``cadence`` a miss shows each provider's last answer instead while it is young enough
-    (``_missed``), and the abandoned worker records its attempt when it returns, so the next
-    tick serves it without asking again.
+    ``cadence`` a miss shows each provider's own standing attempt, or its last answer while it
+    is young enough (``_missed``), and the abandoned worker records its attempt when it
+    returns, so the next tick serves it without asking again.
     """
     if cadence is not None:
         # Made on the loop, before the worker starts: the worker only fills them.
@@ -140,16 +140,21 @@ def _not_ok(reason: str) -> LimitsPayload:
 
 def _missed(reason: str, cadence: Cadence | None) -> LimitsPayload:
     """No answer from the worker this tick. Without a cadence the whole block is "no data" with
-    the reason; with one, each provider shows its last answer with its own ``fetched_at`` while
-    it is younger than ``show_seconds``, else "no data" with the reason, as an external source
-    does (``collect._external_guarded``)."""
+    the reason. With one, a provider whose own attempt still stands (its interval has not run
+    out) keeps that attempt's line, a failure as much as an answer: the worker is one for both
+    providers, and one provider's hang must not rewrite the other's row. A provider whose
+    attempt was due shows its last answer with its own ``fetched_at`` while it is younger than
+    ``show_seconds``, else "no data" with the reason, as an external source does
+    (``collect._external_guarded``)."""
     if cadence is None:
         return _not_ok(reason)
     providers = []
     for key, _provider in PROVIDERS:
         cache = cache_for(cadence.caches, key)
-        last = last_answer(cache, now=cadence.now, show_seconds=cadence.show_seconds)
-        providers.append(_plan_filled(cache, last if last is not None else _failed(key, reason)))
+        line = current(cache, now=cadence.now, interval_seconds=cadence.interval_seconds)
+        if line is None:
+            line = last_answer(cache, now=cadence.now, show_seconds=cadence.show_seconds)
+        providers.append(_plan_filled(cache, line if line is not None else _failed(key, reason)))
     return {"ok": True, "reason": reason, "providers": providers}
 
 

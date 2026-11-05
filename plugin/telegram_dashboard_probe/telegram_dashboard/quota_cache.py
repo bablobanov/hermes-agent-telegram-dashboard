@@ -32,16 +32,28 @@ def tick(
     interval (less ``DUE_TOLERANCE_SECONDS``), else one new attempt recorded into ``cache``
     (mutated in place; the caller owns the durable copy). A cached number older than the
     interval is not a number."""
+    standing = current(cache, now=now, interval_seconds=interval_seconds)
+    if standing is not None:
+        return standing
+    item = fetch(now=now)
+    cache["attempted_at"] = now.isoformat()
+    cache["item"] = item
+    return item
+
+
+def current(
+    cache: dict[str, Any], *, now: datetime, interval_seconds: float
+) -> dict[str, Any] | None:
+    """The cached item while its attempt still stands (younger than the interval, less
+    ``DUE_TOLERANCE_SECONDS``), failure or answer, through ``not_older_than``; ``None`` when
+    the attempt is due or there is none."""
     attempted = parse_timestamp(cache.get("attempted_at"))
     cached = cache.get("item")
     if attempted is not None and isinstance(cached, dict):
         age = age_seconds(attempted, now)
         if age is not None and 0 <= age < interval_seconds - DUE_TOLERANCE_SECONDS:
             return not_older_than(cached, now=now, limit_seconds=interval_seconds)
-    item = fetch(now=now)
-    cache["attempted_at"] = now.isoformat()
-    cache["item"] = item
-    return item
+    return None
 
 
 def cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:

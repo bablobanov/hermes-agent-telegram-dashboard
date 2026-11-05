@@ -1291,6 +1291,62 @@ def test_a_facade_worker_abandoned_by_its_deadline_records_its_attempt_when_it_r
     assert caches["claude"]["attempted_at"] == NOW.isoformat()
 
 
+def test_one_provider_s_hang_leaves_the_other_s_failure_row_alone(tmp_path: Path) -> None:
+    """B1 review M1: Claude has no credential, its attempt a minute old still stands; Codex is
+    due and its call hangs past the deadline, then keeps the worker busy. On both ticks Claude
+    keeps its own row, not the other provider's miss, and is not asked again."""
+    from telegram_dashboard.workers import Flights
+
+    calls: list[str] = []
+
+    def fetch(provider: str):
+        calls.append(provider)
+        time.sleep(0.4)
+        return _snapshot(fetched_at=NOW)
+
+    claude_item = {
+        "provider": "claude",
+        "status": "unavailable",
+        "reason": "none",
+        "source": None,
+        "fetched_at": None,
+        "windows": [],
+    }
+    caches: dict = {
+        "claude": {"attempted_at": (NOW - timedelta(minutes=1)).isoformat(), "item": claude_item}
+    }
+    flights = Flights()
+
+    def tick(at: datetime):
+        return collect_limits_async(
+            Environment(hermes_home=tmp_path),
+            now=at,
+            resolve=lambda: fetch,
+            timeout_seconds=0.05,
+            flights=flights,
+            caches=caches,
+            interval_seconds=300,
+            period_seconds=60,
+        )
+
+    async def scenario():
+        first = await tick(NOW)
+        second = await tick(NOW + timedelta(seconds=1))
+        return first[0], second[0]
+
+    first, second = asyncio.run(scenario())
+
+    assert calls == ["openai-codex"]
+    assert [(q.provider, q.detail) for q in first.quotas] == [
+        ("Claude", "no account token"),
+        ("Codex", "timeout: facade did not answer within 0.05s"),
+    ]
+    assert [(q.provider, q.detail) for q in second.quotas] == [
+        ("Claude", "no account token"),
+        ("Codex", "busy: the previous facade call has not returned yet"),
+    ]
+
+
 def test_a_day_at_a_60_second_period_asks_each_provider_288_times(tmp_path: Path) -> None:
     """The request count of issue #16 on the tick's own path (the worker, the record): a day of
     ticks at the default 60 s period, each waking up to a second early, at the default
