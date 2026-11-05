@@ -1804,6 +1804,26 @@ def test_claude_on_an_api_key_is_an_answer_and_keeps_its_line(tmp_path: Path) ->
     assert "none_attempts" not in caches["claude"]
 
 
+def test_a_snapshot_whose_reason_reads_none_is_an_answer_not_an_empty_one(tmp_path: Path) -> None:
+    """B2 review N1: the item's marker for the facade's ``None`` is the reason ``none``. A
+    snapshot whose own reason is that word is still an answer: a "no data" line on the cron path
+    (not hidden as not configured) and on the tick's (not "no answer"), and its answer is kept."""
+
+    def answer(provider: str, now: datetime):
+        return _snapshot(available=False, windows=(), fetched_at=now, unavailable_reason="none")
+
+    cron, _source, _probe = collect_limits(
+        Environment(hermes_home=tmp_path), now=NOW, resolve=lambda: _Facade(answer)
+    )
+    caches: dict = {}
+    tick, _source, _probe = _facade_tick(tmp_path, _Facade(answer), caches, NOW)
+
+    for capacity in (cron, tick):
+        assert [(q.kind, q.detail) for q in capacity.quotas] == [("unavailable", "no data")] * 2
+    assert caches["claude"]["answered_at"] == NOW.isoformat()
+    assert "none_attempts" not in caches["claude"]
+
+
 def test_the_cron_path_has_no_memory_and_takes_the_facade_s_none_as_not_configured(
     tmp_path: Path,
 ) -> None:

@@ -413,13 +413,21 @@ def _item_of(key: str, snapshot: Any) -> dict[str, Any]:
     return {
         "provider": key,
         "status": "available" if available else "unavailable",
-        "reason": _text(getattr(snapshot, "unavailable_reason", None), _REASON_LIMIT),
+        "reason": _reason_of(snapshot),
         "source": _text(getattr(snapshot, "source", None), _SOURCE_LIMIT),
         "fetched_at": _iso(getattr(snapshot, "fetched_at", None)),
         # The plan the facade names (Codex: ``plan_type`` title-cased); the details show it.
         "plan": _text(getattr(snapshot, "plan", None), _PLAN_LIMIT),
         "windows": windows,
     }
+
+
+def _reason_of(snapshot: Any) -> str | None:
+    """The provider's own reason, cleaned and cut. One that reads exactly like the item's marker
+    for the facade's ``None`` (``NONE_REASON``) is no reason, or an answer would pass for an
+    empty one: hidden on the cron path, "no answer" on the tick's (B2 review N1)."""
+    reason = _text(getattr(snapshot, "unavailable_reason", None), _REASON_LIMIT)
+    return None if reason == NONE_REASON else reason
 
 
 def _iso(value: object) -> str | None:
