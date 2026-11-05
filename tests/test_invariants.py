@@ -394,7 +394,8 @@ def test_the_facade_s_answer_is_read_by_field_and_its_secrets_stay_out_of_the_re
     uses, each by name: never the account's principal (``identity``), the whole answer (``raw``)
     or the details (a credit balance and the like), and of an exception only its class, never
     its text. A snapshot carrying all of them, an exception and a token-looking string leave
-    none of it in the record."""
+    none of it in the record, not even a token planted in a field that IS read (the reason,
+    the plan): those are cleaned before they are kept (B1 review M2)."""
     import json
     from datetime import UTC, datetime
     from types import SimpleNamespace
@@ -416,10 +417,10 @@ def test_the_facade_s_answer_is_read_by_field_and_its_secrets_stay_out_of_the_re
             raise RuntimeError(f"refresh failed with {planted}")
         return SimpleNamespace(
             available=True,
-            unavailable_reason=None,
+            unavailable_reason=f"refused for {planted}",
             source="oauth_usage_api",
             fetched_at=now,
-            plan="Max 5x",
+            plan=f"Max {planted}",
             windows=(SimpleNamespace(label="5h", used_percent=12.0, reset_at=None),),
             identity="principal@example.invalid",
             raw={"access_token": planted},

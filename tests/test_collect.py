@@ -1216,6 +1216,40 @@ def test_identity_raw_details_and_a_token_never_reach_the_record_or_the_screen(
             assert planted not in text, planted
 
 
+def test_a_token_in_a_field_that_is_read_is_masked_and_cut_before_the_record(
+    tmp_path: Path,
+) -> None:
+    """B1 review M2: the fields ``limits.py`` does read (the reason, the source, the plan, a
+    window's label) are cleaned and cut to the screen's lengths before they reach
+    ``facade_cache``, as an external source's are: a token-looking string there never lands in
+    the state file, and a 500-character plan is kept as the 24 the screen shows."""
+    window = SimpleNamespace(label=f"5h {_PLANTED}", used_percent=10.0, reset_at=None)
+
+    def answer(provider: str, now: datetime):
+        if provider == "anthropic":
+            return _snapshot(
+                available=False,
+                windows=(),
+                fetched_at=now,
+                unavailable_reason=f"refused for key {_PLANTED}",
+                source=f"oauth {_PLANTED}",
+            )
+        return _snapshot(fetched_at=now, plan="P" * 500, windows=(window,))
+
+    caches: dict = {}
+
+    capacity, _source, _probe = _facade_tick(tmp_path, _Facade(answer), caches, NOW)
+
+    stored = json.dumps(caches)
+    assert "PLANTED" not in stored and "sk-ant-oat01" not in stored
+    assert caches["claude"]["item"]["reason"] == "refused for key [secret]"
+    assert caches["claude"]["item"]["source"] == "oauth [secret]"
+    assert caches["codex"]["item"]["windows"][0]["label"] == "5h [secret]"
+    assert caches["codex"]["plan"] == "P" * 23 + "…" == caches["codex"]["item"]["plan"]
+    assert capacity.quotas[0].detail == "refused for key [secret]"
+    assert capacity.quotas[1].plan == "P" * 23 + "…"
+
+
 def test_the_cron_path_without_a_record_asks_the_facade_on_every_run(tmp_path: Path) -> None:
     facade = _Facade()
 

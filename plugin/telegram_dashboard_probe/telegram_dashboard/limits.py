@@ -32,6 +32,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any
 
+from .policy import sanitize_public_text
 from .quota_cache import cache_for, current, last_answer
 from .quota_cache import tick as quota_tick
 from .workers import Flights, StillRunning, failure_name
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 PROVIDERS: tuple[tuple[str, str], ...] = (("claude", "anthropic"), ("codex", "openai-codex"))
 FACADE_MODULE = "agent.account_usage"
 FACADE_FUNCTION = "fetch_account_usage"
+# How much of each text the record keeps: what the screen shows of it (``collect``), no more.
+_REASON_LIMIT = 60
+_SOURCE_LIMIT = 40
+_PLAN_LIMIT = 24
+_LABEL_LIMIT = 24
 
 Fetcher = Callable[[str], Any]
 Resolver = Callable[[], "Fetcher | None"]
@@ -238,14 +244,16 @@ def _failed(key: str, reason: str) -> dict[str, Any]:
 
 def _item_of(key: str, snapshot: Any) -> dict[str, Any]:
     """The fields of a snapshot the screen uses, each by name: never ``identity`` (the account's
-    principal), ``raw`` (the whole answer) or ``details`` (a credit balance and the like)."""
+    principal), ``raw`` (the whole answer) or ``details`` (a credit balance and the like). Each
+    text is cleaned and cut before it reaches the record, to the length the screen shows, the
+    way an external source's are (``external._text``)."""
     available = bool(getattr(snapshot, "available", False))
     windows: list[dict[str, Any]] = []
     for window in getattr(snapshot, "windows", ()) or ():
         used = getattr(window, "used_percent", None)
         windows.append(
             {
-                "label": _text(getattr(window, "label", None)),
+                "label": _text(getattr(window, "label", None), _LABEL_LIMIT),
                 "used_percent": used if isinstance(used, (int, float)) else None,
                 "reset_at": _iso(getattr(window, "reset_at", None)),
             }
@@ -253,11 +261,11 @@ def _item_of(key: str, snapshot: Any) -> dict[str, Any]:
     return {
         "provider": key,
         "status": "available" if available else "unavailable",
-        "reason": _text(getattr(snapshot, "unavailable_reason", None)),
-        "source": _text(getattr(snapshot, "source", None)),
+        "reason": _text(getattr(snapshot, "unavailable_reason", None), _REASON_LIMIT),
+        "source": _text(getattr(snapshot, "source", None), _SOURCE_LIMIT),
         "fetched_at": _iso(getattr(snapshot, "fetched_at", None)),
         # The plan the facade names (Codex: ``plan_type`` title-cased); the details show it.
-        "plan": _text(getattr(snapshot, "plan", None)),
+        "plan": _text(getattr(snapshot, "plan", None), _PLAN_LIMIT),
         "windows": windows,
     }
 
@@ -271,5 +279,5 @@ def _iso(value: object) -> str | None:
     return None
 
 
-def _text(value: object) -> str | None:
-    return str(value) if value is not None else None
+def _text(value: object, limit: int) -> str | None:
+    return sanitize_public_text(str(value), limit=limit) if value is not None else None
