@@ -218,9 +218,10 @@ Three prohibitions, learned from a predecessor that died of them: no imports of 
 
 Two named exceptions. Account limits come from `agent.account_usage.fetch_account_usage`, a public
 function with the same signature on every verified version, called exactly the way the gateway's
-own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`), but not
-more often than once per `facade_refresh_seconds` for each provider (5 minutes by default). An
-import failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
+own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`), but
+once per `facade_refresh_seconds` for each provider (5 minutes by default; an attempt due within
+5 s goes out on the tick at hand, so a tick that wakes a moment early does not push it a whole
+period). An import failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
 `agent.secret_scope.get_secret`, so that the active profile's value is the one used
 (`external.py`). Each exception is a row in the matrix, not a habit.
 
@@ -344,7 +345,8 @@ on a pinned dashboard looks exactly like a calm system, which is the failure thi
 to prevent. Inside the gateway the drift command, the usage facade and the read of the engine's
 error log run in worker threads with deadlines (`collect_all_async`), so a slow provider or a
 hung disk never stalls the Telegram event loop. The facade has one worker for Claude and Codex
-and calls each of them at most once per `facade_refresh_seconds`, not on every tick.
+and calls each of them once per `facade_refresh_seconds` (an attempt due within 5 s goes out on
+the tick at hand), not on every tick.
 
 Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
 
@@ -369,7 +371,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often your `limits_sources` are asked (not every tick) |
-   | `facade_refresh_seconds` | `HERMES_DASHBOARD_PROBE_FACADE_REFRESH` | default 300, floor 60, no ceiling; how often Claude and Codex are each asked through the usage facade (not every tick: at most 288 calls a day per provider at the default); see "Limits: three kinds that never mix" |
+   | `facade_refresh_seconds` | `HERMES_DASHBOARD_PROBE_FACADE_REFRESH` | default 300, floor 60, no ceiling; how often Claude and Codex are each asked through the usage facade (not every tick: the default gives 288 calls a day per provider at a 60 s period; an attempt due within 5 s goes out on the current tick); see "Limits: three kinds that never mix" |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
@@ -417,11 +419,12 @@ built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads t
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
 with the provider, the plan and the login date it last named. `facade_cache` keeps the usage
 facade's providers the same way, one entry each (`claude`, `codex`): the last attempt
-(`attempted_at`), its item (the status, the reason, the source's name, `fetched_at`, the windows
-with the share and the reset, the plan), the last time the facade answered with a snapshot at
-all (`answered_at`) and the plan it last named. Never the account's identity, the raw answer,
-the details the facade reports beside the windows (a credit balance), or an exception's text,
-only its class. `gemini_log_cache` keeps the last
+(`attempted_at`), its item (the provider, the status, the reason, the source's name,
+`fetched_at`, the plan, and the windows, each with its label, share and reset; every text
+cleaned and cut to the length the screen shows), the last time the facade answered with a
+snapshot at all (`answered_at`) and the plan it last named. Never the account's identity, the
+raw answer, the details the facade reports beside the windows (a credit balance), or an
+exception's text, only its class. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
 message; the limit and the retry are kept, not shown) and when the log was last read
 (`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
@@ -921,15 +924,19 @@ and an external source's number are each read on their own cadence and must not 
 screen's stamp: the details line `Data 12:21 · Codex 12:18 · Mistral 12:16` names every number
 read at another minute than the screen. `quota_cache.tick` decides when a provider is asked
 again: Claude and Codex once per `facade_refresh_seconds` (5 minutes by default), an external
-source once per `limits_refresh_seconds`; one attempt per interval, success or failure, so a
+source once per `limits_refresh_seconds`, and for both an attempt due within 5 s goes out on the
+tick at hand; one attempt per interval, success or failure, so a
 failed attempt is `no data` with its reason until the next one, and a failing provider is not
 asked on every tick. The record keeps the last answer (`facade_cache`, `external_cache`), which
 stands in for a missed one (the deadline, a worker still running) with its own stamp while it
-is younger than two ticks or two intervals, whichever is longer. No number older than that
-passes for fresh: a number older than its interval is `cached number too old`, and the ❔ line
-names the source (`Mistral limits (stale)`, or `limits (stale)` for the facade, whose source is
-its freshest number). A stale number under a fresh stamp looks like knowledge, which is the one
-thing a limits block must never do.
+is younger than two ticks or two intervals, whichever is longer; a facade provider whose own
+attempt is still inside its interval keeps that attempt's line, a failure as much as an answer,
+since one worker asks both. No number older than that passes for fresh: a number older than its
+interval is `cached number too old`, and an external source that hands over a number read
+longer ago than that is named on the ❔ line as stale (`Mistral limits (stale)`). The facade's `limits`
+source stands on its freshest number with a ttl of at least two cadences, so it stays fresh
+between attempts; with no number at all it is `limits (unavailable)`. A stale number under a
+fresh stamp looks like knowledge, which is the one thing a limits block must never do.
 
 **Codex** comes from the facade like Claude, on the same cadence, and so does its plan
 (`plan_type`, title-cased: `Prolite`), in the details beside the others; the plan stays there
