@@ -40,6 +40,51 @@ jobs:
       - name: mypy --strict
         run: mypy --strict -p telegram_dashboard
 
+  engine:
+    # The tests that drive the real engine (TelegramAdapter, PluginManager, spawn_task, the
+    # engine's YAML parser and secret scope) skip on the runner above, which has no Hermes, and
+    # did so unseen for weeks. Here they run against pinned Hermes releases installed the engine's
+    # own way, and REQUIRE_ENGINE_TESTS=1 makes any skip a failure unless conftest.py allows its
+    # reason. conftest.py also refuses every connect and name lookup off loopback.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # v0.22.2: the production engine. v0.22.7: the current release. The floor of
+        # requires_hermes (0.21.1, tag v2026.9.7) is not here: it has no telegram extra and
+        # refuses Python 3.14.
+        hermes: ["v0.22.2", "v0.22.7"]
+    steps:
+      # Pinned by commit, as the engine's own workflows at both tags pin them.
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - name: Check out Hermes ${{ matrix.hermes }}
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.hermes }}
+          path: hermes-agent
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # The uv the engine's own CI runs at both tags. Unpinned, setup-uv resolves "latest"
+          # through a manifest fetch on every run.
+          version: "0.12.13"
+      # The engine's lock, its supported Python (3.14) and the one extra the adapter needs.
+      # Not `uv pip install -e`: that route ignores the engine's [tool.uv] overrides and fails on
+      # its Pillow pin.
+      - name: Install Hermes ${{ matrix.hermes }} from its lock
+        working-directory: hermes-agent
+        run: uv sync --frozen --python 3.14 --extra telegram
+      # After the sync, which removes whatever its lock does not name.
+      - name: Add the test tools to the engine venv
+        run: uv pip install --python hermes-agent/.venv/bin/python "pytest>=8,<10" tzdata
+      # -rfEs: the reasons of the skips conftest.py allows, and failures and errors named on the
+      # summary too (a bare -rs drops them from it).
+      - name: Test suite against the engine
+        env:
+          REQUIRE_ENGINE_TESTS: "1"
+        run: hermes-agent/.venv/bin/python -m pytest tests -rfEs
+
   manifest:
     runs-on: ubuntu-latest
     steps:
