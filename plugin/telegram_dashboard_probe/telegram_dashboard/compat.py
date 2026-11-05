@@ -28,6 +28,12 @@ MATRIX_SCHEMA = 1
 # requires the name (``REQUIRED_API``): a copy without the field would reject the tick's
 # ``Environment`` arguments every time.
 CRON_NOTES = "cron_notes"
+# The setting and the ``Environment`` field of the owner's list of built-in limit providers
+# (issue #14). The plugin requires the name (``REQUIRED_API``), as for ``CRON_NOTES``.
+LIMITS_PROVIDERS = "limits_providers"
+# The providers the list may name: the facade's two and Gemini from the engine's log. An external
+# source (``limits_sources``) is no built-in provider and is never subject to the list.
+BUILT_IN_PROVIDERS = ("claude", "codex", "gemini")
 
 
 def parse_cron_notes(
@@ -60,6 +66,40 @@ def parse_cron_notes(
     return pairs
 
 
+def parse_limits_providers(
+    raw: object, log: logging.Logger, prefix: str = ""
+) -> tuple[str, ...] | None:
+    """``limits_providers``: the built-in limit providers to ask, by label in any case, in the
+    order of ``BUILT_IN_PROVIDERS``. ``None`` when the setting is absent: every provider is
+    asked, and one with no sign of an account has no line (issue #14). A list, empty or not:
+    exactly the providers it names are asked, each always with its line, and one it leaves out
+    is never asked; an empty list asks none. An entry that names no built-in provider is
+    skipped, one warning per parse giving the places, never the text. Anything but a list is
+    "not set", with its own warning. The plugin and the package's own tick both read the
+    setting with this."""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, list | tuple):
+        log.warning("%slimits_providers must be a list; ignoring %r", prefix, type(raw))
+        return None
+    named: set[str] = set()
+    skipped: list[str] = []
+    for number, entry in enumerate(raw, start=1):
+        name = entry.strip().lower() if isinstance(entry, str) else ""
+        if name in BUILT_IN_PROVIDERS:
+            named.add(name)
+        else:
+            skipped.append(str(number))
+    if skipped:
+        log.warning(
+            "%slimits_providers: %s %s skipped (each must be claude, codex or gemini)",
+            prefix,
+            "entry" if len(skipped) == 1 else "entries",
+            ", ".join(skipped),
+        )
+    return tuple(name for name in BUILT_IN_PROVIDERS if name in named)
+
+
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
     source: str
@@ -84,6 +124,10 @@ class Environment:
     # The owner's label per cron job id (``cron_notes``) as pairs, nothing mutable; checked
     # entry by entry where the config is read, sanitized where a label is shown (``cron_jobs``).
     cron_notes: tuple[tuple[str, str], ...] = ()
+    # The owner's ``limits_providers`` as ``parse_limits_providers`` reads it: ``None`` asks every
+    # built-in provider and hides one with no sign of an account; a tuple (empty or not) asks
+    # exactly those it names and always shows them (issue #14).
+    limits_providers: tuple[str, ...] | None = None
     # The gateway process's working directory, where an operator may expect the agent's rules;
     # ``None`` outside the gateway unless the cron tick's config names it.
     gateway_dir: Path | None = None

@@ -330,6 +330,9 @@ class QuotaMetric:
     login_expires_at: str | None = None
     # The last 429 the engine logged for the provider; ``None`` when nobody watches its log.
     refusal: Refusal | None = None
+    # The owner named the provider in ``limits_providers`` (issue #14): its line is drawn
+    # whatever it says, Gemini's included.
+    pinned: bool = False
 
 
 @dataclass(frozen=True, slots=True)

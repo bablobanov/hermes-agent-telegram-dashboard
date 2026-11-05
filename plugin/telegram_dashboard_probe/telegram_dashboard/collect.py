@@ -55,6 +55,7 @@ from .limits import (
     NONE_REASON,
     NOT_CONFIGURED,
     NOT_CONFIGURED_REASON,
+    OFF_REASON,
     Cadence,
     Resolver,
     build_limits_payload,
@@ -454,8 +455,10 @@ def collect_limits(
         return disabled
     show = _show_seconds(interval_seconds, None)
     cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
-    payload = build_limits_payload(resolve, cadence)
-    return parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    listed = _listing(env)
+    payload = build_limits_payload(resolve, cadence, listed)
+    capacity, source, probe = parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    return chosen(capacity, listed), source, probe
 
 
 async def collect_limits_async(
@@ -474,10 +477,33 @@ async def collect_limits_async(
         return disabled
     show = _show_seconds(interval_seconds, period_seconds)
     cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
+    listed = _listing(env)
     payload = await fetch_limits_payload_off_loop(
-        resolve, timeout_seconds=timeout_seconds, flights=flights, cadence=cadence
+        resolve, timeout_seconds=timeout_seconds, flights=flights, cadence=cadence, listed=listed
     )
-    return parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    capacity, source, probe = parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    return chosen(capacity, listed), source, probe
+
+
+def _listing(env: Environment) -> frozenset[str] | None:
+    """The owner's ``limits_providers`` as a set; ``None`` when the setting is not there."""
+    return None if env.limits_providers is None else frozenset(env.limits_providers)
+
+
+def chosen(capacity: CapacitySummary, listed: frozenset[str] | None) -> CapacitySummary:
+    """The built-in lines as the owner's ``limits_providers`` has them (issue #14): a provider it
+    names is pinned, its line drawn whatever it says; one it leaves out has no line and is named
+    in the details (``Off in the dashboard settings: Gemini``). Without the list, the lines as
+    they are. Before the external sources are merged: those are never subject to the list."""
+    if listed is None:
+        return capacity
+    return CapacitySummary(tuple(_chosen(quota, listed) for quota in capacity.quotas))
+
+
+def _chosen(quota: QuotaMetric, listed: frozenset[str]) -> QuotaMetric:
+    if quota.provider.lower() in listed:
+        return replace(quota, pinned=True)
+    return QuotaMetric(quota.provider, "not_configured", detail=OFF_REASON)
 
 
 def _limits_ttl(show_seconds: float) -> float:
@@ -957,10 +983,11 @@ def collect_all(
         caches=facade_caches,
         interval_seconds=facade_interval_seconds,
     )
-    if env.limits_enabled:
-        gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
-    else:
-        gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
+    gemini, gemini_source, gemini_incidents = (
+        collect_gemini(env, gemini_cache, now=now)
+        if _reads_gemini(env)
+        else _gemini_unread(env, capacity, limits_source)
+    )
     metrics = [part[0] for part in externals]
     return build_snapshot(
         now=now,
@@ -971,12 +998,12 @@ def collect_all(
         traffic=traffic,
         rules=rules,
         memory=memory,
-        capacity=merge_external(merge_quotas(capacity, gemini), metrics),
+        capacity=_limits_block(env, capacity, gemini, metrics),
         sources=(
             gateway_source,
             *_present(limits_source),
             *(part[1] for part in externals),
-            gemini_source,
+            *_present(gemini_source),
             drift_source,
             backup_source,
             cron_source,
@@ -1047,6 +1074,41 @@ def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation | No
     detail = "disabled" if limits_source is None else limits_source.detail
     source = SourceObservation(GEMINI_SOURCE, "local", state, detail=detail)
     return quota_off_for(GEMINI_LABEL, capacity), source, ()
+
+
+# Gemini's part when its log is not read: limits off (the block's verdict), or left out of the
+# owner's ``limits_providers`` (no source, no event, the details name it).
+UnreadGemini = tuple[QuotaMetric, SourceObservation | None, tuple[Incident, ...]]
+
+
+def _reads_gemini(env: Environment) -> bool:
+    """The engine's log is read for Gemini while limits are on and the owner's list, if there
+    is one, names Gemini (issue #14)."""
+    listed = _listing(env)
+    return env.limits_enabled and (listed is None or GEMINI_LABEL.lower() in listed)
+
+
+def _gemini_unread(
+    env: Environment, capacity: CapacitySummary, limits_source: SourceObservation | None
+) -> UnreadGemini:
+    if not env.limits_enabled:
+        return _gemini_off(capacity, limits_source)
+    return QuotaMetric(GEMINI_LABEL, "not_configured", detail=OFF_REASON), None, ()
+
+
+def _limits_block(
+    env: Environment,
+    capacity: CapacitySummary,
+    gemini: QuotaMetric,
+    externals: Sequence[QuotaMetric],
+) -> CapacitySummary:
+    """The facade's lines, Gemini's, then the external sources' over them: the owner's list
+    marks the built-in ones first (limits off: no list), so a hidden line still meets an
+    external source that names it (decision 7 of #14)."""
+    built_in = merge_quotas(capacity, gemini)
+    if env.limits_enabled:
+        built_in = chosen(built_in, _listing(env))
+    return merge_external(built_in, externals)
 
 
 # ----------------------------------------------------------------------------- plugin tick
@@ -1191,7 +1253,7 @@ async def collect_all_async(
                 env, gemini_cache, now=now, timeout_seconds=gemini_timeout_seconds, flights=flights
             )
         )
-        if env.limits_enabled
+        if _reads_gemini(env)
         else None
     )
     try:
@@ -1222,10 +1284,11 @@ async def collect_all_async(
         rules, rules_source, rules_incidents = await rules_task
         memory, memory_source, memory_incidents = await memory_task
         cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
-        if gemini_task is None:
-            gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
-        else:
-            gemini, gemini_source, gemini_incidents = await gemini_task
+        gemini, gemini_source, gemini_incidents = (
+            _gemini_unread(env, capacity, limits_source)
+            if gemini_task is None
+            else await gemini_task
+        )
         metrics = [part[0] for part in externals]
         return build_snapshot(
             now=now,
@@ -1237,12 +1300,12 @@ async def collect_all_async(
             traffic=traffic,
             rules=rules,
             memory=memory,
-            capacity=merge_external(merge_quotas(capacity, gemini), metrics),
+            capacity=_limits_block(env, capacity, gemini, metrics),
             sources=(
                 gateway_source,
                 *_present(limits_source),
                 *(part[1] for part in externals),
-                gemini_source,
+                *_present(gemini_source),
                 drift_source,
                 backup_source,
                 cron_source,

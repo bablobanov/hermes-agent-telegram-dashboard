@@ -521,6 +521,49 @@ def test_cron_notes_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
     assert seen[0].cron_notes == (("a1b2c3", "Sends Threads topics to SMM"),)
 
 
+def test_limits_providers_are_read_from_the_config_entry_only(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Issue #14: ``limits_providers`` lists the built-in limit providers to ask, by label in any
+    case; absent, the automatic rule holds; an unknown name is skipped with a warning that does
+    not quote it; no environment fallback."""
+    plugin = load_plugin()
+    base = _settings(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_LIMITS_PROVIDERS", "claude")
+
+    def providers(**overrides: Any) -> Any:
+        settings = plugin.read_settings(FakeContext({**base, **overrides}))
+        assert settings is not None
+        return settings.limits_providers
+
+    assert providers() is None
+    assert providers(limits_providers=["Codex", "GEMINI"]) == ("codex", "gemini")
+    assert providers(limits_providers=[]) == ()
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        assert providers(limits_providers=["codex", "Grok-secret"]) == ("codex",)
+    assert "probe: limits_providers: entry 2 skipped" in caplog.text
+    assert "Grok-secret" not in caplog.text
+
+
+def test_limits_providers_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), limits_providers=["codex"]))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[Any] = []
+
+    async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(env)
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    asyncio.run(runtime._collect(datetime(2026, 10, 24, 7, 0, tzinfo=UTC)))
+
+    assert seen[0].limits_providers == ("codex",)
+
+
 def test_a_package_copy_from_before_the_version_line_is_refused_at_load(tmp_path: Path) -> None:
     """The plugin hands ``version_cache`` to the collector. A copy of the package from before
     0.6.0 would reject that argument on every tick and cost the whole screen; it is refused once,
@@ -610,6 +653,28 @@ def test_a_package_copy_without_the_facade_cadence_is_refused_at_load(tmp_path: 
     collect_py.write_text(text.replace(name, "_OLDER_FACADE_INTERVAL_SECONDS"), "utf-8")
 
     plugin = load_plugin("hermes_plugins.pre_facade_cadence_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
+def test_a_package_copy_from_before_limits_providers_is_refused_at_load(tmp_path: Path) -> None:
+    """Issue #14: the plugin hands ``limits_providers`` to ``Environment``; a copy from before it
+    would reject the argument on every tick. It is refused at load and the next candidate is
+    taken."""
+    assert {"LIMITS_PROVIDERS", "parse_limits_providers"} <= set(
+        load_plugin().REQUIRED_API["compat"]
+    )
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    compat_py = plugin_dir / "telegram_dashboard" / "compat.py"
+    text = compat_py.read_text(encoding="utf-8")
+    line = 'LIMITS_PROVIDERS = "limits_providers"\n'
+    assert line in text
+    compat_py.write_text(text.replace(line, ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_providers_probe", plugin_dir, vendored=True)
     dashboard = plugin.import_dashboard()
 
     assert dashboard is not None

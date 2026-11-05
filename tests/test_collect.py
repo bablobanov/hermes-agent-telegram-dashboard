@@ -1777,3 +1777,171 @@ def test_no_limits_source_at_all_when_no_facade_provider_has_a_line(tmp_path: Pa
         ("Claude", "not_configured"),
         ("Codex", "not_configured"),
     ]
+
+
+# ---------------------------------------------------------------- limits_providers (#14)
+#
+# The owner's optional list of built-in providers: a provider it names is asked and always has
+# its line; one it leaves out is never asked (the facade not called, Gemini's log not read) and
+# is named in the details; external sources are not subject to it.
+
+
+def test_limits_providers_is_read_as_built_in_labels_in_any_case(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from telegram_dashboard.compat import parse_limits_providers
+
+    log = logging.getLogger("test.limits_providers")
+
+    assert parse_limits_providers(["Codex", " GEMINI ", "codex"], log) == ("codex", "gemini")
+    assert parse_limits_providers(["gemini", "claude"], log) == ("claude", "gemini")
+    assert parse_limits_providers(None, log) is None
+    assert parse_limits_providers("", log) is None
+    assert parse_limits_providers([], log) == ()
+    assert caplog.text == ""
+
+    with caplog.at_level("WARNING", logger="test.limits_providers"):
+        assert parse_limits_providers(["claude", "grok", 5, "Secret text"], log) == ("claude",)
+        assert parse_limits_providers("codex", log) is None
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert warnings == [
+        "limits_providers: entries 2, 3, 4 skipped (each must be claude, codex or gemini)",
+        "limits_providers must be a list; ignoring <class 'str'>",
+    ]
+    assert "grok" not in caplog.text and "Secret" not in caplog.text
+
+
+def test_the_fallback_tick_reads_limits_providers_from_its_config(tmp_path: Path) -> None:
+    from telegram_dashboard.__main__ import _environment
+
+    home = {"hermes_home": str(tmp_path)}
+
+    assert _environment({**home, "limits_providers": ["Codex"]}).limits_providers == ("codex",)
+    assert _environment({**home, "limits_providers": []}).limits_providers == ()
+    assert _environment(home).limits_providers is None
+
+
+def test_a_listed_provider_keeps_its_line_and_one_left_out_is_never_asked(
+    tmp_path: Path,
+) -> None:
+    """``limits_providers: [codex]``: Claude is never asked and has no line; Codex is asked and
+    keeps a "no data" line with the reason however many ``None`` attempts it gets, with a record
+    and on the cron path alike."""
+    facade = _Facade(lambda provider, now: None)
+    env = Environment(hermes_home=tmp_path, limits_providers=("codex",))
+    caches: dict = {}
+
+    for k in range(4):
+        at = NOW + timedelta(minutes=5 * k)
+        facade.now = at
+        capacity, source, _probe = collect_limits(
+            env, now=at, resolve=lambda: facade, caches=caches, interval_seconds=300
+        )
+        claude, codex = capacity.quotas
+        assert (claude.kind, claude.detail) == ("not_configured", "off in the dashboard settings")
+        assert (codex.kind, codex.detail, codex.pinned) == ("unavailable", _NO_ANSWER, True)
+        assert source is not None and source.state == "unavailable"
+
+    cron, _source, _probe = collect_limits(env, now=NOW, resolve=lambda: facade)
+
+    assert [q.kind for q in cron.quotas] == ["not_configured", "unavailable"]
+    assert facade.calls == ["openai-codex"] * 5
+    assert set(caches) == {"codex"} and caches["codex"]["none_attempts"] == 4
+
+
+def test_an_empty_list_asks_no_built_in_provider_at_all(tmp_path: Path) -> None:
+    """``limits_providers: []``: neither the facade nor Gemini's log is touched, no limits
+    source and no Gemini log source are counted, no Gemini event is raised; the details name
+    all three. An external source still has its line."""
+    _gemini_log(tmp_path, minutes_ago=5, retry="14580")
+    resolved: list[str] = []
+    gemini_cache: dict = {}
+    facade_caches: dict = {}
+
+    def resolve():
+        resolved.append("facade")
+        return _Facade()
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path, limits_providers=(), limits_sources=({"url": EXT_URL},)),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=resolve,
+        facade_caches=facade_caches,
+        gemini_cache=gemini_cache,
+        external_fetch=_ext_fetch({**EXT_ANSWER, "provider": "Mistral"}),
+    )
+
+    assert resolved == [] and facade_caches == {} and gemini_cache == {}
+    assert [(q.provider, q.kind, q.detail) for q in snapshot.capacity.quotas] == [
+        ("Claude", "not_configured", "off in the dashboard settings"),
+        ("Codex", "not_configured", "off in the dashboard settings"),
+        ("Mistral", "official", "external"),
+        ("Gemini", "not_configured", "off in the dashboard settings"),
+    ]
+    names = [source.name for source in snapshot.sources]
+    assert "limits" not in names and "gemini_log" not in names and "Mistral limits" in names
+    assert not any(i.incident_id.startswith("gemini:") for i in snapshot.incidents)
+
+
+def test_a_pinned_gemini_is_read_and_marked_and_an_external_source_is_not_subject_to_the_list(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "logs").mkdir()
+    env = Environment(
+        hermes_home=tmp_path,
+        limits_providers=("gemini",),
+        limits_sources=({"url": EXT_URL},),
+    )
+
+    snapshot = collect_all(
+        env,
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: _Facade(),
+        external_fetch=_ext_fetch(EXT_ANSWER),
+    )
+
+    quotas = {q.provider: q for q in snapshot.capacity.quotas}
+    # The external source names Claude: it takes the hidden line's place.
+    assert (quotas["Claude"].kind, quotas["Claude"].pinned) == ("official", False)
+    assert quotas["Codex"].kind == "not_configured"
+    assert (quotas["Gemini"].kind, quotas["Gemini"].pinned) == ("unsupported", True)
+    assert quotas["Gemini"].refusal == Refusal()
+    assert "gemini_log" in [s.name for s in snapshot.sources]
+
+
+def test_a_listed_provider_without_a_facade_is_unsupported_and_one_left_out_stays_off(
+    tmp_path: Path,
+) -> None:
+    capacity, source, probe = collect_limits(
+        Environment(hermes_home=tmp_path, limits_providers=("codex",)),
+        now=NOW,
+        resolve=lambda: None,
+    )
+
+    assert [(q.provider, q.kind) for q in capacity.quotas] == [
+        ("Claude", "not_configured"),
+        ("Codex", "unsupported"),
+    ]
+    assert source is not None and source.state == "unsupported"
+    assert probe.status == "unsupported"
+
+
+def test_limits_off_keep_their_lines_whatever_the_list_says(tmp_path: Path) -> None:
+    """``limits_enabled: false`` is not this issue's: every line takes the block's verdict, as
+    in 1.1.0, list or no list."""
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path, limits_enabled=False, limits_providers=("codex",)),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+    )
+
+    assert [(q.provider, q.kind) for q in snapshot.capacity.quotas] == [
+        ("Claude", "unsupported"),
+        ("Codex", "unsupported"),
+        ("Gemini", "unsupported"),
+    ]

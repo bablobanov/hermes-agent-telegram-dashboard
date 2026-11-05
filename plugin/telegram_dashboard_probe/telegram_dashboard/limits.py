@@ -66,6 +66,8 @@ NOT_CONFIGURED = "not_configured"
 NOT_CONFIGURED_REASON = "not configured"
 # The record's count of ``None`` attempts in a row since the last answer, per provider.
 NONE_ATTEMPTS = "none_attempts"
+# The reason of a provider the owner's ``limits_providers`` leaves out: never asked, no line.
+OFF_REASON = "off in the dashboard settings"
 # How much of each text the record keeps: what the screen shows of it (``collect``), no more.
 _REASON_LIMIT = 60
 _SOURCE_LIMIT = 40
@@ -107,7 +109,9 @@ def import_fetcher() -> Fetcher | None:
 
 
 def build_limits_payload(
-    resolve: Resolver = import_fetcher, cadence: Cadence | None = None
+    resolve: Resolver = import_fetcher,
+    cadence: Cadence | None = None,
+    listed: frozenset[str] | None = None,
 ) -> LimitsPayload:
     """Ask the facade for every provider; the answer has the shape ``parse_limits_payload`` reads.
 
@@ -115,11 +119,15 @@ def build_limits_payload(
     called only when its attempt is due (``quota_cache.tick``) and its cache in
     ``cadence.caches`` records the attempt; between attempts the cached answer is the item.
     Either way a provider whose silence says it is not set up here is ``not_configured``
-    (``_judged``).
+    (``_judged``). ``listed`` is the owner's ``limits_providers`` (``None``: not set): a
+    provider it names is asked and keeps its line whatever it answers, one it leaves out is
+    never asked; with none to ask the facade is not even imported.
 
     Runs synchronously and may take as long as the slowest provider API; call it off the event
     loop (see :func:`fetch_limits_payload_off_loop`). Never raises.
     """
+    if not asked(listed):
+        return {"ok": True, "reason": None, "providers": [_off(key) for key, _ in PROVIDERS]}
     try:
         fetch = resolve()
     except Exception as exc:
@@ -128,12 +136,21 @@ def build_limits_payload(
         return _not_ok("unsupported: facade not importable")
     providers = []
     for key, provider in PROVIDERS:
-        if cadence is None:
-            providers.append(_judged(key, _provider_item(key, provider, fetch), None, None))
+        if listed is not None and key not in listed:
+            providers.append(_off(key))
+        elif cadence is None:
+            item = _provider_item(key, provider, fetch)
+            providers.append(_judged(key, item, None, None, pinned=listed is not None))
         else:
             item = _provider_tick(key, provider, fetch, cadence)
-            providers.append(_judged(key, item, cache_for(cadence.caches, key), cadence.now))
+            cache = cache_for(cadence.caches, key)
+            providers.append(_judged(key, item, cache, cadence.now, pinned=listed is not None))
     return {"ok": True, "reason": None, "providers": providers}
+
+
+def asked(listed: frozenset[str] | None) -> tuple[str, ...]:
+    """The facade providers to ask: every one without a list, else the ones it names."""
+    return tuple(key for key, _ in PROVIDERS if listed is None or key in listed)
 
 
 async def fetch_limits_payload_off_loop(
@@ -142,6 +159,7 @@ async def fetch_limits_payload_off_loop(
     timeout_seconds: float,
     flights: Flights | None = None,
     cadence: Cadence | None = None,
+    listed: frozenset[str] | None = None,
 ) -> LimitsPayload:
     """``build_limits_payload`` in a worker thread with a deadline, exactly like ``/usage``.
 
@@ -150,22 +168,31 @@ async def fetch_limits_payload_off_loop(
     shared across ticks the abandoned worker is not duplicated until it returns. With a
     ``cadence`` a miss shows each provider's own standing attempt, or its last answer while it
     is young enough (``_missed``), and the abandoned worker records its attempt when it
-    returns, so the next tick serves it without asking again.
+    returns, so the next tick serves it without asking again. With no provider to ask
+    (``listed`` names none) no worker starts.
     """
+    if not asked(listed):
+        return build_limits_payload(resolve, cadence, listed)
     if cadence is not None:
         # Made on the loop, before the worker starts: the worker only fills them.
-        for key, _provider in PROVIDERS:
+        for key in asked(listed):
             cache_for(cadence.caches, key)
     try:
         payload = await (flights or Flights()).run(
-            "limits", build_limits_payload, resolve, cadence, timeout_seconds=timeout_seconds
+            "limits",
+            build_limits_payload,
+            resolve,
+            cadence,
+            listed,
+            timeout_seconds=timeout_seconds,
         )
     except TimeoutError:
-        return _missed(f"timeout: facade did not answer within {timeout_seconds:g}s", cadence)
+        missed = f"timeout: facade did not answer within {timeout_seconds:g}s"
+        return _missed(missed, cadence, listed)
     except StillRunning:
-        return _missed("busy: the previous facade call has not returned yet", cadence)
+        return _missed("busy: the previous facade call has not returned yet", cadence, listed)
     except Exception as exc:  # thread start failure, SystemExit in the facade; the tick goes on
-        return _missed(f"error: {failure_name(exc)}", cadence)
+        return _missed(f"error: {failure_name(exc)}", cadence, listed)
     if cadence is not None and payload.get("ok") is not True:
         _drop_unused(cadence.caches)
     return payload
@@ -184,7 +211,9 @@ def _not_ok(reason: str) -> LimitsPayload:
     return {"ok": False, "reason": reason, "providers": []}
 
 
-def _missed(reason: str, cadence: Cadence | None) -> LimitsPayload:
+def _missed(
+    reason: str, cadence: Cadence | None, listed: frozenset[str] | None = None
+) -> LimitsPayload:
     """No answer from the worker this tick. Without a cadence the whole block is "no data" with
     the reason. With one, a provider whose own attempt still stands (its interval has not run
     out) keeps that attempt's line, a failure as much as an answer: the worker is one for both
@@ -198,35 +227,53 @@ def _missed(reason: str, cadence: Cadence | None) -> LimitsPayload:
         return _not_ok(reason)
     providers = []
     for key, _provider in PROVIDERS:
+        if listed is not None and key not in listed:
+            providers.append(_off(key))
+            continue
         cache = cache_for(cadence.caches, key)
         line = current(cache, now=cadence.now, interval_seconds=cadence.interval_seconds)
         if line is None:
             line = last_answer(cache, now=cadence.now, show_seconds=cadence.show_seconds)
         item = _plan_filled(cache, line if line is not None else _failed(key, reason))
-        providers.append(_judged(key, item, cache, cadence.now))
+        providers.append(_judged(key, item, cache, cadence.now, pinned=listed is not None))
     return {"ok": True, "reason": reason, "providers": providers}
 
 
+def _off(key: str) -> dict[str, Any]:
+    """A provider the owner's list leaves out: never asked, no line."""
+    return _hidden(key, OFF_REASON)
+
+
+def _hidden(key: str, reason: str) -> dict[str, Any]:
+    return {
+        "provider": key,
+        "status": NOT_CONFIGURED,
+        "reason": reason,
+        "source": None,
+        "fetched_at": None,
+        "windows": [],
+    }
+
+
 def _judged(
-    key: str, item: dict[str, Any], cache: dict[str, Any] | None, now: datetime | None
+    key: str,
+    item: dict[str, Any],
+    cache: dict[str, Any] | None,
+    now: datetime | None,
+    *,
+    pinned: bool = False,
 ) -> dict[str, Any]:
     """``item``, or a ``not_configured`` item for a provider whose silence says it is not set
     up on this installation (issue #14). The facade cannot tell "no credential" from "the call
     failed", so the record decides: a provider that never answered is not configured after
     ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row, one that answered before once its last
     answer is older than ``QUIET_SHOWN_SECONDS``. Without a record (``cache`` ``None``, the cron
-    path) there is no memory: the facade's ``None`` is not configured at once. The cache's own
-    item stays what the attempt returned; only the payload's item changes."""
-    if not _quiet(item, cache, now):
+    path) there is no memory: the facade's ``None`` is not configured at once. A provider the
+    owner named in ``limits_providers`` (``pinned``) keeps its line whatever it says. The
+    cache's own item stays what the attempt returned; only the payload's item changes."""
+    if pinned or not _quiet(item, cache, now):
         return item
-    return {
-        "provider": key,
-        "status": NOT_CONFIGURED,
-        "reason": NOT_CONFIGURED_REASON,
-        "source": None,
-        "fetched_at": None,
-        "windows": [],
-    }
+    return _hidden(key, NOT_CONFIGURED_REASON)
 
 
 def _quiet(item: dict[str, Any], cache: dict[str, Any] | None, now: datetime | None) -> bool:

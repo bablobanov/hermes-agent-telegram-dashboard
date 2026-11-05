@@ -142,11 +142,13 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
     # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
-    # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0): a copy without them would
-    # reject the tick's arguments every time. EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0,
-    # whose tick hands no cache to providers an older copy read by itself: that copy would ask
-    # them on every tick. FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue
-    # #16): a copy without it would reject that argument, or call the facade on every tick.
+    # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0), compat's LIMITS_PROVIDERS
+    # and parse_limits_providers with ``Environment.limits_providers`` (issue #14): a copy
+    # without them would reject the tick's arguments every time.
+    # EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0, whose tick hands no cache to providers
+    # an older copy read by itself: that copy would ask them on every tick.
+    # FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue #16): a copy without it
+    # would reject that argument, or call the facade on every tick.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -161,7 +163,13 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "EXTERNAL_DEFAULT_INTERVAL_SECONDS",
         "FACADE_DEFAULT_INTERVAL_SECONDS",
     ),
-    "compat": ("Environment", "CRON_NOTES", "parse_cron_notes"),
+    "compat": (
+        "Environment",
+        "CRON_NOTES",
+        "parse_cron_notes",
+        "LIMITS_PROVIDERS",
+        "parse_limits_providers",
+    ),
     "freshness": ("record_from_plugin_state",),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
     # The rich form came with 0.12.0, the module with it.
@@ -233,6 +241,10 @@ class Settings:
     # The owner's label per cron job (``cron_notes``, job id to label), config only; pairs, so
     # the frozen settings hold nothing mutable. Sanitized where it is shown, like a name.
     cron_notes: tuple[tuple[str, str], ...] = ()
+    # The built-in limit providers to ask (``limits_providers``, config only, issue #14):
+    # ``None`` when not set (every one asked, one with no sign of an account without a line);
+    # a tuple, empty or not, asks exactly those and always shows them.
+    limits_providers: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +332,7 @@ def read_settings(ctx: Any) -> Settings | None:
         memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
         rich=_setting(ctx, "rich", ENV_RICH).lower() in _TRUE_WORDS,
         cron_notes=_notes(_raw_setting(ctx, "cron_notes")),
+        limits_providers=_providers(_raw_setting(ctx, "limits_providers")),
     )
 
 
@@ -334,23 +347,38 @@ def _entries(raw: object) -> tuple[Any, ...]:
 
 def _notes(raw: object) -> tuple[tuple[str, str], ...]:
     """``cron_notes`` read by the package's own parser (``compat.parse_cron_notes``), so the
-    plugin and the cron tick agree; none when no package can be imported or one raises
-    (``import_dashboard`` says so, as it did before). Never raises: a broken copy must not stop
-    the handler from being registered. The exception's type only is logged, its message may
-    carry config text."""
+    plugin and the cron tick agree; none when no package can be imported or one raises."""
+    notes: tuple[tuple[str, str], ...] = _parsed("cron_notes", "parse_cron_notes", raw, ())
+    return notes
+
+
+def _providers(raw: object) -> tuple[str, ...] | None:
+    """``limits_providers`` read by the package's own parser (``compat.parse_limits_providers``),
+    so the plugin and the cron tick agree; not set when no package can be imported or one
+    raises."""
+    providers: tuple[str, ...] | None = _parsed(
+        "limits_providers", "parse_limits_providers", raw, None
+    )
+    return providers
+
+
+def _parsed(setting: str, parser: str, raw: object, fallback: Any) -> Any:
+    """A setting read by the package's own parser in ``compat``, the copy beside the plugin
+    first; ``fallback`` when no package can be imported or one raises (``import_dashboard`` says
+    so, as it did before). Never raises: a broken copy must not stop the handler from being
+    registered. The exception's type only is logged, its message may carry config text."""
     for base in (f"{__package__}.telegram_dashboard" if __package__ else "", "telegram_dashboard"):
         if not base:
             continue
         try:
-            parse = importlib.import_module(f"{base}.compat").parse_cron_notes
-            notes: tuple[tuple[str, str], ...] = parse(raw, logger, "probe: ")
+            parse = getattr(importlib.import_module(f"{base}.compat"), parser)
+            return parse(raw, logger, "probe: ")
         except ModuleNotFoundError:
             continue  # an absent candidate is the normal case; ``import_dashboard`` logs it
         except Exception as exc:
-            logger.warning("probe: cron_notes not read by %s: %s", base, type(exc).__name__)
+            logger.warning("probe: %s not read by %s: %s", setting, base, type(exc).__name__)
             continue
-        return notes
-    return ()
+    return fallback
 
 
 def _home(ctx: Any) -> Path:
@@ -1099,6 +1127,7 @@ class ProbeRuntime:
             context_files_enabled=self.settings.context_files,
             memory_enabled=self.settings.memory,
             cron_notes=self.settings.cron_notes,
+            limits_providers=self.settings.limits_providers,
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,

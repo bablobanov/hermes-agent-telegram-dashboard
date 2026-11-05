@@ -874,6 +874,50 @@ def test_an_installation_without_claude_and_codex_leaves_the_limits_source_on_th
     assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (3, 3)
 
 
+def test_limits_providers_on_the_tick_asks_only_the_listed_ones(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """``limits_providers: [codex]`` on the tick: Claude is never asked, the Gemini log is not
+    read (no worker, no source), Codex is pinned; ``[]`` starts no facade worker at all."""
+    from dataclasses import replace
+
+    from telegram_dashboard.workers import Flights
+
+    (tmp_path / "logs").mkdir()
+    asked: list[str] = []
+
+    def fetch(provider: str) -> Any:
+        asked.append(provider)
+        return _facade_snapshot(NOW, 12.0)
+
+    gemini_cache: dict[str, Any] = {}
+
+    def tick(listed: tuple[str, ...], flights: Flights) -> Any:
+        env = replace(_env(tmp_path, limits_enabled=True), limits_providers=listed)
+        return collect_all_async(
+            env,
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: fetch,
+            flights=flights,
+            facade_caches={},
+            gemini_cache=gemini_cache,
+        )
+
+    codex_only = Flights()
+    snapshot = asyncio.run(tick(("codex",), codex_only))
+    nothing = Flights()
+    empty = asyncio.run(tick((), nothing))
+
+    assert asked == ["openai-codex"]
+    quotas = {q.provider: q for q in snapshot.capacity.quotas}
+    assert (quotas["Claude"].kind, quotas["Codex"].kind) == ("not_configured", "official")
+    assert quotas["Codex"].pinned and quotas["Gemini"].kind == "not_configured"
+    assert [s.name for s in snapshot.sources if s.name in ("limits", "gemini_log")] == ["limits"]
+    assert [s.name for s in empty.sources if s.name in ("limits", "gemini_log")] == []
+    assert gemini_cache == {}  # the log was never read
+
+
 # ---------------------------------------------------------------- the usage facade on a cadence (#16)
 
 
