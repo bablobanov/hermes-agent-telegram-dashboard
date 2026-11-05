@@ -1126,8 +1126,11 @@ log when Google refuses a call, and that refusal is what the Gemini line shows, 
 - **the line**: drawn only while a refusal is active, as above. With `limits_providers` naming
   `gemini` it stays on every screen (`Gemini · no data` between refusals); a list without it
   leaves the log unread: no line, no source, no event, and the details say
-  `Off in the dashboard settings: Gemini`. Where nobody reads the log (limits off, or no `logs/`
-  and nothing in the record) the line stays `Gemini · no data` with the reason, as before
+  `Off in the dashboard settings: Gemini`. A tick that cannot read the log (no `logs/`, a file
+  that cannot be read, a read past its deadline) goes by the record: once the log was read, the
+  line is drawn only while the refusal the record remembers is active. Where the log has never
+  been read (limits off, or no successful read in the record yet) the line stays
+  `Gemini · no data` with the reason, as before
 - **memory**: the record keeps the last 429 (`gemini_log_cache`), so one that rotated out of the
   tail is still the last one. The fallback cron tick keeps no record, so each of its runs reads
   the whole file, up to 4 MB

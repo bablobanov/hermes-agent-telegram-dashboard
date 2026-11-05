@@ -768,6 +768,68 @@ def test_a_record_that_cannot_be_read_never_escapes_the_tick(
     assert (source.state, source.detail) == ("unavailable", "collector crashed: KeyError")
 
 
+def test_a_log_read_before_keeps_gemini_s_empty_line_hidden_while_it_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """B2 review M-a: once the log was read and held no refusal, the record says so
+    (``last_429: null``). A tick that cannot read the log (a file that is no text, a reader that
+    crashed) goes by that record: Gemini's empty line stays hidden (issue #14) and the details
+    keep ``Gemini refusals seen by Hermes: none``. Only a record that never saw the log keeps
+    the line as before."""
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.schema import Refusal
+
+    env = _env(tmp_path, limits_enabled=True)
+    (tmp_path / "logs").mkdir()
+    log = tmp_path / "logs" / "errors.log"
+    log.write_text("", encoding="utf-8")
+
+    def tick(cache: dict[str, Any]) -> Any:
+        return asyncio.run(
+            collect_all_async(
+                env,
+                BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+                now=NOW,
+                resolve_limits=lambda: None,
+                gemini_cache=cache,
+            )
+        )
+
+    def seen(snapshot: Any) -> tuple[Any, Any, list[str]]:
+        line = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+        source = next(s for s in snapshot.sources if s.name == "gemini_log")
+        return line.refusal, (source.state, source.detail), render_dashboard(snapshot, now=NOW)
+
+    cache: dict[str, Any] = {}
+    refusal, source, screen = seen(tick(cache))
+    assert cache["last_429"] is None and source == ("fresh", None)
+    assert refusal == Refusal() and "Gemini · no data" not in screen
+
+    log.write_bytes(b"\xff\xfe not text\n")
+    unreadable = seen(tick(cache))
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise KeyError("last_429")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(collect, "collect_gemini", boom)
+        crashed = seen(tick(cache))
+
+    for (refusal, source, screen), detail in (
+        (unreadable, "log unreadable: UnicodeDecodeError"),
+        (crashed, "collector crashed: KeyError"),
+    ):
+        assert source == ("unavailable", detail)
+        assert refusal == Refusal()
+        assert "Gemini · no data" not in screen
+        assert "> Gemini refusals seen by Hermes: none" in screen.splitlines()
+    assert cache == {"last_429": None, "checked_at": NOW.isoformat()}  # nothing written
+
+    refusal, source, screen = seen(tick({}))  # a record that never saw the log
+    assert source == ("unavailable", "log unreadable: UnicodeDecodeError")
+    assert refusal is None and "Gemini · no data" in screen
+
+
 def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
 ) -> None:
