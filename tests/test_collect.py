@@ -958,3 +958,367 @@ def test_the_cron_line_on_the_cron_path_takes_its_streak_from_the_history(tmp_pa
     states = {s.name: s.state for s in snapshot.sources}
     assert states["cron"] == "fresh" and states["cron_runs"] == "fresh"
     assert cache["runs_checked_at"] == NOW.isoformat()
+
+
+# ---------------------------------------------------------------- the usage facade on a cadence (#16)
+#
+# With the record's cache each facade provider is asked once per ``facade_refresh_seconds``,
+# success or failure, like an external source; between attempts its line is the last answer
+# with its own ``fetched_at``. Without a record (the cron path) every run asks, as before.
+
+
+class _Facade:
+    """A facade whose snapshots are stamped by the test's clock; it counts its calls."""
+
+    def __init__(self, answer=None) -> None:
+        self.now = NOW
+        self.calls: list[str] = []
+        self.answer = answer or (lambda provider, now: _snapshot(fetched_at=now))
+
+    def __call__(self, provider: str):
+        self.calls.append(provider)
+        return self.answer(provider, self.now)
+
+
+def _facade_tick(tmp_path: Path, facade: _Facade, caches: dict, at: datetime):
+    facade.now = at
+    return collect_limits(
+        Environment(hermes_home=tmp_path),
+        now=at,
+        resolve=lambda: facade,
+        caches=caches,
+        interval_seconds=300,
+    )
+
+
+def test_the_facade_is_asked_once_per_cadence_and_the_record_serves_the_ticks_between(
+    tmp_path: Path,
+) -> None:
+    facade = _Facade()
+    caches: dict = {}
+
+    lines = [
+        _facade_tick(tmp_path, facade, caches, NOW + timedelta(seconds=s))[0]
+        for s in (0, 60, 120, 180, 240)
+    ]
+
+    assert facade.calls == ["anthropic", "openai-codex"]
+    assert all(q.kind == "official" for line in lines for q in line.quotas)
+    assert all(q.fetched_at == NOW.isoformat() for line in lines for q in line.quotas)
+
+    later, source, _probe = _facade_tick(tmp_path, facade, caches, NOW + timedelta(seconds=300))
+
+    assert facade.calls == ["anthropic", "openai-codex"] * 2
+    assert later.quotas[0].fetched_at == (NOW + timedelta(seconds=300)).isoformat()
+    assert source.state == "fresh"
+    assert set(caches) == {"claude", "codex"}
+    assert caches["codex"]["attempted_at"] == (NOW + timedelta(seconds=300)).isoformat()
+
+
+def test_the_record_keeps_the_attempt_the_item_the_last_answer_and_the_plan(
+    tmp_path: Path,
+) -> None:
+    """Per provider: ``attempted_at``, the item exactly as the reader builds it, ``answered_at``
+    (the last snapshot the facade gave) and ``plan``. The facade's ``None`` is an attempt
+    without an answer."""
+
+    def answer(provider: str, now: datetime):
+        return _snapshot(fetched_at=now, plan="Prolite") if provider == "openai-codex" else None
+
+    caches: dict = {}
+
+    _facade_tick(tmp_path, _Facade(answer), caches, NOW)
+
+    assert caches["codex"] == {
+        "attempted_at": NOW.isoformat(),
+        "answered_at": NOW.isoformat(),
+        "plan": "Prolite",
+        "item": {
+            "provider": "codex",
+            "status": "available",
+            "reason": None,
+            "source": "anthropic-oauth",
+            "fetched_at": NOW.isoformat(),
+            "plan": "Prolite",
+            "windows": [
+                {"label": "5h", "used_percent": 37.5, "reset_at": "2026-09-10T00:00:00+00:00"}
+            ],
+        },
+    }
+    assert caches["claude"] == {
+        "attempted_at": NOW.isoformat(),
+        "item": {
+            "provider": "claude",
+            "status": "unavailable",
+            "reason": "none",
+            "source": None,
+            "fetched_at": None,
+            "windows": [],
+        },
+    }
+
+
+def test_a_snapshot_without_numbers_is_an_answer_and_a_failure_is_not(tmp_path: Path) -> None:
+    """Claude on an API key answers with ``unavailable_reason`` and no windows: the account is
+    there, ``answered_at`` moves. An exception is an attempt without an answer, kept by its
+    class name, never its text."""
+
+    def answer(provider: str, now: datetime):
+        if provider == "openai-codex":
+            raise RuntimeError("refresh failed for the account in this message")
+        reason = "Anthropic account limits are only available for OAuth-backed Claude accounts."
+        return _snapshot(available=False, windows=(), fetched_at=now, unavailable_reason=reason)
+
+    caches: dict = {}
+
+    capacity, source, _probe = _facade_tick(tmp_path, _Facade(answer), caches, NOW)
+
+    assert caches["claude"]["answered_at"] == NOW.isoformat()
+    assert "answered_at" not in caches["codex"]
+    assert caches["codex"]["item"]["reason"] == "RuntimeError"
+    assert "refresh failed" not in json.dumps(caches)
+    assert [q.kind for q in capacity.quotas] == ["unavailable", "unavailable"]
+    assert capacity.quotas[1].detail == "RuntimeError"
+    assert source.state == "unavailable"
+
+
+def test_a_failed_attempt_is_no_data_for_the_whole_cadence_and_stays_with_its_provider(
+    tmp_path: Path,
+) -> None:
+    def answer(provider: str, now: datetime):
+        if provider == "openai-codex":
+            raise RuntimeError("token refresh failed")
+        return _snapshot(fetched_at=now)
+
+    facade = _Facade(answer)
+    caches: dict = {}
+
+    for s in (0, 60, 120, 180, 240):
+        capacity, source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(seconds=s)
+        )
+        claude, codex = capacity.quotas
+        assert (claude.kind, codex.kind, codex.detail) == (
+            "official",
+            "unavailable",
+            "RuntimeError",
+        )
+        assert source.state == "fresh"
+    assert facade.calls == ["anthropic", "openai-codex"]
+
+    _facade_tick(tmp_path, facade, caches, NOW + timedelta(seconds=300))
+    assert facade.calls.count("openai-codex") == 2
+
+
+def test_the_plan_outlives_a_failed_attempt(tmp_path: Path) -> None:
+    def answer(provider: str, now: datetime):
+        if now != NOW:
+            return None
+        return _snapshot(fetched_at=now, plan="Prolite" if provider == "openai-codex" else "Max 5x")
+
+    caches: dict = {}
+    facade = _Facade(answer)
+
+    _facade_tick(tmp_path, facade, caches, NOW)
+    capacity, _source, _probe = _facade_tick(tmp_path, facade, caches, NOW + timedelta(minutes=5))
+
+    assert [(q.provider, q.kind, q.plan) for q in capacity.quotas] == [
+        ("Claude", "unavailable", "Max 5x"),
+        ("Codex", "unavailable", "Prolite"),
+    ]
+    assert caches["codex"]["item"]["reason"] == "none" and caches["codex"]["plan"] == "Prolite"
+
+
+def test_a_cached_number_older_than_the_cadence_is_not_a_number(tmp_path: Path) -> None:
+    """A clock jump or a hand-edited record: the attempt is recent, its number is not."""
+    old = (NOW - timedelta(hours=2)).isoformat()
+
+    def cached(key: str) -> dict:
+        window = {"label": "5h", "used_percent": 40.0, "reset_at": None}
+        item = {"provider": key, "status": "available", "fetched_at": old, "windows": [window]}
+        return {"attempted_at": (NOW - timedelta(minutes=1)).isoformat(), "item": item}
+
+    caches = {"claude": cached("claude"), "codex": cached("codex")}
+    facade = _Facade()
+
+    capacity, source, _probe = _facade_tick(tmp_path, facade, caches, NOW)
+
+    assert facade.calls == []
+    assert [(q.kind, q.detail) for q in capacity.quotas] == [
+        ("unavailable", "cached number too old")
+    ] * 2
+    assert source.state == "unavailable"
+
+
+def test_a_crash_after_the_facade_call_is_an_attempt_kept_for_the_cadence(tmp_path: Path) -> None:
+    """Our own code failing on an answer (here windows that are no list) must not turn the
+    cadence into every tick: the attempt is recorded with the class name, like the release
+    check's (``collect._version_attempt``)."""
+    facade = _Facade(lambda provider, now: _snapshot(fetched_at=now, windows=42))
+    caches: dict = {}
+
+    for s in (0, 60, 120):
+        capacity, _source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(seconds=s)
+        )
+        assert [q.detail for q in capacity.quotas] == ["collector crashed: TypeError"] * 2
+
+    assert facade.calls == ["anthropic", "openai-codex"]
+    assert caches["claude"]["attempted_at"] == NOW.isoformat()
+    assert caches["claude"]["answered_at"] == NOW.isoformat()  # the facade did answer
+
+
+# A string a token could look like; planted, never real.
+_PLANTED = "sk-ant-oat01-PLANTEDfakeTOKENforThisTestOnly0000"
+
+
+def test_identity_raw_details_and_a_token_never_reach_the_record_or_the_screen(
+    tmp_path: Path,
+) -> None:
+    """Of a snapshot only the fields the screen uses are read: the account's principal
+    (``identity``), the whole answer (``raw``), the details (a credit balance) and a
+    token-looking string in any of them stay out of the record's ``facade_cache``, the snapshot
+    and the screen."""
+    from telegram_dashboard.render import render_dashboard, to_telegram_html
+
+    def answer(provider: str, now: datetime):
+        return _snapshot(
+            fetched_at=now,
+            plan="Prolite",
+            identity="principal-4242@example.invalid",
+            raw={"access_token": _PLANTED, "account_id": "principal-4242"},
+            details={"credits_balance": "1234.56", "refresh_token": _PLANTED},
+            access_token=_PLANTED,
+        )
+
+    caches: dict = {}
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: _Facade(answer),
+        facade_caches=caches,
+    )
+
+    stored = json.dumps(caches)
+    screen = render_dashboard(snapshot, now=NOW)
+    assert "Prolite" in stored and "Codex 38%" in screen  # what is read reaches both
+    for text in (stored, screen, to_telegram_html(screen), repr(snapshot)):
+        for planted in (
+            "sk-ant-oat01",
+            "PLANTED",
+            "principal-4242",
+            "1234.56",
+            "credits",
+            "_token",
+        ):
+            assert planted not in text, planted
+
+
+def test_the_cron_path_without_a_record_asks_the_facade_on_every_run(tmp_path: Path) -> None:
+    facade = _Facade()
+
+    for _ in range(2):
+        collect_all(
+            Environment(hermes_home=tmp_path),
+            FakeRunner(CommandResult(0, "", "")),
+            now=NOW,
+            resolve_limits=lambda: facade,
+        )
+
+    assert facade.calls == ["anthropic", "openai-codex"] * 2
+
+
+def test_a_facade_that_cannot_be_imported_is_unsupported_and_writes_no_record(
+    tmp_path: Path,
+) -> None:
+    def broken_resolver():
+        raise ImportError("engine half-installed")
+
+    caches: dict = {}
+
+    for resolve in (lambda: None, broken_resolver):
+        _capacity, source, probe = collect_limits(
+            Environment(hermes_home=tmp_path), now=NOW, resolve=resolve, caches=caches
+        )
+        assert probe.status == "unsupported" and source.state == "unsupported"
+
+    assert caches == {}
+
+
+def test_a_facade_worker_abandoned_by_its_deadline_records_its_attempt_when_it_returns() -> None:
+    """The cadence on the worker's side: a deadline or a busy worker shows the last answer or
+    "no data" with the reason; the abandoned worker writes its attempt into the record when it
+    returns, and the next tick serves it without calling again."""
+    from probe_fakes import until
+
+    from telegram_dashboard.limits import Cadence, fetch_limits_payload_off_loop
+    from telegram_dashboard.workers import Flights
+
+    calls: list[str] = []
+
+    def fetch(provider: str):
+        calls.append(provider)
+        time.sleep(0.2)
+        return _snapshot(fetched_at=NOW)
+
+    flights, caches = Flights(), {}
+
+    def ask(seconds: float, timeout: float):
+        cadence = Cadence(caches, NOW + timedelta(seconds=seconds), 300.0, 600.0)
+        return fetch_limits_payload_off_loop(
+            lambda: fetch, timeout_seconds=timeout, flights=flights, cadence=cadence
+        )
+
+    async def scenario():
+        first = await ask(0, 0.05)
+        second = await ask(60, 0.05)
+        await until(lambda: not flights.busy("limits"))
+        third = await ask(120, 2.0)
+        return first, second, third
+
+    first, second, third = asyncio.run(scenario())
+
+    assert [p["reason"] for p in first["providers"]] == [
+        "timeout: facade did not answer within 0.05s"
+    ] * 2
+    assert [p["reason"] for p in second["providers"]] == [
+        "busy: the previous facade call has not returned yet"
+    ] * 2
+    assert [p["status"] for p in third["providers"]] == ["available"] * 2
+    assert calls == ["anthropic", "openai-codex"]
+    assert caches["claude"]["attempted_at"] == NOW.isoformat()
+
+
+def test_a_day_at_a_60_second_period_asks_each_provider_288_times(tmp_path: Path) -> None:
+    """The request count of issue #16 on the tick's own path (the worker, the record): a day of
+    ticks at the default 60 s period, each waking up to a second early, at the default
+    ``facade_refresh_seconds`` (300 s) asks each provider 288 times, not 1,440."""
+    from telegram_dashboard.collect import FACADE_DEFAULT_INTERVAL_SECONDS
+    from telegram_dashboard.workers import Flights
+
+    facade = _Facade()
+    caches: dict = {}
+    flights = Flights()
+
+    async def day() -> None:
+        for k in range(24 * 60):
+            early = (k * 7919 % 1000) / 1000  # a fixed spread of 0 to 0.999 s
+            at = NOW + timedelta(seconds=60 * k - (early if k else 0))
+            facade.now = at
+            await collect_limits_async(
+                Environment(hermes_home=tmp_path),
+                now=at,
+                resolve=lambda: facade,
+                timeout_seconds=5,
+                flights=flights,
+                caches=caches,
+                period_seconds=60,
+            )
+
+    asyncio.run(day())
+
+    assert FACADE_DEFAULT_INTERVAL_SECONDS == 300.0
+    assert facade.calls.count("anthropic") == 288
+    assert facade.calls.count("openai-codex") == 288

@@ -809,6 +809,36 @@ def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
     assert "> Gemini: source not confirmed" in lines
 
 
+def test_a_facade_number_served_from_the_record_keeps_its_own_minute(tmp_path) -> None:
+    """Issue #16: between two attempts the usage facade's number comes from the plugin's record
+    with the minute it was read, and the details name that minute, as for an external source."""
+    from telegram_dashboard.collect import SubprocessRunner, collect_all
+    from telegram_dashboard.compat import Environment
+
+    read_at = (NOW - timedelta(minutes=4)).isoformat()
+    window = {"label": "Session", "used_percent": 14.0, "reset_at": "2026-09-25T09:00:00+00:00"}
+    codex = {"provider": "codex", "status": "available", "fetched_at": read_at, "windows": [window]}
+    claude = {"provider": "claude", "status": "unavailable", "reason": "none", "windows": []}
+    caches = {
+        "codex": {"attempted_at": read_at, "item": codex},
+        "claude": {"attempted_at": read_at, "item": claude},
+    }
+    asked: list[str] = []
+
+    snapshot = collect_all(
+        Environment(hermes_home=tmp_path),
+        SubprocessRunner(),  # no drift source configured: never run
+        now=NOW,
+        resolve_limits=lambda: asked.append,
+        facade_caches=caches,
+    )
+    lines = render_dashboard(snapshot, now=NOW, zone=UTC).splitlines()
+
+    assert asked == []
+    assert "Codex 14% (1h39m)" in lines
+    assert "> Data 07:21 · Codex 07:17" in lines
+
+
 def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
     capacity = CapacitySummary(
         (

@@ -1,11 +1,12 @@
 """One attempt per interval at a provider's quota surface, cached in the caller's durable dict.
 
 Shared by every source the dashboard reads on its own cadence (the external limit sources,
-``collect.external_tick``). The policy is the same for all of them: one attempt per
-``interval_seconds``, success or failure; a failed attempt is "no data" with its reason until the
-next attempt; a number is never shown when it is older than the interval allows. The cache
-belongs to the caller (the plugin keeps one per source in its record), so the interval survives a
-restart and the state file shows when the source was last asked.
+``collect.external_tick``; the usage facade's providers, ``limits.build_limits_payload``). The
+policy is the same for all of them: one attempt per ``interval_seconds``, success or failure; a
+failed attempt is "no data" with its reason until the next attempt; a number is never shown when
+it is older than the interval allows. The cache belongs to the caller (the plugin keeps one per
+source in its record), so the interval survives a restart and the state file shows when the
+source was last asked.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .timeparse import age_seconds, parse_timestamp
+from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 
 Fetch = Callable[..., dict[str, Any]]
 # A tick can wake a little before the period's end (the loop's clock against the wall clock): an
@@ -41,6 +42,30 @@ def tick(
     cache["attempted_at"] = now.isoformat()
     cache["item"] = item
     return item
+
+
+def cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
+    """The cache under ``key`` in the caller's dict of caches, made empty there when absent or
+    not a dict (a hand-edited state file)."""
+    cache = store.get(key)
+    if not isinstance(cache, dict):
+        cache = {}
+        store[key] = cache
+    return cache
+
+
+def last_answer(
+    cache: dict[str, Any], *, now: datetime, show_seconds: float
+) -> dict[str, Any] | None:
+    """The cached answer while it is young enough to stand in for a missed one (a deadline, a
+    worker still running), else ``None``. Measured by the answer's own ``fetched_at``."""
+    cached = cache.get("item")
+    if isinstance(cached, dict) and cached.get("status") in ("available", "expired"):
+        fetched = parse_timestamp(cached.get("fetched_at"))
+        age = age_seconds(fetched, now) if fetched is not None else None
+        if age is not None and not is_from_the_future(age) and age <= show_seconds:
+            return cached
+    return None
 
 
 def not_older_than(item: dict[str, Any], *, now: datetime, limit_seconds: float) -> dict[str, Any]:

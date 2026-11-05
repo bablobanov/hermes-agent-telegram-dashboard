@@ -51,12 +51,19 @@ from .hermes_version import known_answer as known_release_answer
 from .hermes_version import running_version
 from .hermes_version import summarize as summarize_version
 from .hermes_version import tick as version_tick
-from .limits import Resolver, build_limits_payload, fetch_limits_payload_off_loop, import_fetcher
+from .limits import (
+    Cadence,
+    Resolver,
+    build_limits_payload,
+    fetch_limits_payload_off_loop,
+    import_fetcher,
+)
 from .memory import SOURCE_NAME as MEMORY
 from .memory import MemoryPart, read_memory
 from .normalize import classify_freshness, derive_overall
 from .policy import sanitize_public_text
 from .quota_cache import Fetch as QuotaFetch
+from .quota_cache import cache_for, last_answer
 from .quota_cache import tick as quota_tick
 from .schema import (
     Authority,
@@ -81,7 +88,7 @@ from .schema import (
 from .telegram_traffic import SOURCE_NAME as TRAFFIC
 from .telegram_traffic import Probe as TrafficProbe
 from .telegram_traffic import TrafficPart, collect_traffic, note_probe, remembered_traffic
-from .timeparse import age_seconds, is_from_the_future, parse_timestamp
+from .timeparse import parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -415,17 +422,32 @@ def _drift_from_command(
 # ``collect_limits`` is the synchronous form for the cron/CLI path; ``collect_limits_async`` is
 # the form a gateway plugin must use: the facade runs in a worker thread with a deadline so the
 # event loop never waits on a provider API, and a miss is one ``unavailable`` tick, not a crash.
+# Given the record's per-provider caches (``facade_caches``), either form asks each provider at
+# most once per ``facade_interval_seconds``, success or failure, like an external source; a
+# missed deadline shows the last answer with its own stamp while it is young enough.
 
 LIMITS_TIMEOUT_SECONDS = 45.0
+# How often a facade provider is asked when the caller does not say (the plugin passes
+# ``facade_refresh_seconds``): 288 calls a day per provider instead of one per tick. The plugin
+# requires the name (``REQUIRED_API``): a copy without it calls the facade on every tick.
+FACADE_DEFAULT_INTERVAL_SECONDS = 300.0
 
 
 def collect_limits(
-    env: Environment, *, now: datetime, resolve: Resolver = import_fetcher
+    env: Environment,
+    *,
+    now: datetime,
+    resolve: Resolver = import_fetcher,
+    caches: dict[str, Any] | None = None,
+    interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
 ) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
-    return parse_limits_payload(build_limits_payload(resolve), now=now)
+    show = _show_seconds(interval_seconds, None)
+    cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
+    payload = build_limits_payload(resolve, cadence)
+    return parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
 
 
 async def collect_limits_async(
@@ -435,14 +457,26 @@ async def collect_limits_async(
     resolve: Resolver = import_fetcher,
     timeout_seconds: float = LIMITS_TIMEOUT_SECONDS,
     flights: Flights | None = None,
+    caches: dict[str, Any] | None = None,
+    interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
+    period_seconds: float | None = None,
 ) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
+    show = _show_seconds(interval_seconds, period_seconds)
+    cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
     payload = await fetch_limits_payload_off_loop(
-        resolve, timeout_seconds=timeout_seconds, flights=flights
+        resolve, timeout_seconds=timeout_seconds, flights=flights, cadence=cadence
     )
-    return parse_limits_payload(payload, now=now)
+    return parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+
+
+def _limits_ttl(show_seconds: float) -> float:
+    """How old the freshest facade number may be before the source is stale: never stricter
+    than ``LIMITS_STALE_SECONDS``, and no stricter than the cadence lets a number get, or a
+    long ``facade_refresh_seconds`` would flash ``limits (stale)`` between attempts."""
+    return max(float(LIMITS_STALE_SECONDS), show_seconds)
 
 
 def _limits_disabled(
@@ -456,8 +490,12 @@ def _limits_disabled(
 
 
 def parse_limits_payload(
-    payload: dict[str, Any], *, now: datetime
+    payload: dict[str, Any], *, now: datetime, ttl_seconds: float = LIMITS_STALE_SECONDS
 ) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+    """The block and the ``limits`` source from the facade's payload. The source stands on the
+    freshest ``fetched_at`` among the providers with a number, against ``ttl_seconds``; with no
+    number at all it is unavailable, with the payload's reason when it gives one (a missed
+    deadline served from the record)."""
     if payload.get("ok") is not True:
         reason = sanitize_public_text(str(payload.get("reason") or "no reason"), limit=80)
         if reason.startswith("unsupported"):
@@ -487,9 +525,11 @@ def parse_limits_payload(
     ]
     observed_at = max(fetched) if fetched else None
     if observed_at is None:
-        source = SourceObservation("limits", "official", "unavailable", detail="no windows at all")
+        missed = payload.get("reason")
+        detail = sanitize_public_text(str(missed), limit=80) if missed else "no windows at all"
+        source = SourceObservation("limits", "official", "unavailable", detail=detail)
     else:
-        freshness = classify_freshness(observed_at, now=now, ttl_seconds=LIMITS_STALE_SECONDS)
+        freshness = classify_freshness(observed_at, now=now, ttl_seconds=int(ttl_seconds))
         source = SourceObservation("limits", "official", freshness, observed_at=observed_at)
     return CapacitySummary(tuple(ordered)), source, ProbeResult("limits", "supported")
 
@@ -750,21 +790,10 @@ def _cached_line(
     cache: dict[str, Any], *, now: datetime, show_seconds: float, missed: str
 ) -> dict[str, Any]:
     """The source's last answer while it is young enough, else "no data" with ``missed``."""
-    cached = cache.get("item")
-    if isinstance(cached, dict) and cached.get("status") in ("available", "expired"):
-        fetched = parse_timestamp(cached.get("fetched_at"))
-        age = age_seconds(fetched, now) if fetched is not None else None
-        if age is not None and not is_from_the_future(age) and age <= show_seconds:
-            return cached
+    cached = last_answer(cache, now=now, show_seconds=show_seconds)
+    if cached is not None:
+        return cached
     return {"provider": None, "status": "unavailable", "reason": missed, "windows": []}
-
-
-def _cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
-    cache = store.get(key)
-    if not isinstance(cache, dict):
-        cache = {}
-        store[key] = cache
-    return cache
 
 
 def _capacity_unavailable(detail: str) -> CapacitySummary:
@@ -860,6 +889,8 @@ def collect_all(
     *,
     now: datetime,
     resolve_limits: Resolver = import_fetcher,
+    facade_caches: dict[str, Any] | None = None,
+    facade_interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
     external_caches: dict[str, Any] | None = None,
     external_interval_seconds: float = EXTERNAL_DEFAULT_INTERVAL_SECONDS,
     external_fetch: ExternalFetch | None = None,
@@ -868,6 +899,9 @@ def collect_all(
     traffic_probe: TrafficProbe | None = None,
     traffic_cache: dict[str, Any] | None = None,
 ) -> DashboardSnapshot:
+    """The snapshot in one synchronous pass (the cron/CLI path). Without ``facade_caches``
+    (``__main__`` passes none) every run asks the usage facade, as it asks every external
+    source."""
     externals = _externals_sync(
         env,
         external_caches,
@@ -891,7 +925,13 @@ def collect_all(
     )
     rules, rules_source, rules_incidents = read_rules(env, now=now)
     memory, memory_source, memory_incidents = read_memory(env, now=now)
-    capacity, limits_source, _ = collect_limits(env, now=now, resolve=resolve_limits)
+    capacity, limits_source, _ = collect_limits(
+        env,
+        now=now,
+        resolve=resolve_limits,
+        caches=facade_caches,
+        interval_seconds=facade_interval_seconds,
+    )
     if env.limits_enabled:
         gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
     else:
@@ -966,7 +1006,7 @@ def _externals_sync(
     return [
         collect_external(
             source,
-            _cache_for(store, source.key),
+            cache_for(store, source.key),
             now=now,
             interval_seconds=interval_seconds,
             show_seconds=show,
@@ -1012,6 +1052,8 @@ async def collect_all_async(
     now: datetime,
     resolve_limits: Resolver = import_fetcher,
     limits_timeout_seconds: float = LIMITS_TIMEOUT_SECONDS,
+    facade_caches: dict[str, Any] | None = None,
+    facade_interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
     drift_timeout_seconds: float = DRIFT_TIMEOUT_SECONDS,
     flights: Flights | None = None,
     version_cache: dict[str, Any] | None = None,
@@ -1042,6 +1084,10 @@ async def collect_all_async(
     record): a worker abandoned by its deadline still writes its attempt there when it returns,
     so the next tick serves it instead of asking again; without it (no durable record) the
     version line is not collected at all.
+    ``facade_caches`` is the durable dict of the usage facade's providers, one cache per
+    provider (``claude``, ``codex``): each is asked at most once per
+    ``facade_interval_seconds``, and an answer that misses ``limits_timeout_seconds`` is
+    written there by its worker when it returns; without it every tick asks.
     ``external_caches`` is the durable dict of the external limit sources, one cache per URL
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
     last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
@@ -1139,6 +1185,9 @@ async def collect_all_async(
                 resolve=resolve_limits,
                 timeout_seconds=limits_timeout_seconds,
                 flights=flights,
+                caches=facade_caches,
+                interval_seconds=facade_interval_seconds,
+                period_seconds=period_seconds,
             ),
         )
         version, version_incidents = await version_task
@@ -1418,10 +1467,20 @@ async def _limits_guarded(
     resolve: Resolver,
     timeout_seconds: float,
     flights: Flights,
+    caches: dict[str, Any] | None,
+    interval_seconds: float,
+    period_seconds: float | None,
 ) -> LimitsPart:
     try:
         capacity, source, _probe = await collect_limits_async(
-            env, now=now, resolve=resolve, timeout_seconds=timeout_seconds, flights=flights
+            env,
+            now=now,
+            resolve=resolve,
+            timeout_seconds=timeout_seconds,
+            flights=flights,
+            caches=caches,
+            interval_seconds=interval_seconds,
+            period_seconds=period_seconds,
         )
         return capacity, source, ()
     except _UNGUARDED:
@@ -1453,7 +1512,7 @@ async def _externals_guarded(
         *(
             _external_guarded(
                 source,
-                _cache_for(store, source.key),
+                cache_for(store, source.key),
                 now=now,
                 interval_seconds=interval_seconds,
                 show_seconds=show,
