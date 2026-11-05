@@ -188,7 +188,19 @@ decides nothing by it (see "The Hermes version line"). `telegram_dashboard/compa
 records per source how it is probed and on which versions it was verified. A new release lowers
 coverage and names what is missing instead of breaking.
 
-What "verified" means here, honestly:
+What "verified" means here, honestly. Supported is Hermes 0.22.2 or newer (the floor below), and
+these are the two releases the CI `engine` job runs the whole suite against:
+
+| Hermes | How |
+|---|---|
+| 0.22.2 (`v0.22.2`, `d923a5eb48`) | the production engine and the floor: the whole suite against the engine installed from its own lock (Python 3.14, the `telegram` extra) with `REQUIRE_ENGINE_TESTS=1`, so a test that skips there fails the job unless `tests/conftest.py` allows it; the plugin path against the real engine objects (`tests/test_probe_plugin.py`, `tests/test_probe_reload.py`: send, the HTML edit through `_edit_text`, an edit the engine holds back for a busy chat, a lost message, a reconnect, a forced re-discovery, served profiles, the engine's own plugin discovery and its `requires_hermes` gate), the version line, the key of an external source through the engine's `get_secret`, the rules line and the memory section against the engine's own functions (`compat_matrix.json`, the `0.22.2` entries) |
+| 0.22.7 (`v0.22.7`, `b200f5bc60`) | the current release: the same suite in the same job (the `0.22.7` entries) |
+
+Sources that run does not reach (the usage facade, which would call the providers' APIs, the
+gateway state, the cron files, the Telegram counters, Gemini's log) keep the verification their
+rows in the matrix name. Up to 1.0.0 the plugin was verified on the engines below, all older than
+today's floor; the rows stay as the record of what was checked and how, not as a claim of
+support:
 
 | Hermes | How |
 |---|---|
@@ -202,17 +214,22 @@ source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for
 | main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
-Anything else is not verified. Above these versions the sources are probed at runtime and
+Anything else is not verified. On a release after 0.22.7 the sources are probed at runtime and
 degrade to `unsupported`; nothing here promises "works on all versions".
 
-**Delivery has a floor: Hermes 0.21.1.** The plugin path needs
-`PluginContext.register_platform_handler` and the adapters' `_wire_plugin_handlers`, and both
-are absent in 0.20.x (checked on a 0.20.5 install: not present anywhere in the tree; `spawn_task`
-and `PluginState` exist there but nothing would ever call the factory). On 0.20.x the plugin
-does not load a handler and nothing is delivered; the only path there is the fallback cron tick
-with its own bot token. The compatibility principle still holds for the *sources* (gateway
-state, limits, drift degrade per version); it does not extend to delivery, and this README
-does not promise otherwise.
+**Delivery has a floor: Hermes 0.22.2.** It is the production engine and the oldest one the
+plugin is tested against; the manifest says `requires_hermes: ">=0.22.2"`. From 0.21.3 on the
+engine skips a plugin whose `requires_hermes` rejects the running version before it imports it
+(`Plugin '…' skipped: requires hermes >=0.22.2, running 0.21.6` in the gateway's log), so on an
+older engine nothing is delivered and the only path is the fallback cron tick with its own bot
+token. An engine that cannot tell its own version (a checkout with no tag and no install stamp)
+lets the plugin through that gate; below 0.22.2 it is not supported all the same. 0.21.x has the
+plugin API and ran the plugin up to 1.0.0 (the record above), but is no longer tested. 0.20.x
+lacks the API itself: `PluginContext.register_platform_handler` and the adapters'
+`_wire_plugin_handlers` are absent there (checked on a 0.20.5 install: not present anywhere in
+the tree; `spawn_task` and `PluginState` exist but nothing would ever call the factory). The
+compatibility principle still holds for the *sources* (gateway state, limits, drift degrade per
+version); it does not extend to delivery, and this README does not promise otherwise.
 
 **In process only.** Hermes 0.21.6 added `plugins.isolation`. Its default, `in_process`, loads
 the plugin into the gateway as before. With `plugins.isolation: host` the engine runs
@@ -298,8 +315,8 @@ read off the adapter object on every tick, never off a version number, in this o
    (positional-or-keyword or keyword-only; `**kwargs` does not count, a verb that swallowed the
    keyword would send the markup as plain text and answer success). Called with
    `parse_mode="HTML"`; a `SendResult` with `success=False` is a refusal of the form
-2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on 0.21.1,
-   0.21.3, 0.21.5 and main, which takes a parse mode and raises on refusal
+2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on every
+   engine read (0.21.1 to 0.22.7, and main), which takes a parse mode and raises on refusal
 3. otherwise plain, with `html_error: no HTML verb (edit_message without parse_mode, no
    _edit_text)`
 
@@ -315,7 +332,12 @@ without a release. The HTML form is bold headings and the details in one
 right after a failed HTML one means the form was refused: the screen stays plain (upper-case
 headings, the details shown in full), the record says `screen_format: plain` with the reason in
 `html_error` (the exception class, or `edit_message: <its error>`), one warning goes to the
-journal, and HTML is tried again twelve ticks later. The record also names the verb that carries
+journal, and HTML is tried again twelve ticks later. A plain edit the engine holds back is no
+edit: while a reply in the same chat holds that chat's outbound slot (the engine paces a chat's
+sends and edits through it to keep clear of Telegram's flood control), `edit_message` edits
+nothing and still answers success, so the tick records `deferred`, keeps the last confirmation,
+draws no verdict on the form and edits again on the next tick, never asking for `finalize` to
+get past the slot. The record also names the verb that carries
 the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
 private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`).
 Without the rich form (below: off by default), the one `send` that creates the message (and a
@@ -371,7 +393,7 @@ hung disk never stalls the Telegram event loop. The facade has one worker for Cl
 and calls each of them once per `facade_refresh_seconds` (an attempt due within 5 s goes out on
 the tick at hand), not on every tick.
 
-Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
+Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
 
 1. `hermes plugins install telegram_dashboard_probe` (the catalog pin), or copy
    `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`,
@@ -745,7 +767,8 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   vanished
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
-engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6: every kind of file, a
+engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6 before 1.1.0, 0.22.2 and
+0.22.7 in the CI engine job: every kind of file, a
 BOM-only file and a BOM before blank lines, a chain in
 a repository, a chain with a cut file, a chain cut twice, a cut cursor bundle, an override file,
 a directory reached through a link); it skips where Hermes is not importable.
@@ -786,7 +809,8 @@ The numbers are in the details, always:
 
 - **counted the engine's way**: the entries split on the line holding `§`, stripped, empty and
   repeated ones dropped, joined with the delimiter; the engine's own `MemoryStore` gives the same
-  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6). The share of one entry shows when it
+  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6, and on 0.22.2 and 0.22.7 in the CI
+  engine job). The share of one entry shows when it
   holds half the limit or more
 - **the last write** is the notebooks' modification time: the engine keeps no journal of applied
   writes, so a hand edit moves it too; for skills, the curator's ledger. A waiting write's time
@@ -1005,7 +1029,8 @@ The check for the plugin path is the same `--check`, pointed at that file:
 plugin editing every 60 s, 300 means five missed ticks before the first alert (`confirmed` up to
 one period plus slack, `lagging` up to two, `stale` past that). The record also carries
 `tick_failed` when a tick raised, so a loop that dies every tick does not keep an old `edited`
-on disk.
+on disk, and `deferred` when the engine held the edit back for a busy chat, which the check
+judges like any tick that is not a failure: by the age of the last confirmation.
 
 ### External limit sources
 
@@ -1261,7 +1286,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins fourteen properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins fifteen properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -1271,7 +1296,8 @@ the entry registers no hook, tool, middleware or command, the traffic probe read
 counters without calling anything on it, and the rules line writes nothing, imports no network
 client and logs no text, the memory section opens files to read bytes only, opens no database,
 imports no network client and logs nothing, the usage facade's answer is read field by field (its
-identity, its raw answer, its details and an exception's text never reach the record), no file of
+identity, its raw answer, its details and an exception's text never reach the record), the entry
+never asks for `finalize` and touches nothing of the engine's per-chat outbound slot, no file of
 the plugin folder carries an invisible character (the
 catalog validator warns on one), and no word of any demo screen, sent as HTML or rich, becomes a
 link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
