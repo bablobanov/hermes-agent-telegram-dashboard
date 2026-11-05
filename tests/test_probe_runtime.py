@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -197,14 +198,52 @@ def test_the_launch_profile_takes_up_an_adapter_the_runner_published_unhanded(
     asyncio.run(scenario())
 
 
-def test_a_generation_is_held_by_reference_not_by_id_alone(monkeypatch, tmp_path: Path) -> None:
-    """An id may come back on another object once the adapter it named is gone: that object was
-    never handed here and has no generation."""
+class _SlotAdapter:
+    """Just what ``live_adapter`` reads, in slots: a freed one's address comes back on the very
+    next one allocated (pymalloc), which is how a gone adapter's ``id`` reappears."""
+
+    __slots__ = ("__weakref__", "gateway_runner", "is_connected", "platform")
+
+    def __init__(self, runner: Any) -> None:
+        self.gateway_runner, self.platform, self.is_connected = runner, "telegram", True
+
+
+def _same_address(old: int, runner: Any) -> _SlotAdapter | None:
+    kept: list[_SlotAdapter] = []
+    for _ in range(10_000):
+        candidate = _SlotAdapter(runner)
+        if id(candidate) == old:
+            return candidate
+        kept.append(candidate)
+    return None
+
+
+def test_a_gone_adapter_s_id_on_another_object_does_not_make_it_handed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A registration that is not the launch profile's was handed an adapter that is gone now;
+    the runner publishes a new object at the same address (the same ``id``), connected. It is
+    no adapter of this registration: the tick waits rather than send through it."""
     plugin = _load_plugin()
     runtime = plugin.register(FakeContext(_settings(monkeypatch, tmp_path)))
     assert runtime is not None
-    stranger = FakeAdapter()
-    runtime._generations[id(stranger)] = (lambda: None, 5)  # what a gone adapter leaves behind
+    runner = SimpleNamespace(adapters={})
 
-    assert runtime.generation_of(stranger) == 0
-    assert runtime.generation_of(None) == 0
+    async def scenario() -> None:
+        gone: Any = _SlotAdapter(runner)
+        runtime.wire(object(), gone)
+        runtime.task.cancel()  # before its first tick
+        later = _SlotAdapter(runner)
+        later.is_connected = False
+        runtime.wire(object(), later)  # a reconnect: the registration moves on
+        old = id(gone)
+        del gone
+
+        stranger = _same_address(old, runner)
+        assert stranger is not None, "the freed adapter's address did not come back"
+        runner.adapters["telegram"] = stranger
+
+        assert runtime.live_adapter() is None and not runtime.primary
+        assert runtime.generation_of(stranger) == 0
+
+    asyncio.run(scenario())
