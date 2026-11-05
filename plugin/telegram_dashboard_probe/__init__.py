@@ -14,7 +14,8 @@ the third is issue #12, read on 0.22.2 to 0.22.7):
 * ``TelegramAdapter.edit_message`` does not forward to the replacement adapter after a reconnect
   (``send`` does). A loop holding the adapter it was born with would answer "Not connected"
   forever while looking alive. Each tick therefore asks ``runner.adapters`` for the current one
-  and only uses an adapter that reports ``is_connected``.
+  and only uses an adapter that reports ``is_connected`` and was handed to this registration: the
+  runner's map holds the launch profile's adapters, also for a served secondary profile's adapter.
 * Registered again after a forced re-discovery (``discover_and_load(force=True)``: the gateway's
   ``reload-plugins`` verb that ``hermes plugins install/enable/update`` sends, a tool's forced
   provider lookup). The unload cancels the loop and evicts this module with its globals, then
@@ -773,7 +774,8 @@ class ProbeRuntime:
         self.task: asyncio.Task[None] | None = None
         self.latest: Any = None
         self.generation = 0
-        self._generations: dict[int, int] = {}
+        # Every adapter handed here, by id: a reference to it and its generation.
+        self._generations: dict[int, tuple[Callable[[], Any], int]] = {}
         # The registry key of the profile this registration serves (issue #12), and whether the
         # engine unloaded it since (``retire``).
         self.key = profile_key(ctx, settings)
@@ -816,7 +818,10 @@ class ProbeRuntime:
 
     def _hand(self, adapter: Any) -> None:
         self.latest = adapter
-        self._generations[id(adapter)] = self.generation
+        gone = [key for key, (reference, _) in self._generations.items() if reference() is None]
+        for key in gone:
+            del self._generations[key]
+        self._generations[id(adapter)] = (_ref(adapter), self.generation)
 
     def _start(self) -> None:
         """The one place the loop is spawned: through the engine, so an unload cancels it."""
@@ -904,13 +909,19 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ resolution
 
     def live_adapter(self) -> Any | None:
-        """The adapter the runner publishes now, else the one last handed to us; connected only."""
+        """The adapter the runner publishes now when it is one handed to this registration (a
+        replacement's ``connect()`` hands it here first), else the one last handed to us;
+        connected only. The runner's map holds the launch profile's adapters, also for the
+        adapter of a served secondary profile: one never handed here is never used, or a
+        secondary profile's screen would go out through another profile's bot."""
         latest = self.latest
         runner = getattr(latest, "gateway_runner", None)
         adapters = getattr(runner, "adapters", None)
         candidates: list[Any] = []
         if isinstance(adapters, dict):
-            candidates.append(adapters.get(getattr(latest, "platform", None)))
+            published = adapters.get(getattr(latest, "platform", None))
+            if self.generation_of(published):
+                candidates.append(published)
         candidates.append(latest)
         for candidate in candidates:
             if candidate is not None and bool(getattr(candidate, "is_connected", False)):
@@ -918,7 +929,10 @@ class ProbeRuntime:
         return None
 
     def generation_of(self, adapter: Any) -> int:
-        return self._generations.get(id(adapter), 0)
+        """The generation ``adapter`` was handed here with; 0 for one never handed here. Held by
+        reference, not by ``id`` alone: a gone adapter's id may come back on another object."""
+        reference, generation = self._generations.get(id(adapter), (None, 0))
+        return generation if adapter is not None and _deref(reference) is adapter else 0
 
     # ------------------------------------------------------------------ loop
 

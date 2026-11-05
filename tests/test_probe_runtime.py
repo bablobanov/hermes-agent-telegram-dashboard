@@ -134,3 +134,48 @@ def test_period_is_clamped_to_a_sane_range(monkeypatch, tmp_path: Path) -> None:
 
     assert huge is not None and huge.period_seconds == plugin.MAX_PERIOD_SECONDS
     assert tiny is not None and tiny.period_seconds == plugin.MIN_PERIOD_SECONDS
+
+
+def test_an_adapter_never_handed_to_the_registration_is_never_used(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A served secondary profile's adapter under the multiplex: its runner's map publishes the
+    launch profile's adapter for the platform. The screen goes through the profile's own adapter;
+    while that one is down the tick waits rather than borrow another profile's bot; a replacement
+    handed to the registration (a reconnect's ``connect()``) is used."""
+    plugin = _load_plugin()
+    runtime = plugin.register(FakeContext(_settings(monkeypatch, tmp_path)))
+    assert runtime is not None
+    launch, own = FakeAdapter(), FakeAdapter()
+    own.gateway_runner = launch.gateway_runner  # adapters["telegram"] is the launch profile's
+
+    async def scenario() -> None:
+        runtime.wire(object(), own)
+        await _until(lambda: len(own.html_edits) >= 1)
+        assert runtime.live_adapter() is own and launch.texts == []
+
+        own.is_connected = False
+        assert runtime.live_adapter() is None  # waiting, not the launch profile's bot
+        replacement = FakeAdapter()
+        replacement.gateway_runner = launch.gateway_runner
+        runtime.wire(object(), replacement)
+        assert runtime.live_adapter() is replacement
+        launch.gateway_runner.adapters["telegram"] = replacement  # the runner publishes it now
+        assert runtime.live_adapter() is replacement
+        runtime.task.cancel()
+
+    asyncio.run(scenario())
+    assert launch.texts == []
+
+
+def test_a_generation_is_held_by_reference_not_by_id_alone(monkeypatch, tmp_path: Path) -> None:
+    """An id may come back on another object once the adapter it named is gone: that object was
+    never handed here and has no generation."""
+    plugin = _load_plugin()
+    runtime = plugin.register(FakeContext(_settings(monkeypatch, tmp_path)))
+    assert runtime is not None
+    stranger = FakeAdapter()
+    runtime._generations[id(stranger)] = (lambda: None, 5)  # what a gone adapter leaves behind
+
+    assert runtime.generation_of(stranger) == 0
+    assert runtime.generation_of(None) == 0

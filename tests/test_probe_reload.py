@@ -270,6 +270,53 @@ def test_a_forced_re_discovery_keeps_one_live_loop(homes: Homes, trigger: str) -
     asyncio.run(scenario())
 
 
+def test_each_profile_keeps_its_own_loop_and_message(homes: Homes) -> None:
+    """The probe enabled in a secondary profile too: each profile its own registration, loop and
+    message through its own bot, before and after each profile is reloaded on its own."""
+    _configure(homes.alpha, enabled=True)
+
+    async def scenario() -> None:
+        runner = Runner(homes)
+        default = _start_default(runner)
+        alpha = _start_secondary(runner, "alpha", homes.alpha, 202)
+        beta = _start_secondary(runner, "beta", homes.beta, 303)
+        _connect(runner, default)
+        _connect(runner, alpha, "alpha")
+        both = await _settle(
+            lambda: min(p.bot.edit_message_text.await_count for p in (default, alpha)) >= 2
+        )
+        # Each runtime's adapter's runner publishes the launch profile's adapter: alpha's screen
+        # must still go out through alpha's own bot.
+        sends = (default.bot.send_message.await_count, alpha.bot.send_message.await_count)
+        assert both and sends == (1, 1), f"sends (default bot, alpha bot) = {sends}"
+        alpha_loop = _runtime(alpha.manager).task
+
+        await _reload("reload-verb", runner)
+        assert _runtime(alpha.manager).task is alpha_loop and not alpha_loop.done()
+        await _reload("reload-verb", runner, homes.alpha)
+        mark = {id(p): p.bot.edit_message_text.await_count for p in (default, alpha)}
+        moved = await _settle(
+            lambda: all(
+                p.bot.edit_message_text.await_count > mark[id(p)] + 1 for p in (default, alpha)
+            )
+        )
+
+        assert moved, "each profile's screen moves after both reloads"
+        runtimes = [_runtime(p.manager) for p in (default, alpha)]
+        assert sorted(map(id, _loops())) == sorted(id(r.task) for r in runtimes)
+        assert [r.latest for r in runtimes] == [default.adapter, alpha.adapter]
+        default.bot.send_message.assert_awaited_once()
+        alpha.bot.send_message.assert_awaited_once()
+        assert _record(homes.root)["message_id"] == "101"
+        assert _record(homes.alpha)["message_id"] == "202"
+        _untouched(beta)
+        profiles = sys.modules[LIVE_MODULE].profiles
+        assert len(profiles) == 2
+        assert {profiles[r.key]["owner"]() for r in runtimes} == set(runtimes)
+
+    asyncio.run(scenario())
+
+
 def test_a_disabled_plugin_reloaded_runs_no_loop_and_comes_back_when_enabled(
     homes: Homes,
 ) -> None:
