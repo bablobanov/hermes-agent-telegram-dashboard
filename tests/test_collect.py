@@ -1731,6 +1731,60 @@ def test_a_missed_deadline_changes_neither_the_count_nor_the_answer() -> None:
     assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (4, 3)
 
 
+@pytest.mark.parametrize(
+    "answered_days_ago", [None, 8], ids=["never-answered", "answered-8-days-ago"]
+)
+def test_a_listed_provider_keeps_its_line_through_a_missed_deadline_and_a_busy_tick(
+    tmp_path: Path, answered_days_ago: int | None
+) -> None:
+    """B2 review M-d: ``limits_providers: [claude]`` pins Claude on a tick whose worker misses
+    its deadline and on the next one while it is still busy, too: a record that would hide an
+    unlisted provider (three ``None`` attempts in a row, or a last answer 8 days old) leaves a
+    listed one its "no data" line with the miss as the reason."""
+    from probe_fakes import until
+
+    from telegram_dashboard.workers import Flights
+
+    release = threading.Event()
+
+    def fetch(provider: str):
+        release.wait(5)
+        return None
+
+    answered = None if answered_days_ago is None else NOW - timedelta(days=answered_days_ago)
+    caches = {"claude": _quiet_cache("claude", 3, answered=answered)}
+    env = Environment(hermes_home=tmp_path, limits_providers=("claude",))
+    flights = Flights()
+
+    def tick(seconds: float):
+        return collect_limits_async(
+            env,
+            now=NOW + timedelta(seconds=seconds),
+            resolve=lambda: fetch,
+            timeout_seconds=0.05,
+            flights=flights,
+            caches=caches,
+            interval_seconds=300,
+        )
+
+    async def scenario():
+        first = await tick(0)
+        second = await tick(60)
+        release.set()
+        await until(lambda: not flights.busy("limits"))
+        return first[0], second[0]
+
+    first, second = asyncio.run(scenario())
+
+    for capacity, reason in (
+        (first, "timeout: facade did not answer within 0.05s"),
+        (second, "busy: the previous facade call has not returned yet"),
+    ):
+        claude, codex = capacity.quotas
+        assert (claude.kind, claude.detail, claude.pinned) == ("unavailable", reason, True)
+        assert (codex.kind, codex.detail) == ("not_configured", "off in the dashboard settings")
+
+
 def test_claude_on_an_api_key_is_an_answer_and_keeps_its_line(tmp_path: Path) -> None:
     """A snapshot without numbers (Claude on an API key) is an answer: the account is there, the
     line stays "no data" with the engine's reason however often it comes."""
