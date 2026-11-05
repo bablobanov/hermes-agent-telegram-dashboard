@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from probe_fakes import PLUGIN_DIR
 
-from telegram_dashboard import external
+from telegram_dashboard import context_files, external
 from telegram_dashboard.external import Source, fetch_item, parse_contract, read_sources
 
 NOW = datetime(2026, 9, 29, 7, 0, tzinfo=UTC)
@@ -1081,12 +1081,15 @@ def test_the_readme_example_is_an_answer_the_plugin_reads() -> None:
 
 
 def test_the_readme_example_setting_is_one_the_plugin_accepts() -> None:
-    """The setting as ``config.yaml`` carries it. CI installs no YAML parser (the plugin needs
-    none), so there this one skips; the contract test above runs everywhere."""
-    yaml = pytest.importorskip("yaml")
+    """The setting as ``config.yaml`` carries it, read by the parser the plugin itself would use:
+    the engine's ``hermes_yaml`` from 0.21.6, PyYAML before. The plain CI runner has neither (the
+    plugin needs none), so there this one skips; the contract test above runs everywhere."""
+    parser = context_files.yaml_parser()
+    if parser is None:
+        pytest.skip("no YAML parser in this interpreter")
 
     section = _readme_section("### External limit sources")
-    setting = yaml.safe_load(_fenced(section, "yaml")[0])
+    setting = parser.safe_load(_fenced(section, "yaml")[0])
     sources = read_sources(setting["limits_sources"])
 
     assert sources and all(source.problem is None for source in sources)
