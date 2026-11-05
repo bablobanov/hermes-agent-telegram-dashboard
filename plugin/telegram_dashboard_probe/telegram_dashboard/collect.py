@@ -434,8 +434,9 @@ def _drift_from_command(
 
 LIMITS_TIMEOUT_SECONDS = 45.0
 # How often a facade provider is asked when the caller does not say (the plugin passes
-# ``facade_refresh_seconds``): 288 calls a day per provider instead of one per tick. The plugin
-# requires the name (``REQUIRED_API``): a copy without it calls the facade on every tick.
+# ``facade_refresh_seconds``): 288 calls a day per provider at a 60 s period instead of one per
+# tick. The plugin requires the name (``REQUIRED_API``): a copy without it calls the facade on
+# every tick.
 FACADE_DEFAULT_INTERVAL_SECONDS = 300.0
 # The facade's block, its ``limits`` source (``None`` when no provider has a line: issue #14) and
 # the probe's verdict.

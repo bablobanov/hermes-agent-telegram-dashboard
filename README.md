@@ -145,7 +145,7 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 8/8`) lives in the details and comes up to the screen
 only when it is incomplete, as one line:
-`❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3` (and
+`❔ Not checked: Gemini log (not on this installation), Mistral limits (stale), profiles 2/3` (and
 `2 sources unavailable` for failed sources the line does not name). An item of the ✓ row with no
 source on this installation, or no data from a source that line names, is left out of the row
 and said by that line once. A provider that is not configured here is not counted at all: no

@@ -102,7 +102,8 @@ DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
 # Claude and Codex through the engine's usage facade are asked at most once per this many seconds
 # each, success or failure, not every tick: the facade calls the providers' account APIs, and a
-# 5-hour window does not need a number every minute (288 calls a day per provider at the default).
+# 5-hour window does not need a number every minute (288 calls a day per provider at the default
+# and a 60 s period).
 DEFAULT_FACADE_REFRESH_SECONDS = 300.0
 MIN_FACADE_REFRESH_SECONDS = 60.0
 # The record's key for the caches of the providers read by the dashboard itself before 1.1.0
