@@ -165,7 +165,12 @@ def test_a_registration_unloaded_before_its_takeover_ran_takes_nothing_over(
     plugin = load_plugin()
     ctx = _context(tmp_path / "home")
     callbacks: list[Any] = []
-    ctx.on_unload = callbacks.append  # type: ignore[attr-defined]
+
+    def on_unload(callback: Any) -> object:
+        callbacks.append(callback)
+        return object()  # the engine's PluginRegistration
+
+    ctx.on_unload = on_unload  # type: ignore[attr-defined]
     first = plugin.register(ctx)
     adapter = FakeAdapter()
 
@@ -185,6 +190,67 @@ def test_a_registration_unloaded_before_its_takeover_ran_takes_nothing_over(
 
     asyncio.run(scenario())
     assert callbacks[0].__self__ is first and callbacks[1].__self__ is not first
+
+
+def test_a_replacement_s_connect_as_the_factory_is_registered_wires_the_new_registration(
+    tmp_path: Path,
+) -> None:
+    """Review M1: a replacement adapter's ``connect()`` calls the factory the moment the engine
+    registers it. The profile is claimed before that, so the call is the new registration's
+    own: it runs on the replacement, and the takeover of the old adapter it scheduled does
+    nothing."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    old, new = FakeAdapter(), FakeAdapter()
+
+    async def scenario() -> None:
+        first.wire(object(), old)
+        await until(lambda: old.html_edits)
+        first.retire()  # the engine's unload of the first registration
+        first.task.cancel()
+        again = _context(tmp_path / "home")
+
+        def register_platform_handler(platform: str, factory: Any) -> None:
+            again.factories.append((platform, factory))
+            factory(object(), new)  # connect() of a replacement, right now
+
+        again.register_platform_handler = register_platform_handler  # type: ignore[method-assign]
+        second = plugin.register(again)
+        await until(lambda: len(new.html_edits) >= 2)
+        await asyncio.sleep(0.05)
+
+        assert second.latest is new and second.generation_of(new) == 1
+        assert _loops() == [second.task]
+        second.task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_a_load_the_engine_abandoned_takes_nothing_over(tmp_path: Path) -> None:
+    """Review M4: past ``plugins.load_timeout_seconds`` the engine counts the plugin as failed
+    and its registrars answer ``None``. Such a ``register()`` claims nothing: the profile's loop
+    stays with the registration that has it."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    adapter = FakeAdapter()
+
+    async def scenario() -> None:
+        first.wire(object(), adapter)
+        await until(lambda: adapter.html_edits)
+        late = _context(tmp_path / "home")
+        late.on_unload = lambda callback: None  # type: ignore[attr-defined]
+
+        second = plugin.register(late)
+        await asyncio.sleep(0.05)
+
+        assert second is not None and second.task is None
+        assert _loops() == [first.task]
+        assert sys.modules[LIVE_MODULE].profiles[first.key]["owner"]() is first
+        first.task.cancel()
+
+    asyncio.run(scenario())
 
 
 def test_an_entry_of_a_later_release_is_read_by_the_keys_this_one_knows(tmp_path: Path) -> None:

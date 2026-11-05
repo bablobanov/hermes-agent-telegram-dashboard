@@ -1566,19 +1566,28 @@ def _announce_sources(runtime: ProbeRuntime) -> None:
     logger.info("probe: %d external limits source(s) configured", len(sources))
 
 
-def _on_unload(ctx: Any, callback: Callable[[], None]) -> None:
+def _on_unload(ctx: Any, callback: Callable[[], None]) -> bool:
     """``callback`` at the engine's unload of this registration, through ``ctx.on_unload``
-    (0.21.1 on); without it the ownership rule alone keeps one loop per profile."""
+    (0.21.1 on). False when the engine refused it: the method answers ``None`` only once this
+    load ran past the engine's deadline (``plugins.load_timeout_seconds``), which counts the
+    plugin as failed and ignores its registrations. True otherwise, also without the method
+    (the ownership rule alone keeps one loop per profile then)."""
     subscribe = getattr(ctx, "on_unload", None)
     if not callable(subscribe):
-        return
+        return True
     try:
-        subscribe(callback)
+        handle = subscribe(callback)
     except Exception as exc:
         logger.warning("probe: unload callback not registered (%s)", type(exc).__name__)
+        return True
+    return handle is not None
 
 
 def register(ctx: Any) -> ProbeRuntime | None:
+    """The order matters (issue #12): the unload callback first, then the claim of the profile,
+    then the factory. A replacement adapter's ``connect()`` may call the factory as soon as it
+    is registered; claimed before, it is this registration's own. A load the engine abandoned
+    claims nothing."""
     settings = read_settings(ctx)
     if settings is None:
         logger.error(
@@ -1587,9 +1596,11 @@ def register(ctx: Any) -> ProbeRuntime | None:
         return None
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
     _announce_sources(runtime)
+    if _on_unload(ctx, runtime.retire):
+        runtime.claim_profile()
+    else:
+        logger.warning("probe: the engine abandoned this load past its deadline; no takeover")
     ctx.register_platform_handler(PLATFORM, runtime.wire)
-    _on_unload(ctx, runtime.retire)
-    runtime.claim_profile()
     logger.info(
         "probe: registered Telegram handler factory (period %.0fs)", settings.period_seconds
     )
