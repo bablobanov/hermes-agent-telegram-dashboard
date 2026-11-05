@@ -3,8 +3,9 @@
 Real: ``PluginManager``, ``PluginContext.register_platform_handler``, ``PluginContext.spawn_task``,
 ``TelegramAdapter`` (python-telegram-bot installed), ``BasePlatformAdapter._wire_plugin_handlers``
 (what ``connect()`` calls), ``TelegramAdapter.send`` / ``edit_message``, ``PluginState`` on disk.
-Replaced: the PTB ``Bot`` object on the adapter, so no request leaves the machine. The network and
-a real reconnect of a live gateway are the only links not exercised here.
+Replaced: the PTB ``Bot`` object on the adapter and the upstream release check, so no request
+leaves the machine; conftest's network guard refuses any that would. The network and a real
+reconnect of a live gateway are the only links not exercised here.
 
 Needs the engine importable (its venv or PYTHONPATH to the clone); otherwise the module is skipped
 so the ordinary suite keeps running without Hermes. HERMES_HOME is pointed at a temp dir BEFORE any
@@ -111,6 +112,21 @@ def probe_env(monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_PERIOD", "0.03")
     # The facade IS importable in this interpreter and would call provider APIs: never from a test.
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_LIMITS", "0")
+    # The plugin imports the package beside it, here as probe_under_test.telegram_dashboard: a
+    # copy that conftest's stub of telegram_dashboard.collect does not reach. Unstubbed, the
+    # tick's upstream release check asked api.github.com from a worker thread.
+    _load_plugin()
+    vendored = importlib.import_module("probe_under_test.telegram_dashboard.collect")
+    monkeypatch.setattr(vendored, "version_fetch_item", _no_release_check)
+
+
+def _no_release_check(*, now, previous=None):
+    return {
+        "status": "unavailable",
+        "reason": "test stub",
+        "source": "github_releases",
+        "checked_at": now.isoformat(),
+    }
 
 
 def test_register_queues_one_telegram_factory(probe_env) -> None:
