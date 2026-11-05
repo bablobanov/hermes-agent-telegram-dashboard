@@ -220,7 +220,7 @@ def test_a_replacement_s_connect_as_the_factory_is_registered_wires_the_new_regi
         await until(lambda: len(new.html_edits) >= 2)
         await asyncio.sleep(0.05)
 
-        assert second.latest is new and second.generation_of(new) == 1
+        assert second.latest is new and second.generation_of(new) == 2  # the count goes on
         assert _loops() == [second.task]
         second.task.cancel()
 
@@ -389,15 +389,15 @@ def test_an_entry_of_a_later_release_is_read_by_the_keys_this_one_knows(tmp_path
 
 
 @pytest.mark.parametrize(
-    "entry",
+    ("entry", "generation"),
     [
-        {"adapter": lambda: None, "generation": 3},  # the adapter is gone
-        {"adapter": "not a reference", "loop": "not a loop"},
-        "not an entry at all",
+        ({"adapter": lambda: None, "generation": 3}, 4),  # gone; the profile's count goes on
+        ({"adapter": "not a reference", "loop": "not a loop"}, 1),
+        ("not an entry at all", 1),
     ],
 )
 def test_an_entry_with_nothing_to_take_over_leaves_the_registration_as_before(
-    tmp_path: Path, entry: Any
+    tmp_path: Path, entry: Any, generation: int
 ) -> None:
     plugin = load_plugin()
     ctx = _context(tmp_path / "home")
@@ -412,7 +412,7 @@ def test_an_entry_with_nothing_to_take_over_leaves_the_registration_as_before(
         assert runtime.task is None  # nothing taken over
         runtime.wire(object(), adapter)  # connect() wires it as on a first start
         await until(lambda: adapter.html_edits)
-        assert _loops() == [runtime.task] and runtime.generation == 1
+        assert _loops() == [runtime.task] and runtime.generation == generation
         runtime.task.cancel()
 
     asyncio.run(scenario())
@@ -459,3 +459,15 @@ def test_a_registry_module_of_another_shape_means_no_takeover(tmp_path: Path) ->
 
     asyncio.run(scenario())
     assert not hasattr(sys.modules[LIVE_MODULE], "profiles")
+
+
+def test_the_registry_module_has_a_spec(tmp_path: Path) -> None:
+    """``importlib.util.find_spec`` answers for the registry module instead of raising."""
+    import importlib.util
+
+    plugin = load_plugin()
+    assert plugin.register(_context(tmp_path / "home")) is not None
+
+    spec = importlib.util.find_spec(LIVE_MODULE)
+
+    assert spec is not None and spec.name == LIVE_MODULE

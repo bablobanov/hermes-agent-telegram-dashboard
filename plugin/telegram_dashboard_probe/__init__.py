@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.machinery
 import inspect
 import logging
 import math
@@ -728,7 +729,8 @@ def _live() -> _Live | None:
     module = sys.modules.get(LIVE_MODULE)
     if module is None:
         fresh = types.ModuleType(LIVE_MODULE, "telegram_dashboard_probe: live tick loops (#12)")
-        vars(fresh).update(version=LIVE_VERSION, lock=threading.Lock(), profiles={})
+        spec = importlib.machinery.ModuleSpec(LIVE_MODULE, None)  # find_spec answers for it
+        vars(fresh).update(__spec__=spec, version=LIVE_VERSION, lock=threading.Lock(), profiles={})
         module = sys.modules.setdefault(LIVE_MODULE, fresh)
     lock, profiles = getattr(module, "lock", None), getattr(module, "profiles", None)
     if not isinstance(profiles, dict) or not callable(getattr(lock, "__enter__", None)):
@@ -786,6 +788,14 @@ def _owner(entry: object) -> Any:
     return _deref(entry.get("owner")) if isinstance(entry, dict) else None
 
 
+def _generation(entry: dict[str, Any]) -> int:
+    """The profile's adapter generation an entry carries; 0 for none readable."""
+    generation = entry.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        return 0
+    return generation
+
+
 def _handover(entry: dict[str, Any]) -> _Handover | None:
     """What a takeover needs from an earlier registration's entry: the gateway loop, still open,
     and the adapter that registration was handed, still alive, or for the launch profile the
@@ -797,10 +807,7 @@ def _handover(entry: dict[str, Any]) -> _Handover | None:
     runner = entry.get("runner") if callable(entry.get("runner")) else None
     if adapter is None and not (primary and _deref(runner) is not None):
         return None
-    generation = entry.get("generation")
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-        generation = 1
-    task = entry.get("task")
+    generation, task = max(_generation(entry), 1), entry.get("task")
     return _Handover(loop, adapter, task, generation, primary, runner, entry.get("platform"))
 
 
@@ -897,6 +904,9 @@ class ProbeRuntime:
         with live.lock:
             previous = _known(live.profiles.get(self.key))
             live.profiles[self.key] = {**previous, "version": LIVE_VERSION, "owner": _ref(self)}
+        # The profile's count of adapters goes on, and so does the marker: the record's
+        # adapter_generation never drops when a reconnect wires this one before _adopt runs.
+        self.generation, self.primary = _generation(previous), previous.get("primary") is True
         handover = _handover(previous)
         if handover is None:
             return
