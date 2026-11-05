@@ -64,28 +64,23 @@ def pytest_configure(config: pytest.Config) -> None:
 # The engine resolves its home on every call: HERMES_HOME, else the platform default, which is
 # the real profile of whoever runs the tests (~/.hermes; %LOCALAPPDATA%\hermes on Windows).
 # Set at configure time, before collection and so before any engine import; a test that needs a
-# home of its own sets one, and monkeypatch brings this one back after it.
-_HOME_BEFORE: list[str | None] = []
+# home of its own sets one, and monkeypatch brings this one back after it. It is never set back:
+# the value before it may be the real profile (in the shell these tests were written in it is),
+# and the engine's atexit hooks or a late thread could resolve it after the session.
 _SESSION_HOME: list[str] = []
 
 
 def _use_a_temporary_hermes_home() -> None:
     if _SESSION_HOME:
         return
-    _HOME_BEFORE.append(os.environ.get("HERMES_HOME"))
     _SESSION_HOME.append(tempfile.mkdtemp(prefix="hermes-test-home-"))
     os.environ["HERMES_HOME"] = _SESSION_HOME[0]
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    if not _SESSION_HOME:
-        return
-    before = _HOME_BEFORE[0]
-    if before is None:
-        os.environ.pop("HERMES_HOME", None)
-    else:
-        os.environ["HERMES_HOME"] = before
-    shutil.rmtree(_SESSION_HOME.pop(), ignore_errors=True)
+    """The directory goes; HERMES_HOME keeps naming it until the process exits."""
+    if _SESSION_HOME:
+        shutil.rmtree(_SESSION_HOME.pop(), ignore_errors=True)
 
 
 def _refusal(report: pytest.CollectReport | pytest.TestReport, call: Any = None) -> str | None:
