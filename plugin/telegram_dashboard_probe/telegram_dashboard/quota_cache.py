@@ -17,19 +17,25 @@ from typing import Any
 from .timeparse import age_seconds, parse_timestamp
 
 Fetch = Callable[..., dict[str, Any]]
+# A tick can wake a little before the period's end (the loop's clock against the wall clock): an
+# attempt this close to its interval is due, or it slips to the next tick and a 300 s interval at
+# a 60 s period becomes 360 s. The same tolerance as the release check's
+# (``hermes_version.DUE_TOLERANCE_SECONDS``).
+DUE_TOLERANCE_SECONDS = 5.0
 
 
 def tick(
     cache: dict[str, Any], *, now: datetime, interval_seconds: float, fetch: Fetch
 ) -> dict[str, Any]:
     """The item for this tick: from ``cache`` while the last attempt is younger than the
-    interval, else one new attempt recorded into ``cache`` (mutated in place; the caller owns
-    the durable copy). A cached number older than the interval is not a number."""
+    interval (less ``DUE_TOLERANCE_SECONDS``), else one new attempt recorded into ``cache``
+    (mutated in place; the caller owns the durable copy). A cached number older than the
+    interval is not a number."""
     attempted = parse_timestamp(cache.get("attempted_at"))
     cached = cache.get("item")
     if attempted is not None and isinstance(cached, dict):
         age = age_seconds(attempted, now)
-        if age is not None and 0 <= age < interval_seconds:
+        if age is not None and 0 <= age < interval_seconds - DUE_TOLERANCE_SECONDS:
             return not_older_than(cached, now=now, limit_seconds=interval_seconds)
     item = fetch(now=now)
     cache["attempted_at"] = now.isoformat()
