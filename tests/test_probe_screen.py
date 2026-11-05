@@ -85,9 +85,10 @@ def _settings(monkeypatch: pytest.MonkeyPatch, home: Path, **overrides: Any) -> 
         "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH",
         "HERMES_DASHBOARD_PROBE_TZ",
         "HERMES_DASHBOARD_PROBE_RICH",
-        "HERMES_HOME",
     ):
         monkeypatch.delenv(name, raising=False)
+    # The same temp dir, not deleted: engine code the tick reaches would resolve the real profile.
+    monkeypatch.setenv("HERMES_HOME", str(home))
     return {
         "chat_id": CHAT,
         "period_seconds": 0.01,

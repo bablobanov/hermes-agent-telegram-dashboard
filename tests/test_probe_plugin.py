@@ -8,8 +8,9 @@ leaves the machine; conftest's network guard refuses any that would. The network
 reconnect of a live gateway are the only links not exercised here.
 
 Needs the engine importable (its venv or PYTHONPATH to the clone); otherwise the module is skipped
-so the ordinary suite keeps running without Hermes. HERMES_HOME is pointed at a temp dir BEFORE any
-engine import so nothing touches a real profile.
+so the ordinary suite keeps running without Hermes. conftest points HERMES_HOME at a temporary dir
+for the whole session before collection, so before any engine import, and probe_env gives each
+test a profile of its own: nothing touches a real profile.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import asyncio
 import importlib.util
 import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -26,17 +26,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-_HOME = Path(tempfile.mkdtemp(prefix="hermes-probe-home-"))
-os.environ["HERMES_HOME"] = str(_HOME)
 os.environ.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)
 
 pytest.importorskip("hermes_cli.plugins", reason="Hermes engine not importable in this interpreter")
 pytest.importorskip("telegram", reason="python-telegram-bot not installed")
 
-from gateway.config import Platform, PlatformConfig  # noqa: E402
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from telegram.error import BadRequest  # noqa: E402
+from gateway.config import Platform, PlatformConfig
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from telegram.error import BadRequest
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugin" / "telegram_dashboard_probe"
 TASK_NAME = "telegram_dashboard_probe:tick"

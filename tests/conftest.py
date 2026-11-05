@@ -5,12 +5,17 @@ fails the run unless its reason is in ``ENGINE_JOB_SKIPS``: a test that skipped 
 against the engine, and a green job would say it had.
 
 No test reaches a host off this machine: connects and name lookups off loopback are refused for
-the whole process, and an attempt fails the test that made it."""
+the whole process, and an attempt fails the test that made it.
+
+The whole process runs with HERMES_HOME pointed at a temporary directory, so engine code a test
+reaches never resolves the real profile of whoever runs the tests."""
 
 import ipaddress
 import os
+import shutil
 import socket
 import sys
+import tempfile
 from collections.abc import Iterator
 from typing import Any, Literal
 
@@ -48,10 +53,38 @@ def pytest_report_header(config):
 
 def pytest_configure(config: pytest.Config) -> None:
     _install_network_guard()
+    _use_a_temporary_hermes_home()
     if ENGINE_JOB:
         # A module skipped at import fails its collection; the rest of the suite runs on, so one
         # run names every test the engine did not run, not only the first module.
         config.option.continue_on_collection_errors = True
+
+
+# The engine resolves its home on every call: HERMES_HOME, else the platform default, which is
+# the real profile of whoever runs the tests (~/.hermes; %LOCALAPPDATA%\hermes on Windows).
+# Set at configure time, before collection and so before any engine import; a test that needs a
+# home of its own sets one, and monkeypatch brings this one back after it.
+_HOME_BEFORE: list[str | None] = []
+_SESSION_HOME: list[str] = []
+
+
+def _use_a_temporary_hermes_home() -> None:
+    if _SESSION_HOME:
+        return
+    _HOME_BEFORE.append(os.environ.get("HERMES_HOME"))
+    _SESSION_HOME.append(tempfile.mkdtemp(prefix="hermes-test-home-"))
+    os.environ["HERMES_HOME"] = _SESSION_HOME[0]
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if not _SESSION_HOME:
+        return
+    before = _HOME_BEFORE[0]
+    if before is None:
+        os.environ.pop("HERMES_HOME", None)
+    else:
+        os.environ["HERMES_HOME"] = before
+    shutil.rmtree(_SESSION_HOME.pop(), ignore_errors=True)
 
 
 def _refused_skip(report: pytest.CollectReport | pytest.TestReport) -> str | None:

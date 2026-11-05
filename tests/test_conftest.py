@@ -2,8 +2,8 @@
 
 The skip rule lives in hooks, which act on a whole run; so a small run of throwaway test files is
 started in a subprocess with conftest.py as its plugin, and its outcome is read. The network
-guard is proven in this process, against addresses where even a broken guard reaches nothing.
-Offline, a second or two."""
+guard is proven in this process, against addresses where even a broken guard reaches nothing, and
+so is the temporary HERMES_HOME of the session. Offline, a second or two."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -176,3 +177,19 @@ def test_the_guard_leaves_loopback_and_local_pairs_open(no_network: list[str]) -
         assert right.recv(1) == b"x"
 
     assert no_network == []
+
+
+def test_the_session_runs_with_a_temporary_hermes_home() -> None:
+    home = Path(os.environ["HERMES_HOME"])
+
+    assert home.name.startswith("hermes-test-home-") and home.is_dir()
+    assert home.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
+
+
+def test_the_engine_resolves_its_home_to_the_temporary_one() -> None:
+    """The engine's own resolver (hermes_constants.get_hermes_home, 0.22.2 and 0.22.7): what
+    any engine code a test reaches uses for its profile."""
+    constants = pytest.importorskip("hermes_constants", reason="Hermes is not here")
+
+    assert constants.get_hermes_home() == Path(os.environ["HERMES_HOME"])
+    assert Path(os.environ["HERMES_HOME"]).name.startswith("hermes-test-home-")
