@@ -218,8 +218,9 @@ Three prohibitions, learned from a predecessor that died of them: no imports of 
 
 Two named exceptions. Account limits come from `agent.account_usage.fetch_account_usage`, a public
 function with the same signature on every verified version, called exactly the way the gateway's
-own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`). An import
-failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
+own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`), but not
+more often than once per `facade_refresh_seconds` for each provider (5 minutes by default). An
+import failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
 `agent.secret_scope.get_secret`, so that the active profile's value is the one used
 (`external.py`). Each exception is a row in the matrix, not a habit.
 
@@ -342,7 +343,8 @@ the exception class and the time, and the record carries `last_render_error`. Ye
 on a pinned dashboard looks exactly like a calm system, which is the failure this project exists
 to prevent. Inside the gateway the drift command, the usage facade and the read of the engine's
 error log run in worker threads with deadlines (`collect_all_async`), so a slow provider or a
-hung disk never stalls the Telegram event loop.
+hung disk never stalls the Telegram event loop. The facade has one worker for Claude and Codex
+and calls each of them at most once per `facade_refresh_seconds`, not on every tick.
 
 Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
 
@@ -367,6 +369,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often your `limits_sources` are asked (not every tick) |
+   | `facade_refresh_seconds` | `HERMES_DASHBOARD_PROBE_FACADE_REFRESH` | default 300, floor 60, no ceiling; how often Claude and Codex are each asked through the usage facade (not every tick: at most 288 calls a day per provider at the default); see "Limits: three kinds that never mix" |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
@@ -393,7 +396,8 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    ❔ line, `Drift: drift present, output not parsed` in the details), and exit 0 without them
    still reads as clean (`✓ Drift`, `0 keys` in the details).
    A source that hangs is not started again until its worker returns (one worker per
-   source across ticks), so a stuck facade or command cannot fill the gateway's executor.
+   source across ticks), so a stuck facade or command cannot fill the gateway's executor. The
+   facade's late worker writes its answer to the record, and the next tick shows it.
 3. restart the gateway; the message appears in the configured chat and its screen moves
 
 Use a chat you can sacrifice. The plugin writes its delivery record to the plugin state
@@ -411,7 +415,13 @@ built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads t
 "The Hermes version line") the same way
 (`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
-with the provider, the plan and the login date it last named. `gemini_log_cache` keeps the last
+with the provider, the plan and the login date it last named. `facade_cache` keeps the usage
+facade's providers the same way, one entry each (`claude`, `codex`): the last attempt
+(`attempted_at`), its item (the status, the reason, the source's name, `fetched_at`, the windows
+with the share and the reset, the plan), the last time the facade answered with a snapshot at
+all (`answered_at`) and the plan it last named. Never the account's identity, the raw answer,
+the details the facade reports beside the windows (a credit balance), or an exception's text,
+only its class. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
 message; the limit and the retry are kept, not shown) and when the log was last read
 (`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
@@ -906,19 +916,25 @@ across the row (`no data`), and a model's own limit in a row of its own with its
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
-updating is the freshness banner's business, not the countdown's. An external source's number
-is read on its own cadence and must not borrow the screen's stamp: the details line
-`Data 12:21 · Mistral 12:16` names every number read at another minute than the screen.
-`quota_cache.tick` decides when the source is asked again (once per `limits_refresh_seconds`);
-the record's `external_cache` keeps its last answer, which stands in for a missed one, with its
-own stamp, while it is younger than two ticks or two `limits_refresh_seconds`, whichever is
-longer. No number older than that passes for fresh: the ❔ line names the source
-(`Mistral limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is
-the one thing a limits block must never do.
+updating is the freshness banner's business, not the countdown's. A number from the facade
+and an external source's number are each read on their own cadence and must not borrow the
+screen's stamp: the details line `Data 12:21 · Codex 12:18 · Mistral 12:16` names every number
+read at another minute than the screen. `quota_cache.tick` decides when a provider is asked
+again: Claude and Codex once per `facade_refresh_seconds` (5 minutes by default), an external
+source once per `limits_refresh_seconds`; one attempt per interval, success or failure, so a
+failed attempt is `no data` with its reason until the next one, and a failing provider is not
+asked on every tick. The record keeps the last answer (`facade_cache`, `external_cache`), which
+stands in for a missed one (the deadline, a worker still running) with its own stamp while it
+is younger than two ticks or two intervals, whichever is longer. No number older than that
+passes for fresh: a number older than its interval is `cached number too old`, and the ❔ line
+names the source (`Mistral limits (stale)`, or `limits (stale)` for the facade, whose source is
+its freshest number). A stale number under a fresh stamp looks like knowledge, which is the one
+thing a limits block must never do.
 
-**Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
-`Prolite`), in the details beside the others. The engine names Codex's first window `Session`
-whatever its length, so the line shows the share and the reset only.
+**Codex** comes from the facade like Claude, on the same cadence, and so does its plan
+(`plan_type`, title-cased: `Prolite`), in the details beside the others; the plan stays there
+through a failed attempt. The engine names Codex's first window `Session` whatever its length,
+so the line shows the share and the reset only.
 
 **Claude on an installation without an Anthropic credential**: the line says `no data` and the
 details say `no account token`, a reason, never a zero. A local source that answers for Claude
@@ -1152,7 +1168,8 @@ lives there, not in code:
 ```
 
 Limits are only available when the tick runs in an interpreter that can import the engine (the
-gateway's own); elsewhere they degrade to `unsupported`. The cron tick runs in a directory of its
+gateway's own); elsewhere they degrade to `unsupported`. Where it can, each run asks the facade
+once per provider: the fallback tick keeps no record of it. The cron tick runs in a directory of its
 own, so the rules line looks for rules left beside the gateway only in the `gateway_dir` it is
 given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off,
 `memory: false` the memory section.
@@ -1176,7 +1193,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins thirteen properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins fourteen properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -1185,7 +1202,9 @@ query-only through one connection function (the only SQLite the plugin opens), n
 the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
 counters without calling anything on it, and the rules line writes nothing, imports no network
 client and logs no text, the memory section opens files to read bytes only, opens no database,
-imports no network client and logs nothing, no file of the plugin folder carries an invisible character (the
+imports no network client and logs nothing, the usage facade's answer is read field by field (its
+identity, its raw answer, its details and an exception's text never reach the record), no file of
+the plugin folder carries an invisible character (the
 catalog validator warns on one), and no word of any demo screen, sent as HTML or rich, becomes a
 link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a

@@ -113,6 +113,19 @@ def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() 
     assert "always unsupported" not in sources["limits"]["contract"]
 
 
+def test_the_limits_row_says_how_often_the_facade_is_asked_and_what_the_record_keeps() -> None:
+    """Issue #16: each facade provider is asked once per ``facade_refresh_seconds`` and its last
+    attempt is kept in the record under ``facade_cache``; the row says so, and names what of a
+    snapshot never reaches the record."""
+    row = load_matrix()["sources"]["limits"]
+
+    assert "facade_refresh_seconds" in row["contract"] and "facade_cache" in row["contract"]
+    assert "default 300 s" in row["contract"] and "288 calls a day" in row["contract"]
+    assert "answered_at" in row["contract"] and "cron path keeps no record" in row["contract"]
+    for field in ("identity", "raw", "details", "class name"):
+        assert field in row["caveat"], field
+
+
 def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None:
     """0.9.0: the cron line reads the engine's cron files and its run history read-only; the
     deaf verdict reads four private counters off the live adapter as a capability and the
