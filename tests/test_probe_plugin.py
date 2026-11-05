@@ -87,11 +87,11 @@ async def _until(predicate, *, timeout: float = 3.0) -> None:
 
 # The engine paces one chat's sends and edits through a shared per-chat slot
 # (plugins/platforms/telegram/adapter.py, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0, from 0.21.6
-# on; absent in 0.21.1): a send waits for the slot, an interim edit_message is skipped while it is
-# busy. A wait that spans an edit_message AND a send after it takes two slots and more: 2.0 s
-# alone, 3.1 s in this file's run, measured on 0.22.2 and 0.22.7. The 3 s default of ``_until``
-# predates the slot and stays for the waits that cross no slot (HTML edits go through
-# _edit_text, which the slot does not gate; measured at 0.1 s and under).
+# on): a send waits for the slot, an interim edit_message is skipped while it is busy. A wait
+# that spans an edit_message AND a send after it takes two slots: 1.96-2.07 s measured on 0.22.2
+# and 0.22.7, alone and in this file's run (each test in a profile of its own). The 3 s default
+# of ``_until`` predates the slot and stays for the waits that cross no slot (HTML edits go
+# through _edit_text, which the slot does not gate; measured at 0.1 s and under).
 SLOT_WAIT = 10.0
 
 
@@ -106,7 +106,13 @@ def _opens_with_status(text: str) -> bool:
 
 
 @pytest.fixture
-def probe_env(monkeypatch):
+def probe_env(monkeypatch, tmp_path: Path):
+    # A profile of its own: the engine's PluginState keeps the delivery record under
+    # <HERMES_HOME>/plugin-data/, and a message id an earlier test left there would change the
+    # next test's path (an edit of "its" message where a first send was meant).
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_CHAT", CHAT)
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_THREAD", THREAD)
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_PERIOD", "0.03")
@@ -290,16 +296,21 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         adapter._mark_connected()
         runner.adapters[Platform.TELEGRAM] = adapter
         await _until(lambda: bot.edit_message_text.await_count >= 1)
+        assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
 
         bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
         bot.send_message.return_value = MagicMock(message_id=102)
-        # The HTML edit's "not found" reads as a refused HTML edit first (by design); the plain
-        # edit_message after it is skipped while the first send's slot is busy, then fires and
-        # confirms the loss, and the new send waits for the slot that edit took (SLOT_WAIT).
+        # The HTML edit's "not found" reads as a refused HTML edit first (by design). The plain
+        # edit_message after it may be skipped by the engine's chat slot, which the first send
+        # still holds: the engine answers success with raw_response {"skipped": True}, and the
+        # plugin counting that as an edit is a plugin defect PR-B handles. Once the slot frees,
+        # the edit fires and confirms the loss, and the new send waits for the slot that edit
+        # took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
 
-        assert runtime.record["lost_at"]
+        assert bot.send_message.await_count == 2  # recreated once
+        assert runtime.record["lost_at"] and runtime.record["recreated_at"]
         assert runtime.record["last_status"] == "created"
         manager.unload()
 
