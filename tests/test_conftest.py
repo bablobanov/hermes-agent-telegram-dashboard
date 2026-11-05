@@ -22,6 +22,8 @@ import pytest
 TESTS_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = TESTS_DIR.parent / "plugin" / "telegram_dashboard_probe"
 
+PROVIDER_REASON = "the engine is importable here: the real facade would call provider APIs"
+# Under tests/ of the throwaway root, so their node ids name files as the allowlist does.
 THROWAWAY = {
     "test_module_skip.py": """\
         import pytest
@@ -34,21 +36,49 @@ THROWAWAY = {
         def test_skips():
             pytest.skip("function reason not on the list")
         """,
-    # A reason on ENGINE_JOB_SKIPS: stays a skip, and the passing test beside it runs.
-    "test_allowed_skip.py": """\
+    # The file and the reason of an entry for any platform: stays a skip, and the passing test
+    # beside it runs.
+    "test_collect.py": f"""\
         import pytest
         def test_allowed():
-            pytest.skip("time.tzset is POSIX only")
+            pytest.skip("{PROVIDER_REASON}")
         def test_passes():
             pass
         """,
+    # The same reason from another file.
+    "test_elsewhere.py": f"""\
+        import pytest
+        def test_same_reason_elsewhere():
+            pytest.skip("{PROVIDER_REASON}")
+        """,
+    # The file and the reason of a Windows-only entry.
+    "test_gemini_log.py": """\
+        import pytest
+        def test_tzset():
+            pytest.skip("time.tzset is POSIX only")
+        """,
+    # An xfail that stops its test, and one that never starts it; a test that runs to its end
+    # under an xfail marker did run, and stays an xfail.
+    "test_xfail.py": """\
+        import pytest
+        def test_imperative():
+            pytest.xfail("imperative reason")
+        @pytest.mark.xfail(run=False, reason="never run")
+        def test_never_run():
+            pass
+        @pytest.mark.xfail(reason="ran and failed")
+        def test_ran_and_failed():
+            assert False
+        """,
 }
-OUTCOME = re.compile(r"(\d+) (failed|passed|skipped|error)s?\b")
+OUTCOME = re.compile(r"(\d+) (xfailed|failed|passed|skipped|error)s?\b")
+WINDOWS = sys.platform == "win32"
 
 
 def _run(tmp_path: Path, *, engine_job: bool) -> subprocess.CompletedProcess[str]:
+    (tmp_path / "tests").mkdir()
     for name, text in THROWAWAY.items():
-        (tmp_path / name).write_text(textwrap.dedent(text), encoding="utf-8")
+        (tmp_path / "tests" / name).write_text(textwrap.dedent(text), encoding="utf-8")
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     env = dict(os.environ)
     env.pop("REQUIRE_ENGINE_TESTS", None)
@@ -59,7 +89,9 @@ def _run(tmp_path: Path, *, engine_job: bool) -> subprocess.CompletedProcess[str
     env["PYTHONIOENCODING"] = "utf-8"
     env["COLUMNS"] = "400"  # the summary lines whole, not cut at 80 characters
     command = [sys.executable, "-m", "pytest", "-p", "conftest", "-p", "no:cacheprovider"]
-    command += ["-c", str(tmp_path / "pytest.ini"), "-rfEs", str(tmp_path)]
+    # importlib: the throwaway test_collect.py must not meet the real one on PYTHONPATH.
+    command += ["-c", str(tmp_path / "pytest.ini"), "--import-mode=importlib", "-rfEsx"]
+    command.append(str(tmp_path))
     return subprocess.run(
         command,
         cwd=tmp_path,
@@ -84,20 +116,37 @@ def test_in_an_engine_job_a_skip_off_the_list_fails_the_run_and_says_why(tmp_pat
     output = run.stdout + run.stderr
 
     assert run.returncode == 1, output
-    # The module skipped at import is a collection error, and the run goes on past it.
-    assert _counts(run.stdout) == {"failed": 1, "passed": 1, "skipped": 1, "error": 1}, output
+    # The module skipped at import is a collection error, and the run goes on past it; the
+    # xfail that never starts the test is an error at setup. The Windows-only entry holds on
+    # Windows alone.
+    assert _counts(run.stdout) == {
+        "failed": 3 if WINDOWS else 4,
+        "passed": 1,
+        "skipped": 2 if WINDOWS else 1,
+        "xfailed": 1,
+        "error": 2,
+    }, output
     # Each reason on the run's summary lines, with the variable that made it a failure.
-    assert re.search(
-        r"ERROR .*test_module_skip\.py - .*REQUIRE_ENGINE_TESTS=1: skipped at "
-        r"test_module_skip\.py:2, .*: module reason not on the list",
-        run.stdout,
-    ), output
-    assert re.search(
-        r"FAILED .*test_function_skip\.py::test_skips - .*REQUIRE_ENGINE_TESTS=1: skipped at "
-        r"test_function_skip\.py:3, .*: function reason not on the list",
-        run.stdout,
-    ), output
-    assert re.search(r"SKIPPED \[1\] test_allowed_skip\.py:3: time\.tzset is POSIX only", output)
+    refused = r" - .*REQUIRE_ENGINE_TESTS=1: "
+    lines = [
+        rf"ERROR tests/test_module_skip\.py{refused}skipped at "
+        r"tests[\\/]test_module_skip\.py:2, .*: module reason not on the list",
+        rf"FAILED tests/test_function_skip\.py::test_skips{refused}skipped at "
+        r"tests[\\/]test_function_skip\.py:3, .*: function reason not on the list",
+        rf"FAILED tests/test_elsewhere\.py::test_same_reason_elsewhere{refused}skipped at "
+        rf"tests[\\/]test_elsewhere\.py:3, .*: {re.escape(PROVIDER_REASON)}",
+        rf"FAILED tests/test_xfail\.py::test_imperative{refused}xfailed before its end, "
+        r".*: imperative reason",
+        rf"ERROR tests/test_xfail\.py::test_never_run{refused}xfailed before its end, "
+        r".*: \[NOTRUN\] never run",
+        rf"SKIPPED \[1\] tests[\\/]test_collect\.py:3: {re.escape(PROVIDER_REASON)}",
+        r"XFAIL tests/test_xfail\.py::test_ran_and_failed - ran and failed",
+        r"SKIPPED \[1\] tests[\\/]test_gemini_log\.py:3: time\.tzset is POSIX only"
+        if WINDOWS
+        else rf"FAILED tests/test_gemini_log\.py::test_tzset{refused}.*time\.tzset is POSIX only",
+    ]
+    for line in lines:
+        assert re.search(line, run.stdout), (line, output)
 
 
 def test_without_the_variable_every_skip_stays_a_skip(tmp_path: Path) -> None:
@@ -105,7 +154,7 @@ def test_without_the_variable_every_skip_stays_a_skip(tmp_path: Path) -> None:
     output = run.stdout + run.stderr
 
     assert run.returncode == 0, output
-    assert _counts(run.stdout) == {"passed": 1, "skipped": 3}, output
+    assert _counts(run.stdout) == {"passed": 1, "skipped": 5, "xfailed": 3}, output
     assert "REQUIRE_ENGINE_TESTS" not in output
 
 

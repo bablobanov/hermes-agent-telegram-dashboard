@@ -1,8 +1,9 @@
 """Every run prints which tree of code is under test; a green run without it proves nothing.
 
-With ``REQUIRE_ENGINE_TESTS=1`` (the CI ``engine`` job, or a local run in a Hermes venv) a skip
-fails the run unless its reason is in ``ENGINE_JOB_SKIPS``: a test that skipped there did not run
-against the engine, and a green job would say it had.
+With ``REQUIRE_ENGINE_TESTS=1`` (the CI ``engine`` job, or a local run in a Hermes venv) a skip,
+or an xfail that stopped its test, fails the run unless ``ENGINE_JOB_SKIPS`` allows its file,
+reason and platform: a test that did not run to its end there did not run against the engine,
+and a green job would say it had.
 
 No test reaches a host off this machine: connects and name lookups off loopback are refused for
 the whole process, and an attempt fails the test that made it.
@@ -26,22 +27,22 @@ from telegram_dashboard import collect
 
 ENGINE_JOB = os.environ.get("REQUIRE_ENGINE_TESTS") == "1"
 
-# The skips an engine job may still have, by their exact reason.
-ENGINE_JOB_SKIPS = frozenset(
-    {
-        # Skips precisely because the engine is here: the real facade would call provider APIs.
+# The skips an engine job may still have: (the test's file, as its node id names it, the exact
+# reason) -> the one platform it may skip on, or None for any. A reason allowed in one file is
+# refused in every other, a Windows-only one wherever else the job runs (CI runs on Linux).
+ENGINE_JOB_SKIPS: dict[tuple[str, str], str | None] = {
+    # Skips precisely because the engine is here: the real facade would call provider APIs.
+    (
+        "tests/test_collect.py",
         "the engine is importable here: the real facade would call provider APIs",
-        # Windows only, for local runs in an engine venv; the CI job runs on Linux, where these
-        # never skip.
-        "a link's own time cannot be set on this platform",
-        "symlinks not permitted here",
-        "directory links not permitted here",
-        "time.tzset is POSIX only",
-        # A floor engine of 0.21.1-0.21.5 reads config.yaml with PyYAML; hermes_yaml came with
-        # 0.21.6.
-        "the engine's own parser (0.21.6+) is not here",
-    }
-)
+    ): None,
+    # Windows, for local runs in an engine venv: no os.utime of a link itself, no symlink without
+    # the privilege, no time.tzset.
+    ("tests/test_context_files.py", "a link's own time cannot be set on this platform"): "win32",
+    ("tests/test_context_files.py", "symlinks not permitted here"): "win32",
+    ("tests/test_context_files_engine.py", "directory links not permitted here"): "win32",
+    ("tests/test_gemini_log.py", "time.tzset is POSIX only"): "win32",
+}
 
 
 def pytest_report_header(config):
@@ -87,18 +88,29 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     shutil.rmtree(_SESSION_HOME.pop(), ignore_errors=True)
 
 
-def _refused_skip(report: pytest.CollectReport | pytest.TestReport) -> str | None:
-    """The failure text for a skip an engine job does not allow; ``None`` for anything else."""
-    if not ENGINE_JOB or not report.skipped or hasattr(report, "wasxfail"):
+def _refusal(report: pytest.CollectReport | pytest.TestReport, call: Any = None) -> str | None:
+    """The failure text for a test an engine job did not run to its end and does not allow;
+    ``None`` for anything else. A skip, and an xfail that stopped the test: ``pytest.xfail`` in
+    it, or ``xfail(run=False)``, which never starts it. A test under an xfail marker that ran to
+    its end and failed as the marker expects did run, and stays an xfail."""
+    if not ENGINE_JOB or not report.skipped:
         return None
-    where, reason = "", str(report.longrepr)
-    if isinstance(report.longrepr, tuple):
-        path, lineno, reason = report.longrepr
-        where = f" at {_relative(path)}:{lineno}"
-    reason = reason.removeprefix("Skipped: ")
-    if reason in ENGINE_JOB_SKIPS:
+    where = ""
+    if hasattr(report, "wasxfail"):
+        excinfo = getattr(call, "excinfo", None)
+        if excinfo is None or not excinfo.errisinstance(pytest.xfail.Exception):
+            return None
+        what, reason = "xfailed before its end", str(report.wasxfail)
+    else:
+        what, reason = "skipped", str(report.longrepr)
+        if isinstance(report.longrepr, tuple):
+            path, lineno, reason = report.longrepr
+            where = f" at {_relative(path)}:{lineno}"
+        reason = reason.removeprefix("Skipped: ")
+    key = (report.nodeid.split("::")[0], reason)
+    if key in ENGINE_JOB_SKIPS and ENGINE_JOB_SKIPS[key] in (None, sys.platform):
         return None
-    return f"REQUIRE_ENGINE_TESTS=1: skipped{where}, not a skip the engine job allows: {reason}"
+    return f"REQUIRE_ENGINE_TESTS=1: {what}{where}, not one the engine job allows here: {reason}"
 
 
 def _relative(path: str) -> str:
@@ -117,7 +129,7 @@ def _failing(text: str, when: Literal["collect", "setup", "call", "teardown"]) -
 @pytest.hookimpl(wrapper=True)
 def pytest_make_collect_report(collector: pytest.Collector):
     report = yield
-    text = _refused_skip(report)
+    text = _refusal(report)
     if text is None:
         return report
     failure = collector.repr_failure(_failing(text, "collect").excinfo)
@@ -127,7 +139,7 @@ def pytest_make_collect_report(collector: pytest.Collector):
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     report = yield
-    text = _refused_skip(report)
+    text = _refusal(report, call)
     if text is None:
         return report
     return pytest.TestReport.from_item_and_call(item, _failing(text, call.when))
