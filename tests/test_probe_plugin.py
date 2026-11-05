@@ -84,8 +84,24 @@ async def _until(predicate, *, timeout: float = 3.0) -> None:
         await asyncio.sleep(0.01)
 
 
+# The engine paces one chat's sends and edits through a shared per-chat slot
+# (plugins/platforms/telegram/adapter.py, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0, from 0.21.6
+# on; absent in 0.21.1): a send waits for the slot, an interim edit_message is skipped while it is
+# busy. A wait that spans an edit_message AND a send after it takes two slots and more: 2.0 s
+# alone, 3.1 s in this file's run, measured on 0.22.2 and 0.22.7. The 3 s default of ``_until``
+# predates the slot and stays for the waits that cross no slot (HTML edits go through
+# _edit_text, which the slot does not gate; measured at 0.1 s and under).
+SLOT_WAIT = 10.0
+
+
 # The status line with its data stamp, or a banner above it.
 SCREEN_FIRST_LINES = ("🟢", "🟡", "🔴", "⚪", "⚠️")
+
+
+def _opens_with_status(text: str) -> bool:
+    """Since 1.0.0 the HTML status line is bold: an optional ``<b>`` and nothing else before the
+    status emoji or the banner."""
+    return text.removeprefix("<b>").startswith(SCREEN_FIRST_LINES)
 
 
 @pytest.fixture
@@ -141,7 +157,7 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         assert sent["chat_id"] == int(CHAT) and sent["message_thread_id"] == int(THREAD)
         edited = bot1.edit_message_text.await_args.kwargs
         assert edited["chat_id"] == int(CHAT) and edited["message_id"] == 101
-        assert edited["text"].startswith(SCREEN_FIRST_LINES), edited["text"]
+        assert _opens_with_status(edited["text"]), edited["text"]
         assert "⚪ Unknown" in edited["text"]  # an empty home: nothing is green
         assert "#" not in edited["text"]
         # The engine's public edit_message takes no parse mode (read by signature, not by
@@ -175,7 +191,7 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         await _until(lambda: bot2.edit_message_text.await_count >= 2)
         bot2.send_message.assert_not_awaited()  # same message, not a new one
         edited = bot2.edit_message_text.await_args.kwargs
-        assert edited["message_id"] == 101 and edited["text"].startswith(SCREEN_FIRST_LINES)
+        assert edited["message_id"] == 101 and _opens_with_status(edited["text"])
         assert bot1.edit_message_text.await_count == edits_on_old, "old adapter must not be used"
         assert runtime.record["adapter_generation"] == 2
 
@@ -199,28 +215,27 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     plugins.entries.<id>.settings, and the ``telegram_dashboard`` package INSIDE the plugin
     folder, as the repository keeps it. This is the deployment shape, not a hand-built context."""
     import shutil
-
-    import yaml
+    import textwrap
 
     home = tmp_path / "home"
     plugin_home = home / "plugins" / "telegram_dashboard_probe"
     shutil.copytree(PLUGIN_DIR, plugin_home, ignore=shutil.ignore_patterns("__pycache__"))
+    # Written as text, as an operator writes it: the engine's core has no PyYAML from 0.21.6 (it
+    # reads config.yaml with its own parser), so the test brings no parser of its own. The ids
+    # are quoted: unquoted, YAML reads them as numbers.
     (home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "plugins": {
-                    "enabled": ["telegram_dashboard_probe"],
-                    "entries": {
-                        "telegram_dashboard_probe": {
-                            "settings": {
-                                "chat_id": CHAT,
-                                "thread_id": THREAD,
-                                "period_seconds": 0.03,
-                            }
-                        }
-                    },
-                }
-            }
+        textwrap.dedent(
+            f"""\
+            plugins:
+              enabled:
+                - telegram_dashboard_probe
+              entries:
+                telegram_dashboard_probe:
+                  settings:
+                    chat_id: '{CHAT}'
+                    thread_id: '{THREAD}'
+                    period_seconds: 0.03
+            """
         ),
         encoding="utf-8",
     )
@@ -262,8 +277,11 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
 
         bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
         bot.send_message.return_value = MagicMock(message_id=102)
-        await _until(lambda: bot.send_message.await_count >= 2)
-        await _until(lambda: runtime.record.get("message_id") == "102")
+        # The HTML edit's "not found" reads as a refused HTML edit first (by design); the plain
+        # edit_message after it is skipped while the first send's slot is busy, then fires and
+        # confirms the loss, and the new send waits for the slot that edit took (SLOT_WAIT).
+        await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
+        await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
 
         assert runtime.record["lost_at"]
         assert runtime.record["last_status"] == "created"
