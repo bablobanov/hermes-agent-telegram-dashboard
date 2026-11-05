@@ -243,11 +243,13 @@ and edits the same message; the counter text of the vertical slice is gone.
 ```
 register(ctx) → ctx.register_platform_handler("telegram", wire)
              → adapter.connect() calls wire(app, adapter)
-             → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
+             → ctx.spawn_task(tick loop)            (one per profile; reconnects and reloads
+                                                     do not add loops)
              → each tick: the traffic counters read off the adapter as attributes, then
                collect_all_async → render_dashboard → to_telegram_html,
                to_telegram_plain and to_telegram_rich, then adapter =
-               runner.adapters["telegram"] if connected, the message created once
+               runner.adapters["telegram"] if connected and handed to wire, else the
+               adapter wire was handed last, the message created once
                (with rich: true sendRichMessage through the engine's bot, else
                adapter.send(plain)), then every tick, with rich: true, the rich form
                (_bot.do_api_request("editMessageText", ...)), and without it or on a
@@ -262,6 +264,17 @@ again on every reconnect with a new adapter instance, and `TelegramAdapter.edit_
 forward to the replacement adapter (`send` does). A loop that keeps its first adapter would report
 "Not connected" forever while looking alive. `tests/test_probe_plugin.py` executes the chain
 against the real engine objects with the Telegram `Bot` mocked and simulates the reconnect.
+
+**Restarts, reloads and profiles.** A gateway restart edits the same message (the record below).
+A reload of plugins in a running gateway (`hermes plugins install/enable/update` asks for one, so
+may a tool's forced provider lookup) unloads the plugin, which stops its loop, and registers it
+again; since 1.1.0 the new registration takes the loop over on the adapter the old one had, so
+the screen keeps moving without a restart, one loop per profile (issue #12). Two limits: a stop
+that lands in the middle of a send may leave one extra message, as a gateway stop at that moment
+would; and the first such reload onto 1.1.0 from 1.0.0 or earlier has nothing to take over:
+restart the gateway once, or let the adapter reconnect. In a gateway that serves several
+profiles, each profile that enables the plugin has its own loop and its own message, sent
+through that profile's bot.
 
 **Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
 snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
