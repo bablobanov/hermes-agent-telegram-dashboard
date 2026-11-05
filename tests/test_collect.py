@@ -1805,13 +1805,21 @@ def test_limits_providers_is_read_as_built_in_labels_in_any_case(
     with caplog.at_level("WARNING", logger="test.limits_providers"):
         assert parse_limits_providers(["claude", "grok", 5, "Secret text"], log) == ("claude",)
         assert parse_limits_providers("codex", log) is None
+        # B2 review M-b: a list that names no provider at all (a typo) is not set, the
+        # automatic rule, never "ask none"; only an empty list written as such asks none.
+        assert parse_limits_providers(["codx"], log) is None
+        assert parse_limits_providers([None, "Secret text"], log) is None
 
     warnings = [record.getMessage() for record in caplog.records]
     assert warnings == [
         "limits_providers: entries 2, 3, 4 skipped (each must be claude, codex or gemini)",
         "limits_providers must be a list; ignoring <class 'str'>",
+        "limits_providers: entry 1 skipped (each must be claude, codex or gemini); "
+        "none left, so the setting is ignored",
+        "limits_providers: entries 1, 2 skipped (each must be claude, codex or gemini); "
+        "none left, so the setting is ignored",
     ]
-    assert "grok" not in caplog.text and "Secret" not in caplog.text
+    assert "grok" not in caplog.text and "Secret" not in caplog.text and "codx" not in caplog.text
 
 
 def test_the_fallback_tick_reads_limits_providers_from_its_config(tmp_path: Path) -> None:
@@ -1821,6 +1829,7 @@ def test_the_fallback_tick_reads_limits_providers_from_its_config(tmp_path: Path
 
     assert _environment({**home, "limits_providers": ["Codex"]}).limits_providers == ("codex",)
     assert _environment({**home, "limits_providers": []}).limits_providers == ()
+    assert _environment({**home, "limits_providers": ["codx"]}).limits_providers is None
     assert _environment(home).limits_providers is None
 
 

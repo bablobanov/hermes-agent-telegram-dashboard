@@ -71,12 +71,13 @@ def parse_limits_providers(
 ) -> tuple[str, ...] | None:
     """``limits_providers``: the built-in limit providers to ask, by label in any case, in the
     order of ``BUILT_IN_PROVIDERS``. ``None`` when the setting is absent: every provider is
-    asked, and one with no sign of an account has no line (issue #14). A list, empty or not:
-    exactly the providers it names are asked, each always with its line, and one it leaves out
-    is never asked; an empty list asks none. An entry that names no built-in provider is
-    skipped, one warning per parse giving the places, never the text. Anything but a list is
-    "not set", with its own warning. The plugin and the package's own tick both read the
-    setting with this."""
+    asked, and one with no sign of an account has no line (issue #14). A list that names at
+    least one: exactly the providers it names are asked, each always with its line, and one it
+    leaves out is never asked. An empty list, written as such, asks none. An entry that names no
+    built-in provider is skipped, one warning per parse giving the places, never the text; a
+    list made only of such entries is "not set", not "ask none", so one typo cannot turn off
+    every provider (B2 review M-b). Anything but a list is "not set", with its own warning. The
+    plugin and the package's own tick both read the setting with this."""
     if raw is None or raw == "":
         return None
     if not isinstance(raw, list | tuple):
@@ -92,11 +93,14 @@ def parse_limits_providers(
             skipped.append(str(number))
     if skipped:
         log.warning(
-            "%slimits_providers: %s %s skipped (each must be claude, codex or gemini)",
+            "%slimits_providers: %s %s skipped (each must be claude, codex or gemini)%s",
             prefix,
             "entry" if len(skipped) == 1 else "entries",
             ", ".join(skipped),
+            "" if named else "; none left, so the setting is ignored",
         )
+    if skipped and not named:
+        return None
     return tuple(name for name in BUILT_IN_PROVIDERS if name in named)
 
 

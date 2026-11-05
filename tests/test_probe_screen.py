@@ -541,7 +541,9 @@ def test_limits_providers_are_read_from_the_config_entry_only(
     assert providers(limits_providers=[]) == ()
     with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
         assert providers(limits_providers=["codex", "Grok-secret"]) == ("codex",)
+        assert providers(limits_providers=["Grok-secret"]) is None  # not set, never "ask none"
     assert "probe: limits_providers: entry 2 skipped" in caplog.text
+    assert "probe: limits_providers: entry 1 skipped" in caplog.text
     assert "Grok-secret" not in caplog.text
 
 
