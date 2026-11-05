@@ -89,6 +89,7 @@ ENV_HOME = "HERMES_HOME"  # the engine's own variable; the cron path reads the s
 ENV_DRIFT_REPORT = "HERMES_DASHBOARD_PROBE_DRIFT_REPORT"
 ENV_LIMITS = "HERMES_DASHBOARD_PROBE_LIMITS"
 ENV_LIMITS_REFRESH = "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH"
+ENV_FACADE_REFRESH = "HERMES_DASHBOARD_PROBE_FACADE_REFRESH"
 ENV_TZ = "HERMES_DASHBOARD_PROBE_TZ"
 ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
 ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
@@ -99,10 +100,18 @@ ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rul
 # tick: a weekly number does not move faster.
 DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
+# Claude and Codex through the engine's usage facade are asked at most once per this many seconds
+# each, success or failure, not every tick: the facade calls the providers' account APIs, and a
+# 5-hour window does not need a number every minute (288 calls a day per provider at the default).
+DEFAULT_FACADE_REFRESH_SECONDS = 300.0
+MIN_FACADE_REFRESH_SECONDS = 60.0
 # The record's key for the caches of the providers read by the dashboard itself before 1.1.0
 # (a plan, windows, the time of an attempt; no token): dropped on load, so the next save leaves
 # it out of the state file.
 RETIRED_LIMITS_CACHE_KEY = "limits_cache"
+# The usage facade's providers (``claude``, ``codex``) keep their last attempt each under a key of
+# their own, never the retired one: a record from 1.0.0 may still carry that one in another shape.
+FACADE_CACHE_KEY = "facade_cache"
 # The check of the latest Hermes release upstream (at most one per 15 minutes) keeps its last
 # answer and attempt in the record, so a restart neither asks GitHub again nor forgets the answer.
 RELEASE_CACHE_KEY = "release_cache"
@@ -136,7 +145,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0): a copy without them would
     # reject the tick's arguments every time. EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0,
     # whose tick hands no cache to providers an older copy read by itself: that copy would ask
-    # them on every tick.
+    # them on every tick. FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue
+    # #16): a copy without it would reject that argument, or call the facade on every tick.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -149,6 +159,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "TRAFFIC",
         "RULES",
         "EXTERNAL_DEFAULT_INTERVAL_SECONDS",
+        "FACADE_DEFAULT_INTERVAL_SECONDS",
     ),
     "compat": ("Environment", "CRON_NOTES", "parse_cron_notes"),
     "freshness": ("record_from_plugin_state",),
@@ -209,6 +220,8 @@ class Settings:
     backup_status: Path | None
     # External limit sources as the config lists them; the package checks every entry.
     limits_sources: tuple[Any, ...] = ()
+    # How often Claude and Codex are asked through the usage facade (``facade_refresh_seconds``).
+    facade_refresh_seconds: float = DEFAULT_FACADE_REFRESH_SECONDS
     # The rules line (whether the agent sees its context files); on unless turned off.
     context_files: bool = True
     # The memory section (notebooks, the approval queue, a provider); on unless turned off.
@@ -293,6 +306,12 @@ def read_settings(ctx: Any) -> Settings | None:
         limits_enabled=limits.lower() not in _FALSE_WORDS,
         limits_refresh_seconds=_refresh(
             _setting(ctx, "limits_refresh_seconds", ENV_LIMITS_REFRESH)
+        ),
+        facade_refresh_seconds=_refresh(
+            _setting(ctx, "facade_refresh_seconds", ENV_FACADE_REFRESH),
+            name="facade_refresh_seconds",
+            default=DEFAULT_FACADE_REFRESH_SECONDS,
+            floor=MIN_FACADE_REFRESH_SECONDS,
         ),
         display_timezone=_setting(ctx, "display_timezone", ENV_TZ) or "UTC",
         backup_status=Path(backup_status).expanduser() if backup_status else None,
@@ -404,24 +423,27 @@ def _period(raw: str) -> float:
     return clamped
 
 
-def _refresh(raw: str) -> float:
-    """A finite refresh interval of at least MIN; unreadable input uses the default."""
+def _refresh(
+    raw: str,
+    *,
+    name: str = "limits_refresh_seconds",
+    default: float = DEFAULT_LIMITS_REFRESH_SECONDS,
+    floor: float = MIN_LIMITS_REFRESH_SECONDS,
+) -> float:
+    """A finite refresh interval of at least ``floor``, no ceiling; unreadable input uses the
+    default. ``limits_refresh_seconds`` unless told otherwise."""
     if not raw:
-        return DEFAULT_LIMITS_REFRESH_SECONDS
+        return default
     try:
         seconds = float(raw)
     except ValueError:
         seconds = math.nan
     if not math.isfinite(seconds):
-        logger.warning(
-            "probe: limits_refresh_seconds %r unusable; using %.0fs",
-            raw,
-            DEFAULT_LIMITS_REFRESH_SECONDS,
-        )
-        return DEFAULT_LIMITS_REFRESH_SECONDS
-    clamped = max(seconds, MIN_LIMITS_REFRESH_SECONDS)
+        logger.warning("probe: %s %r unusable; using %.0fs", name, raw, default)
+        return default
+    clamped = max(seconds, floor)
     if clamped != seconds:
-        logger.warning("probe: limits_refresh_seconds %r clamped to %.0fs", raw, clamped)
+        logger.warning("probe: %s %r clamped to %.0fs", name, raw, clamped)
     return clamped
 
 
@@ -1088,6 +1110,8 @@ class ProbeRuntime:
             now=now,
             flights=self.flights,
             version_cache=self.release_cache(),
+            facade_caches=self.facade_cache(),
+            facade_interval_seconds=self.settings.facade_refresh_seconds,
             external_caches=self.external_cache(),
             external_interval_seconds=self.settings.limits_refresh_seconds,
             period_seconds=self.settings.period_seconds,
@@ -1104,6 +1128,15 @@ class ProbeRuntime:
         if not isinstance(cache, dict):
             cache = {}
             self.record[RELEASE_CACHE_KEY] = cache
+        return cache
+
+    def facade_cache(self) -> dict[str, Any]:
+        """The usage facade's caches inside the record, one per provider, the same object on
+        every tick so a worker that returns after its deadline still writes into the record."""
+        cache = self.record.get(FACADE_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[FACADE_CACHE_KEY] = cache
         return cache
 
     def external_cache(self) -> dict[str, Any]:

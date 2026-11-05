@@ -83,6 +83,7 @@ def _settings(monkeypatch: pytest.MonkeyPatch, home: Path, **overrides: Any) -> 
         "HERMES_DASHBOARD_PROBE_DRIFT_REPORT",
         "HERMES_DASHBOARD_PROBE_LIMITS",
         "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH",
+        "HERMES_DASHBOARD_PROBE_FACADE_REFRESH",
         "HERMES_DASHBOARD_PROBE_TZ",
         "HERMES_DASHBOARD_PROBE_RICH",
     ):
@@ -593,6 +594,28 @@ def test_a_package_copy_from_before_1_1_0_is_refused_at_load(tmp_path: Path) -> 
     assert dashboard.origin == "installed"
 
 
+def test_a_package_copy_without_the_facade_cadence_is_refused_at_load(tmp_path: Path) -> None:
+    """Issue #16: the tick hands the record's ``facade_caches`` to the collector so each provider
+    is asked once per ``facade_refresh_seconds``; a copy from before it would refuse the argument
+    or ask the facade on every tick. A copy without ``FACADE_DEFAULT_INTERVAL_SECONDS`` is refused
+    at load and the next candidate is taken."""
+    assert "FACADE_DEFAULT_INTERVAL_SECONDS" in load_plugin().REQUIRED_API["collect"]
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    name = "FACADE_DEFAULT_INTERVAL_SECONDS"
+    assert f"{name} = 300.0\n" in text
+    # Renamed, not removed: the copy still imports, only the name the plugin requires is gone.
+    collect_py.write_text(text.replace(name, "_OLDER_FACADE_INTERVAL_SECONDS"), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_facade_cadence_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""
@@ -829,6 +852,35 @@ def test_the_limits_refresh_interval_is_a_setting_with_a_floor(monkeypatch, tmp_
     assert refresh() == 1200.0
 
 
+def test_the_facade_refresh_interval_is_a_setting_with_a_floor_and_no_ceiling(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Issue #16: Claude and Codex are asked through the usage facade once per this interval,
+    300 s unless set; a value below a minute is not an interval, a long one is the owner's call,
+    and ``limits_refresh_seconds`` (the external sources') does not move it."""
+    plugin = load_plugin()
+    base = _settings(monkeypatch, tmp_path)
+
+    def refresh(**overrides: Any) -> float:
+        settings = plugin.read_settings(FakeContext({**base, **overrides}))
+        assert settings is not None
+        return settings.facade_refresh_seconds
+
+    assert refresh() == 300.0
+    assert refresh(facade_refresh_seconds="900") == 900.0
+    assert refresh(facade_refresh_seconds=86_400 * 7) == 604_800.0
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        assert refresh(facade_refresh_seconds="5") == 60.0
+        assert refresh(facade_refresh_seconds="soon") == 300.0
+        assert refresh(facade_refresh_seconds="inf") == 300.0
+    assert "facade_refresh_seconds '5' clamped to 60s" in caplog.text
+    assert "facade_refresh_seconds 'soon' unusable; using 300s" in caplog.text
+    assert refresh(limits_refresh_seconds="1800") == 300.0
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_FACADE_REFRESH", "600")
+    assert refresh() == 600.0
+    assert refresh(facade_refresh_seconds="120") == 120.0  # the config entry first
+
+
 def test_every_keyword_the_tick_passes_is_one_the_collector_takes(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -931,16 +983,67 @@ def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path:
     assert restarted.gemini_cache() is restarted.record["gemini_log_cache"]
 
 
+def test_the_facade_keeps_its_cache_in_the_record_across_a_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Issue #16: the usage facade's providers keep their last attempt in the record under
+    ``facade_cache``: the same dict on every tick (a worker that returns after its deadline
+    writes into the record), passed with ``facade_refresh_seconds`` and the period, written to
+    the state file and read back after a restart, so a restart does not ask the providers
+    again."""
+    from datetime import datetime
+
+    plugin = load_plugin()
+    settings = _settings(monkeypatch, _home(tmp_path), limits_enabled=True)
+    ctx = FakeContext({**settings, "facade_refresh_seconds": "600"})
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[dict[str, Any]] = []
+    now = datetime(2026, 11, 6, 9, 0, tzinfo=UTC)
+    attempt = {
+        "attempted_at": now.isoformat(),
+        "answered_at": now.isoformat(),
+        "plan": "Prolite",
+        "item": {"provider": "codex", "status": "available", "fetched_at": now.isoformat()},
+    }
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        kwargs["facade_caches"]["codex"] = attempt
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+
+    asyncio.run(runtime._collect(now))
+    asyncio.run(runtime._collect(now))
+    runtime._note(status="edited", error=None)
+
+    record = runtime.record["facade_cache"]
+    assert seen[0]["facade_caches"] is seen[1]["facade_caches"] is record
+    assert seen[0]["facade_interval_seconds"] == 600.0
+    assert seen[0]["period_seconds"] == runtime.settings.period_seconds
+    assert ctx.state.data["probe"]["facade_cache"] == {"codex": attempt}
+    assert "limits_cache" not in ctx.state.data["probe"]
+
+    restarted = plugin.register(ctx)
+    assert restarted is not None
+    restarted._load_record()
+    assert restarted.facade_cache() == {"codex": attempt}
+    assert restarted.facade_cache() is restarted.record["facade_cache"]
+
+
 def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Before 1.1.0 the record kept the caches of the providers the dashboard read by itself
     under ``limits_cache`` (a plan, windows, the time of an attempt; no token). Loading drops
-    the key and the next save leaves it out of the state file; every other key stays."""
+    the key and the next save leaves it out of the state file; every other key stays, the usage
+    facade's own ``facade_cache`` (issue #16) among them."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     attempt = {"attempted_at": "2026-10-20T08:00:00+00:00", "item": {"plan": "Pro", "windows": []}}
     release = {"attempted_at": "2026-10-20T08:00:00+00:00"}
+    facade = {"claude": {"attempted_at": "2026-10-20T08:00:00+00:00", "item": {"windows": []}}}
     ctx.state.set(
         "probe",
         {
@@ -948,6 +1051,7 @@ def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
             "chat_id": CHAT,
             "limits_cache": {"provider_a": attempt, "provider_b": {}},
             "release_cache": release,
+            "facade_cache": facade,
         },
     )
     runtime = plugin.register(ctx)
@@ -957,12 +1061,14 @@ def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
 
     assert "limits_cache" not in runtime.record
     assert runtime.record["message_id"] == "4242" and runtime.record["release_cache"] == release
+    assert runtime.facade_cache() == facade
 
     runtime._note(status="edited", error=None)
 
     stored = ctx.state.data["probe"]
     assert "limits_cache" not in stored
     assert stored["message_id"] == "4242" and stored["release_cache"] == release
+    assert stored["facade_cache"] == facade
 
 
 # ----------------------------------------------------------------------- the HTML probe
