@@ -2,6 +2,7 @@
 constant, which the plugin manifest and the project metadata must agree with, so the line on
 the screen is the version that was installed, never a stale ``0.1.0``."""
 
+import json
 import re
 from pathlib import Path
 
@@ -22,3 +23,16 @@ def test_the_package_the_manifest_and_the_project_name_one_version() -> None:
     assert in_manifest.group(1) == telegram_dashboard.__version__
     assert in_project.group(1) == telegram_dashboard.__version__
     assert telegram_dashboard.__version__ != "0.1.0"
+
+
+def test_requires_hermes_is_the_delivery_floor_of_the_compat_matrix() -> None:
+    manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    matrix = json.loads(
+        (PLUGIN_DIR / "telegram_dashboard" / "compat_matrix.json").read_text(encoding="utf-8")
+    )
+    declared = re.search(r'^requires_hermes: "([^"]+)"$', manifest, re.MULTILINE)
+    floor = matrix["floors"]["delivery_plugin"]["minimum_version"]
+
+    assert declared is not None
+    assert isinstance(floor, str)
+    assert declared.group(1) == ">=" + floor

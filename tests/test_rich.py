@@ -216,7 +216,7 @@ def test_details_is_a_section_per_source_a_thin_line_between_and_the_stamps_last
     )
     assert sections[-1] == (
         "<p>Screen Sep 26 21:00 UTC<br>Confirmed 20:58<br>Period 5 min<br>"
-        f"Profiles 1/1 · sources 10/10<br>Dashboard {__version__}</p>"
+        f"Profiles 1/1 · sources 8/8<br>Dashboard {__version__}</p>"
     )
     assert "windows and resets" not in markup and "⚪ No data" not in markup
     assert "<th>At</th>" not in markup
@@ -242,8 +242,6 @@ def test_the_limits_table_has_a_row_per_line_and_a_cell_per_window() -> None:
         '<tr><td>Claude Sonnet</td><td colspan="2">20% · 3d</td>',
         "<tr><td>Codex</td><td>⚠️ 93% · 1h20m</td><td>58% · 5d</td>",
         '<tr><td>Gemini</td><td colspan="2">no data</td>',
-        '<tr><td>Grok</td><td colspan="2">31% · 6d</td>',
-        "<tr><td>Kimi</td><td>8% · 3h40m</td><td>46% · 21d</td>",
     ]
 
 
@@ -252,9 +250,9 @@ def test_a_table_of_single_windows_spans_nothing_and_a_word_state_stays_a_word()
     at = (SHOWCASE_NOW + timedelta(hours=2)).isoformat()
     quotas = (
         QuotaMetric(
-            "Grok", "official", windows=(QuotaWindow("7d", None, at, "usage not started"),)
+            "DeepSeek", "official", windows=(QuotaWindow("7d", None, at, "usage not started"),)
         ),
-        QuotaMetric("Kimi", "official", windows=(QuotaWindow("5h", 33.0, at),)),
+        QuotaMetric("Qwen", "official", windows=(QuotaWindow("5h", 33.0, at),)),
         QuotaMetric("OpenAI", "local", used=120_000),
         QuotaMetric("Claude", "expired"),
         QuotaMetric("Mistral", "official", used=95, limit=100, reset_at=at),
@@ -268,16 +266,16 @@ def test_a_table_of_single_windows_spans_nothing_and_a_word_state_stays_a_word()
 
     assert table.split("</tr>")[:-1] == [
         "<tr><th>Provider</th><th>Used · resets in</th>",
-        "<tr><td>Grok</td><td>usage not started</td>",
-        "<tr><td>Kimi</td><td>33% · 2h</td>",
+        "<tr><td>DeepSeek</td><td>usage not started</td>",
+        "<tr><td>Qwen</td><td>33% · 2h</td>",
         "<tr><td>OpenAI</td><td>locally 120,000 tokens</td>",
         "<tr><td>Claude</td><td>login expired</td>",
         "<tr><td>Mistral</td><td>⚠️ 95% · 2h</td>",
     ]
     # The same words as the text lines, from the same helpers.
     for line in (
-        "Grok · usage not started",
-        "Kimi 33% (2h)",
+        "DeepSeek · usage not started",
+        "Qwen 33% (2h)",
         "OpenAI · locally 120,000 tokens",
         "Claude · login expired",
         "⚠️ Mistral 95% (2h)",

@@ -572,6 +572,26 @@ def test_a_package_copy_from_before_the_cron_notes_is_refused_at_load(tmp_path: 
     assert dashboard.origin == "installed"
 
 
+def test_a_package_copy_from_before_1_1_0_is_refused_at_load(tmp_path: Path) -> None:
+    """The 1.1.0 tick hands no cache to the providers an older copy read by itself, so that copy
+    would ask them on every tick. A copy without ``EXTERNAL_DEFAULT_INTERVAL_SECONDS`` is refused
+    at load and the next candidate is taken."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    name = "EXTERNAL_DEFAULT_INTERVAL_SECONDS"
+    assert f"{name} = 900.0\n" in text
+    # Renamed, not removed: the copy still imports, only the name the plugin requires is gone.
+    collect_py.write_text(text.replace(name, "_OLDER_DEFAULT_INTERVAL_SECONDS"), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_1_1_0_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
 def test_the_package_beside_the_plugin_wins_over_the_installed_one(tmp_path: Path) -> None:
     """The package lives inside the plugin folder; the engine loads a directory plugin as a
     package with ``__path__``, so the copy resolves as a relative import."""
@@ -790,7 +810,8 @@ def test_the_runtime_keeps_one_flights_registry_across_ticks(monkeypatch, tmp_pa
 
 
 def test_the_limits_refresh_interval_is_a_setting_with_a_floor(monkeypatch, tmp_path: Path) -> None:
-    """The Grok pool is asked once per this interval; a value below a minute is not an interval."""
+    """An external limit source is asked once per this interval; a value below a minute is not an
+    interval."""
     plugin = load_plugin()
     base = _settings(monkeypatch, tmp_path)
 
@@ -807,49 +828,38 @@ def test_the_limits_refresh_interval_is_a_setting_with_a_floor(monkeypatch, tmp_
     assert refresh() == 1200.0
 
 
-def test_the_tick_hands_the_record_s_own_cache_to_the_collector_and_persists_it(
+def test_every_keyword_the_tick_passes_is_one_the_collector_takes(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The Grok cache lives in the plugin record: observable in the state file, kept across
-    restarts, and the same dict object on every tick so the collector's writes land in it."""
+    """The keywords ``_collect`` passes bind to ``collect_all_async``'s own signature. mypy does
+    not read the plugin's entry file and ``run()`` turns a ``TypeError`` into one more failed
+    tick, so a keyword the collector no longer takes would fail no other test."""
+    import inspect
     from datetime import datetime
 
     plugin = load_plugin()
-    ctx = FakeContext(
-        _settings(monkeypatch, _home(tmp_path), limits_enabled=True, limits_refresh_seconds="1200")
-    )
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), limits_enabled=True))
     runtime = plugin.register(ctx)
     assert runtime is not None
-    seen: list[dict[str, Any]] = []
+    real = runtime.dashboard.collect.collect_all_async
+    seen: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     async def spy(*args: Any, **kwargs: Any) -> Any:
-        seen.append(kwargs)
-        kwargs["grok_cache"]["attempted_at"] = kwargs["now"].isoformat()
-        kwargs["kimi_cache"]["attempted_at"] = kwargs["now"].isoformat()
+        seen.append((args, kwargs))
         return "snapshot"
 
     monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
-    now = datetime(2026, 9, 12, 13, 40, tzinfo=UTC)
 
-    assert asyncio.run(runtime._collect(now)) == "snapshot"
-    assert asyncio.run(runtime._collect(now)) == "snapshot"
-    runtime._note(status="edited", error=None)
+    assert asyncio.run(runtime._collect(datetime(2026, 10, 24, 12, 0, tzinfo=UTC))) == "snapshot"
 
-    assert seen[0]["grok_interval_seconds"] == seen[0]["kimi_interval_seconds"] == 1200.0
-    caches = runtime.record["limits_cache"]
-    assert seen[0]["grok_cache"] is seen[1]["grok_cache"] is caches["grok"]
-    assert seen[0]["kimi_cache"] is seen[1]["kimi_cache"] is caches["kimi"]
-    assert seen[0]["grok_cache"] is not seen[0]["kimi_cache"]
-    assert ctx.state.data["probe"]["limits_cache"] == {
-        "grok": {"attempted_at": now.isoformat()},
-        "kimi": {"attempted_at": now.isoformat()},
-    }
+    ((args, kwargs),) = seen
+    inspect.signature(real).bind(*args, **kwargs)  # a TypeError names the keyword
 
 
 def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The once-a-day upstream check keeps its attempt in the record beside ``limits_cache``:
+    """The once-a-day upstream check keeps its attempt in the record under its own key:
     the same dict on every tick, written to the state file, and read back after a restart, so a
     restart does not ask GitHub again."""
     from datetime import datetime
@@ -885,7 +895,7 @@ def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
 def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path: Path) -> None:
     """The last Gemini 429 lives in the record under its own key: the same dict on every tick,
     written to the state file and read back after a restart, so a 429 that rotated out of the
-    engine's log is still the last one. ``limits_cache`` keeps its two providers."""
+    engine's log is still the last one."""
     from datetime import datetime
 
     plugin = load_plugin()
@@ -912,7 +922,6 @@ def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path:
     assert seen[0]["gemini_cache"] is seen[1]["gemini_cache"] is record
     stored = {"checked_at": now.isoformat(), "last_429": last}
     assert ctx.state.data["probe"]["gemini_log_cache"] == stored
-    assert set(runtime.record["limits_cache"]) == {"grok", "kimi"}
 
     restarted = plugin.register(ctx)
     assert restarted is not None
@@ -921,25 +930,38 @@ def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path:
     assert restarted.gemini_cache() is restarted.record["gemini_log_cache"]
 
 
-def test_a_record_from_before_kimi_keeps_its_grok_attempt_under_the_provider_key(
+def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The layout before Kimi kept Grok's attempt at the top level of ``limits_cache``. A state
-    file in that shape (the pilot's) is moved under ``grok`` once, so the restart after the
-    deploy keeps its interval instead of asking the proxy again."""
+    """Before 1.1.0 the record kept the caches of the providers the dashboard read by itself
+    under ``limits_cache`` (a plan, windows, the time of an attempt; no token). Loading drops
+    the key and the next save leaves it out of the state file; every other key stays."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), limits_enabled=True))
-    legacy = {"attempted_at": "2026-09-12T13:38:23+00:00", "item": {"provider": "grok"}}
-    ctx.state.set("probe", {"limits_cache": dict(legacy)})
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    attempt = {"attempted_at": "2026-10-20T08:00:00+00:00", "item": {"plan": "Pro", "windows": []}}
+    release = {"attempted_at": "2026-10-20T08:00:00+00:00"}
+    ctx.state.set(
+        "probe",
+        {
+            "message_id": "4242",
+            "chat_id": CHAT,
+            "limits_cache": {"provider_a": attempt, "provider_b": {}},
+            "release_cache": release,
+        },
+    )
     runtime = plugin.register(ctx)
     assert runtime is not None
+
     runtime._load_record()
 
-    caches = runtime.quota_caches()
+    assert "limits_cache" not in runtime.record
+    assert runtime.record["message_id"] == "4242" and runtime.record["release_cache"] == release
 
-    assert caches == {"grok": legacy, "kimi": {}}
-    assert runtime.record["limits_cache"] is caches
-    assert runtime.quota_caches() is caches  # stable across ticks
+    runtime._note(status="edited", error=None)
+
+    stored = ctx.state.data["probe"]
+    assert "limits_cache" not in stored
+    assert stored["message_id"] == "4242" and stored["release_cache"] == release
 
 
 # ----------------------------------------------------------------------- the HTML probe

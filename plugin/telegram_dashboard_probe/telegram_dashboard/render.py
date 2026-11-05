@@ -167,8 +167,6 @@ _DRIFT_LABELS = {
 _SOURCE_LABELS = {
     "gateway_state": "gateway",
     "limits": "limits",
-    "grok_quota": "Grok quota",
-    "kimi_quota": "Kimi quota",
     "gemini_log": "Gemini log",
     "drift": "drift",
     "backup": "backup",
@@ -566,7 +564,7 @@ def _unchecked_sources(snapshot: DashboardSnapshot) -> frozenset[str]:
 
 
 def _coverage_words(snapshot: DashboardSnapshot) -> str | None:
-    """``Profiles 1/1 · sources 10/10``: the full count, for the details."""
+    """``Profiles 1/1 · sources 8/8``: the full count, for the details."""
     parts: list[str] = []
     coverage = snapshot.coverage
     if coverage.expected_profiles:
@@ -1350,7 +1348,7 @@ def _reason(reason: str | None) -> str:
 
 
 def _data_stamps(snapshot: DashboardSnapshot, zone: tzinfo) -> str | None:
-    """``Data HH:MM · Kimi HH:MM``: the screen's data time and every number read at another
+    """``Data HH:MM · Codex HH:MM``: the screen's data time and every number read at another
     minute. A number read on its own cadence must not borrow the screen's stamp; when every
     stamp matches, the first line already says it and the details stay silent."""
     observed = parse_timestamp(snapshot.observed_at)
@@ -1461,7 +1459,7 @@ _WORD = re.compile(r"[\w./@#$-]+")
 # A name with a letter in it, or nothing (a dotfile), then a dot and an extension of two or more
 # characters that starts with a letter: ``AGENTS.md``, ``.hermes.md``, ``.cursorrules``,
 # ``state.db``, a config key ``display.platforms.max.cleanup_progress``. A version (``0.21.3``,
-# ``kimi-k2.5``, ``gemini-2.5-pro``) has a digit there and stays plain.
+# ``deepseek-v3.1``, ``gemini-2.5-pro``) has a digit there and stays plain.
 _FILE_LIKE = re.compile(r"(?:[\w./-]*[^\W\d][\w./-]*)?\.[^\W\d][\w-]+")
 # What Telegram finds inside a word: a command where a slash opens the word or follows a dot or a
 # dash (``/new``, ``/2fa``, ``./new``, ``/new-session``; a fraction ``1/1`` is not one), and a

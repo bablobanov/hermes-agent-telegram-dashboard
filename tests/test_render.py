@@ -208,7 +208,7 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
                     fetched_at="2026-09-25T07:21:00Z",
                 ),
                 QuotaMetric(
-                    "Grok",
+                    "Mistral",
                     "official",
                     windows=(
                         QuotaWindow("7d", None, "2026-10-01T19:25:00Z", note="usage not started"),
@@ -216,7 +216,7 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
                     fetched_at="2026-09-25T07:21:00Z",
                 ),
                 QuotaMetric(
-                    "Kimi",
+                    "Qwen",
                     "official",
                     windows=(
                         QuotaWindow("5h", 0.0, "2026-09-25T11:34:00Z"),
@@ -234,13 +234,13 @@ def test_a_spent_limit_gets_the_mark_and_a_state_in_words_never_becomes_a_number
 
     assert "## 🧠 Limits used" in lines  # every percent on the screen is the spent share
     assert "⚠️ Codex 98% (1h21m)" in lines  # 90% and above: the mark, only on this line
-    assert "Grok · usage not started" in lines  # the provider's words, no zero
-    assert "Kimi 0% (4h13m) · 3% (29d17h)" in lines  # the provider's order
+    assert "Mistral · usage not started" in lines  # the provider's words, no zero
+    assert "Qwen 0% (4h13m) · 3% (29d17h)" in lines  # the provider's order
     assert "Claude · no data" in lines and "Gemini · no data" in lines
     assert "🟡" not in rendered and lines[0] == TOP_HEALTHY
     # Reasons and the odd minute live in the details, grouped; the resets are on the lines.
     assert "> ## Resets" not in lines
-    assert "> Data 07:21 · Kimi 07:16" in lines
+    assert "> Data 07:21 · Qwen 07:16" in lines
     assert "> ## No data" in lines
     assert "> Claude: no account token" in lines
     assert "> Gemini: source not confirmed" in lines
@@ -418,7 +418,7 @@ def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> Non
         "> Rules Max: AGENTS.md changed Oct 7 17:29, after session Sep 24 19:23: /new\n"
         "> .hermes.md, .cursorrules, .cursor/rules/a.mdc, AGENTS.override.md, state.db.\n"
         "- Config drift: model.default, display.platforms.max.cleanup_progress\n"
-        "Hermes 0.21.3 → 0.21.5 · v0.10.0 · kimi-k2.5 · gemini-2.5-pro · e.g. 1.5x\n"
+        "Hermes 0.21.3 → 0.21.5 · v0.10.0 · deepseek-v3.1 · gemini-2.5-pro · e.g. 1.5x\n"
         "Profiles 1/1 · sources 12/12 · 11,162 chars · the gateway's a < b"
     )
 
@@ -439,7 +439,7 @@ def test_html_form_puts_a_file_name_and_a_command_in_code_by_their_form() -> Non
         assert f"<code>{word}</code>" in html, word
     assert "<code>state.db</code>." in html
     assert html.count("<code>") == len(coded)
-    assert "Hermes 0.21.3 → 0.21.5 · v0.10.0 · kimi-k2.5 · gemini-2.5-pro · e.g. 1.5x" in html
+    assert "Hermes 0.21.3 → 0.21.5 · v0.10.0 · deepseek-v3.1 · gemini-2.5-pro · e.g. 1.5x" in html
     assert "Profiles 1/1 · sources 12/12 · 11,162 chars · the gateway&#x27;s a &lt; b" in html
     assert "<code>" not in to_telegram_plain(line)
 
@@ -751,6 +751,115 @@ def test_a_long_version_is_cut_to_the_phone_line_and_kept_whole_in_the_details(
     assert any(entry.startswith(detail) for entry in lines), lines
 
 
+# ----------------------------------------------------------------- a line's own stamp, its resets
+#
+# A number read at another minute than the screen's never borrows the screen's stamp; every
+# window keeps its own reset on the line.
+
+_LINE_NOW = datetime(2026, 9, 12, 13, 40, tzinfo=UTC)
+_WINDOWS_NOW = datetime(2026, 9, 22, 13, 40, tzinfo=UTC)
+
+
+def _render_limits(capacity: CapacitySummary, now: datetime) -> str:
+    from telegram_dashboard.collect import build_snapshot
+
+    snapshot = build_snapshot(
+        now=now,
+        gateway=None,
+        drift=None,
+        capacity=capacity,
+        sources=(),
+        incidents=(),
+        coverage=Coverage(expected_profiles=1, observed_profiles=1),
+    )
+    return render_dashboard(snapshot, now=now, zone=UTC, period_seconds=300)
+
+
+def test_each_limit_line_carries_its_own_stamp_and_its_own_reason() -> None:
+    capacity = CapacitySummary(
+        (
+            QuotaMetric("Claude", "unavailable", detail="no account token"),
+            QuotaMetric(
+                "Codex",
+                "official",
+                windows=(QuotaWindow("Session", 14.0, "2026-09-12T16:12:00+00:00"),),
+                fetched_at="2026-09-12T13:38:48+00:00",
+            ),
+            QuotaMetric(
+                "Mistral",
+                "official",
+                windows=(QuotaWindow("7d", 27.0, "2026-09-17T19:25:30.689096+00:00"),),
+                fetched_at="2026-09-12T13:25:00+00:00",
+            ),
+            QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
+        )
+    )
+
+    lines = _render_limits(capacity, _LINE_NOW).splitlines()
+
+    assert "Claude · no data" in lines
+    # No length label, the engine's ``Session`` included; every reset rides on its own window.
+    assert "Codex 14% (2h32m)" in lines
+    assert "Mistral 27% (5d6h)" in lines
+    assert "Gemini · no data" in lines
+    # The details carry what the line does not: each number's own minute when it differs from
+    # the screen's, each reason.
+    assert "> Data 13:40 · Codex 13:38 · Mistral 13:25" in lines
+    assert "> Claude: no account token" in lines
+    assert "> Gemini: source not confirmed" in lines
+
+
+def test_a_line_with_several_windows_shows_each_window_s_own_reset() -> None:
+    capacity = CapacitySummary(
+        (
+            QuotaMetric(
+                "Qwen",
+                "official",
+                windows=(
+                    QuotaWindow("5h", 12.0, "2026-09-22T16:32:14Z"),
+                    QuotaWindow("7d", 40.0, "2026-09-26T12:32:14Z"),
+                ),
+                fetched_at="2026-09-22T13:25:00+00:00",
+            ),
+            QuotaMetric(
+                "Mistral",
+                "official",
+                windows=(QuotaWindow("7d", 27.0, "2026-09-24T19:25:30+00:00"),),
+                fetched_at="2026-09-22T13:25:00+00:00",
+            ),
+        )
+    )
+
+    text = _render_limits(capacity, _WINDOWS_NOW)
+
+    # Every window in the provider's order, the more spent one included, each with the time to
+    # its own reset (to the minute under a day, to the hour from a day on) and no length label.
+    assert "Qwen 12% (2h53m) · 40% (3d23h)" in text.splitlines()
+    assert "Mistral 27% (2d6h)" in text.splitlines()
+    assert "## Resets" not in text
+    assert "> Data 13:40 · Qwen 13:25 · Mistral 13:25" in text.splitlines()
+
+
+def test_a_window_without_a_reset_says_so_beside_the_others() -> None:
+    capacity = CapacitySummary(
+        (
+            QuotaMetric(
+                "Qwen",
+                "official",
+                windows=(
+                    QuotaWindow("5h", 12.0, None),
+                    QuotaWindow("month", 8.0, "2026-10-22T00:00:00Z"),
+                ),
+            ),
+        )
+    )
+
+    text = _render_limits(capacity, _WINDOWS_NOW)
+
+    # Only the window that has a reset carries a countdown.
+    assert "Qwen 12% · 8% (29d11h)" in text.splitlines()
+
+
 # ---------------------------------------------------------------- plans, model limits, login (0.8.0)
 
 _IN_2H = (NOW + timedelta(hours=2)).isoformat()
@@ -918,16 +1027,14 @@ def test_plans_and_the_login_date_are_in_the_details_only_when_known() -> None:
             login_expires_at="2026-10-27T21:07:24Z",
         ),
         QuotaMetric("Codex", "unavailable", detail="HTTP 502", plan="Prolite"),
-        QuotaMetric(
-            "Grok", "official", windows=(QuotaWindow("7d", 31.0, _IN_4H),), plan="SuperGrok"
-        ),
-        QuotaMetric("Kimi", "official", windows=(QuotaWindow("5h", 8.0, _IN_2H),)),
+        QuotaMetric("Mistral", "official", windows=(QuotaWindow("7d", 31.0, _IN_4H),), plan="Pro"),
+        QuotaMetric("Qwen", "official", windows=(QuotaWindow("5h", 8.0, _IN_2H),)),
     )
 
     details = _details_lines(text)
-    assert "Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in details
+    assert "Plans: Claude Max 5x · Codex Prolite · Mistral Pro" in details
     assert "Claude login until Oct 27" in details
-    assert not any("Kimi" in line and "Plan" in line for line in details)
+    assert not any("Qwen" in line and "Plan" in line for line in details)
 
 
 # ----------------------------------------------------------------------------- Gemini refusals
@@ -1157,20 +1264,20 @@ def test_a_provider_reason_with_a_chat_target_is_masked_in_the_details() -> None
         capacity=CapacitySummary(
             (
                 QuotaMetric(
-                    "Grok",
+                    "Mistral",
                     "unavailable",
                     detail="HTTP 400 for telegram:-1001234567890:17 user 987654321",
                 ),
             )
         ),
-        incidents=(Incident("grok:error", "warning", "Grok refused chat -1001234567890"),),
+        incidents=(Incident("mistral:error", "warning", "Mistral refused chat -1001234567890"),),
     )
 
     text = render_dashboard(snapshot, now=NOW)
 
     assert "1001234567890" not in text and "987654321" not in text
-    assert "Grok: HTTP 400 for [target] user [id]" in _details_lines(text)
-    assert "- Grok refused chat [id]" in _main_part(text)
+    assert "Mistral: HTTP 400 for [target] user [id]" in _details_lines(text)
+    assert "- Mistral refused chat [id]" in _main_part(text)
 
 
 # ----------------------------------------------------------------------------- cron and traffic
@@ -1456,7 +1563,7 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
     from telegram_dashboard import __version__
     from telegram_dashboard.states import PERIOD_SECONDS, all_states
 
-    state = all_states()[0]  # the normal state, with "No data" for Gemini and Grok
+    state = all_states()[0]  # the normal state, with "No data" for Gemini
     full = render_dashboard(
         state.snapshot, now=state.now, delivery=state.delivery, period_seconds=PERIOD_SECONDS
     ).splitlines()
@@ -1465,7 +1572,7 @@ def test_the_dashboard_s_version_closes_the_details_after_a_blank_line() -> None
     ).splitlines()
 
     assert full[-8:] == [
-        "> Grok: source not confirmed",
+        "> Gemini: source not confirmed",
         ">",
         "> Screen Sep 9 21:00 UTC",
         "> Confirmed 20:58",

@@ -6,19 +6,24 @@ The public extension point of 0.8.0. The plugin asks ``GET <url>`` on loopback, 
 login date. Nothing here knows who answers; any local process can.
 
 Guards: the URL is loopback http only; no proxy from the environment, no redirect, 64 KB at most.
-The key is read from the environment here and nowhere else, and never from a bot token
+The key is read here and nowhere else, with the engine's ``agent.secret_scope.get_secret`` (the
+active profile's value; the process environment outside Hermes), and never from a bot token
 variable: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN``, the cron path of this
 dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``, and any ``*_BOT_TOKEN`` is refused with them. The
-plugin never reads the bot token itself (the catalog review, hermes-agent#122408).
+plugin never reads the bot token itself (the catalog review, hermes-agent#122408). A key with
+whitespace or a control character is never sent, and a failed request that carried the key names
+the error's class only: the text of a transport error can hold the header.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -37,13 +42,23 @@ MAX_BODY_BYTES = 64 * 1024
 DEFAULT_TIMEOUT_SECONDS = 20.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 120.0
-# The tick waits for a source no longer than for Grok or Kimi. The request itself runs on in its
-# worker with the source's own timeout; a late answer is the next tick's line.
+# The tick waits this long for a source at most. The request itself runs on in its worker with
+# the source's own timeout; a late answer is the next tick's line.
 TICK_TIMEOUT_SECONDS = 25.0
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 BOT_TOKEN_VARIABLES = frozenset({"TELEGRAM_BOT_TOKEN", "HERMES_DASHBOARD_BOT_TOKEN"})
 BOT_TOKEN_SUFFIX = "_BOT_TOKEN"
 BOT_TOKEN_REFUSAL = "key_env names a bot token variable"
+SECRET_SCOPE_MODULE = "agent.secret_scope"
+UNSCOPED_REFUSAL = "key not readable outside a profile scope"
+KEY_CHARACTERS_REFUSAL = "key has characters a header cannot carry"
+# What a keyed source's answer shows where it echoed the key, and instead of a displayed string
+# that still holds KEY_PIECE characters of the key in a row after cleaning and cutting.
+KEY_PLACEHOLDER = "[key]"
+KEY_HIDDEN = "[key hidden]"
+KEY_PIECE = 8
+# A key shorter than a piece is never sent: every displayed string can then be checked for pieces.
+KEY_SHORT_REFUSAL = f"key shorter than {KEY_PIECE} characters"
 SEVERITIES = ("normal", "warning", "critical")
 SOURCE_LABEL = "external"
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -166,6 +181,70 @@ def http_get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, by
         return int(exc.code), b""
 
 
+class _KeyUnavailable(Exception):
+    """No key to send; ``args[0]`` is the reason for the item (never an engine text, never any
+    part of the key)."""
+
+
+def _read_key(name: str) -> str:
+    """The value of ``name`` through the engine's ``get_secret``, imported at call time.
+
+    The process environment only when the engine module does not exist at all (the standalone
+    CLI, CI). Raises ``_KeyUnavailable`` with the public reason otherwise; never anything else.
+    """
+    try:
+        module = importlib.import_module(SECRET_SCOPE_MODULE)
+    except ModuleNotFoundError as exc:
+        if exc.name in ("agent", SECRET_SCOPE_MODULE):
+            return os.environ.get(name, "")
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    except Exception as exc:
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    try:
+        key: Any = module.get_secret(name, "")
+    except Exception as exc:
+        if _is_unscoped(module, exc):
+            raise _KeyUnavailable(UNSCOPED_REFUSAL) from None
+        raise _KeyUnavailable(f"key lookup failed: {type(exc).__name__}") from None
+    return key if isinstance(key, str) else ""
+
+
+def _is_unscoped(module: object, exc: Exception) -> bool:
+    """The engine's ``UnscopedSecretError`` or a subclass of it, by ``isinstance`` when the
+    module exposes the class; by the class's name along the MRO only when it does not. Never
+    raises."""
+    try:
+        engine_class = getattr(module, "UnscopedSecretError", None)
+        if isinstance(engine_class, type):
+            return isinstance(exc, engine_class)
+        return any(c.__name__ == "UnscopedSecretError" for c in type(exc).__mro__)
+    except Exception:
+        return False
+
+
+def _source_key(name: str, environ: Mapping[str, str] | None) -> str:
+    """The key to send for ``key_env`` ``name``; ``_KeyUnavailable`` with the public reason
+    when there is none to send. The reason never carries any part of the value."""
+    # read_sources refuses these names already; checked again so that an entry built any
+    # other way cannot read a bot token either.
+    if is_bot_token_variable(name):
+        raise _KeyUnavailable(BOT_TOKEN_REFUSAL)
+    key = _read_key(name) if environ is None else environ.get(name, "")
+    if not key:
+        raise _KeyUnavailable(f"{name} not set")
+    if not _header_safe(key):
+        raise _KeyUnavailable(KEY_CHARACTERS_REFUSAL)
+    if len(key) < KEY_PIECE:
+        raise _KeyUnavailable(KEY_SHORT_REFUSAL)
+    return key
+
+
+def _header_safe(key: str) -> bool:
+    """No whitespace and no control character in the key. http.client refuses CR and LF in a
+    header value and puts the whole value, ``Bearer <key>``, into the text of its error."""
+    return not any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in key)
+
+
 def fetch_item(
     source: Source,
     *,
@@ -173,37 +252,40 @@ def fetch_item(
     get: HttpGet = http_get,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """One attempt at the source as a payload item like ``grok.py`` and ``kimi.py`` build, plus
-    ``provider``, ``plan``, ``login_expires_at`` and per-window ``scope`` and ``severity``.
-    Never raises."""
+    """One attempt at the source as a payload item (the shape ``collect._quota_from_item``
+    reads) with ``provider``, ``plan``, ``login_expires_at`` and per-window ``scope`` and
+    ``severity``. Never raises."""
     item = _empty_item()
     if source.problem:
         item["reason"] = source.problem
         return item
     headers = {"Accept": "application/json"}
+    # Set when the header is built, never read back from what ``get`` was handed.
+    key: str | None = None
     if source.key_env:
-        # read_sources refuses these names already; checked again so that an entry built any
-        # other way cannot read a bot token either.
-        if is_bot_token_variable(source.key_env):
-            item["reason"] = BOT_TOKEN_REFUSAL
-            return item
-        key = (os.environ if environ is None else environ).get(source.key_env, "")
-        if not key:
-            item["reason"] = f"{source.key_env} not set"
+        try:
+            key = _source_key(source.key_env, environ)
+        except _KeyUnavailable as unavailable:
+            item["reason"] = str(unavailable)
             return item
         headers["Authorization"] = f"Bearer {key}"
     try:
-        status, body = get(source.url, headers, source.timeout_seconds)
+        status, body = get(source.url, dict(headers), source.timeout_seconds)
     except Exception as exc:
-        item["reason"] = f"request failed: {_public(exc)}"
+        # With the key in the request the error's text may carry the header: the class alone.
+        item["reason"] = f"request failed: {type(exc).__name__ if key else _public(exc)}"
         return item
-    return _read_answer(status, body, now=now)
+    return _read_answer(status, body, now=now, key=key)
 
 
-def _read_answer(status: int, body: bytes, *, now: datetime) -> dict[str, Any]:
+def _read_answer(
+    status: int, body: bytes, *, now: datetime, key: str | None = None
+) -> dict[str, Any]:
+    """The answer as an item. From a source that was sent ``key`` every displayed string is
+    kept free of it (``_text``); the control fields are read as received."""
     item = _empty_item()
     if status != 200:
-        item["reason"] = f"HTTP {status}"
+        item["reason"] = _text(f"HTTP {status}", 16, key)
         return item
     if len(body) > MAX_BODY_BYTES:
         item["reason"] = "answer over 64 KB"
@@ -213,39 +295,48 @@ def _read_answer(status: int, body: bytes, *, now: datetime) -> dict[str, Any]:
     except (UnicodeDecodeError, ValueError):
         item["reason"] = "answer shape: not JSON"
         return item
-    return parse_contract(payload, now=now)
+    except RecursionError:
+        item["reason"] = "answer shape: nested too deep"
+        return item
+    return parse_contract(payload, now=now, key=key)
 
 
 # ----------------------------------------------------------------------------- the contract
 
 
-def parse_contract(payload: object, *, now: datetime) -> dict[str, Any]:
-    """Contract 1 as a payload item. Unknown keys are ignored, every string is sanitized, a
-    shape the contract does not allow is "no data" with the reason."""
+def parse_contract(payload: object, *, now: datetime, key: str | None = None) -> dict[str, Any]:
+    """Contract 1 as a payload item. Unknown keys are ignored. The control fields (contract,
+    state, windows, severity, numbers, stamps) are checked as received, and a reason about one
+    never quotes it; every displayed string is cleaned, and kept free of ``key`` when the
+    source was sent one (``_text``). A shape the contract does not allow is "no data"."""
     item = _empty_item()
     if not isinstance(payload, dict):
         item["reason"] = "answer shape: not an object"
         return item
     version = payload.get("contract")
     if version != CONTRACT or isinstance(version, bool):
-        item["reason"] = f"contract {sanitize_public_text(str(version), limit=8)} not supported"
+        # Fixed text: a refused control field is never quoted, it can hold anything (the key).
+        whole = isinstance(version, int) and not isinstance(version, bool)
+        item["reason"] = "unsupported contract" if whole else "answer shape: contract"
         return item
-    provider = _text(payload.get("provider"), 24)
+    provider = _text(payload.get("provider"), 24, key)
     if provider is None:
         item["reason"] = "answer without provider"
         return item
     item.update(
         provider=provider,
-        plan=_text(payload.get("plan"), 24),
+        plan=_text(payload.get("plan"), 24, key),
         login_expires_at=_moment(payload.get("login_expires_at")),
     )
-    return _with_state(item, payload, now=now)
+    return _with_state(item, payload, now=now, key=key)
 
 
-def _with_state(item: dict[str, Any], payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+def _with_state(
+    item: dict[str, Any], payload: dict[str, Any], *, now: datetime, key: str | None
+) -> dict[str, Any]:
     state = payload.get("state")
     if state == "unavailable":
-        item["reason"] = _text(payload.get("reason"), 60) or "source unavailable"
+        item["reason"] = _text(payload.get("reason"), 60, key) or "source unavailable"
         return item
     if state == "login_expired":
         item.update(status="expired", fetched_at=_fetched(payload, now))
@@ -260,18 +351,18 @@ def _with_state(item: dict[str, Any], payload: dict[str, Any], *, now: datetime)
     item.update(
         status="available",
         fetched_at=_fetched(payload, now),
-        windows=[_window(raw) for raw in windows if isinstance(raw, dict)][:MAX_WINDOWS],
+        windows=[_window(raw, key) for raw in windows if isinstance(raw, dict)][:MAX_WINDOWS],
     )
     return item
 
 
-def _window(raw: dict[str, Any]) -> dict[str, Any]:
+def _window(raw: dict[str, Any], key: str | None) -> dict[str, Any]:
     severity = raw.get("severity")
     return {
-        "label": _text(raw.get("label"), 24) or "window",
+        "label": _text(raw.get("label"), 24, key) or "window",
         "used_percent": _percent(raw.get("used_percent")),
         "reset_at": _moment(raw.get("resets_at")),
-        "scope": _text(raw.get("scope"), 24),
+        "scope": _text(raw.get("scope"), 24, key),
         "severity": severity if severity in SEVERITIES else None,
     }
 
@@ -286,21 +377,50 @@ def _percent(used: object) -> float | None:
 def _fetched(payload: dict[str, Any], now: datetime) -> str:
     """The source's own stamp of its numbers; the time of reading when it has none or it is
     ahead of the clock (a stamp from the future cannot be proven)."""
-    stamp = payload.get("fetched_at")
-    moment = parse_timestamp(stamp)
+    moment = _parsed_moment(payload.get("fetched_at"))
     if moment is None or is_from_the_future((now - moment).total_seconds()):
         return now.isoformat()
-    return str(stamp)
+    return moment.isoformat()
 
 
 def _moment(value: object) -> str | None:
-    return value if isinstance(value, str) and parse_timestamp(value) is not None else None
+    """A moment of the answer as this code renders the parsed time (UTC, ``isoformat``), never
+    the received text: a key that is itself a valid moment does not pass through verbatim."""
+    moment = _parsed_moment(value)
+    return moment.isoformat() if moment is not None else None
 
 
-def _text(value: object, limit: int) -> str | None:
+def _parsed_moment(value: object) -> datetime | None:
+    """The check on the received value: ISO-8601 text only."""
+    return parse_timestamp(value) if isinstance(value, str) else None
+
+
+def _text(value: object, limit: int, key: str | None = None) -> str | None:
+    """A displayed string of the answer, stripped, cleaned and cut. From a source that was sent
+    ``key``: ``Bearer <key>`` and the key are ``[key]`` before that (one pass, so no cut can
+    leave a prefix of an exact echo), and a result that still holds a piece of the key (a
+    service printing part of a token, a key cleaning put back together) is hidden as a whole."""
     if not isinstance(value, str) or not value.strip():
         return None
-    return sanitize_public_text(value.strip(), limit=limit) or None
+    text = _key_echo(key).sub(KEY_PLACEHOLDER, value.strip()) if key else value.strip()
+    shown = sanitize_public_text(text, limit=limit) or None
+    if shown is not None and key and _holds_key_piece(shown, key):
+        return KEY_HIDDEN
+    return shown
+
+
+def _key_echo(key: str) -> re.Pattern[str]:
+    """``Bearer <key>`` or the key itself, in any case."""
+    return re.compile(rf"(?:\bbearer\s+)?{re.escape(key)}", re.IGNORECASE)
+
+
+def _holds_key_piece(text: str, key: str) -> bool:
+    """Any ``KEY_PIECE`` characters of the key in a row, case aside (every key that is sent has
+    at least that many, ``_source_key``). The windows are cut from the key's own characters and
+    folded one by one: folding the key first would shift them where a character folds to two."""
+    folded = text.casefold()
+    windows = (key[i : i + KEY_PIECE].casefold() for i in range(len(key) - KEY_PIECE + 1))
+    return any(window in folded for window in windows)
 
 
 def _empty_item() -> dict[str, Any]:

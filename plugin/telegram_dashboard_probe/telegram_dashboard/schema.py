@@ -283,8 +283,9 @@ class QuotaWindow:
     label: str
     used_percent: float | None = None
     reset_at: str | None = None
-    # The provider's state in words when it gives no number (Grok's week before the first
-    # request); shown instead of the percent, never turned into one.
+    # The provider's state in words when it gives no number; shown instead of the percent,
+    # never turned into one. Nothing sets it today: no built-in source produces it and the
+    # external contract does not carry it.
     note: str | None = None
     # The model the limit applies to (``Fable``); ``None`` is the account's own limit.
     scope: str | None = None
@@ -321,7 +322,7 @@ class QuotaMetric:
     detail: str | None = None
     # When the number was read from the provider; a line older than the screen says so itself.
     fetched_at: str | None = None
-    # The plan as the provider names it (``Max 5x``, ``Prolite``, ``SuperGrok``); details only.
+    # The plan as the provider names it (``Max 5x``, ``Prolite``); details only.
     plan: str | None = None
     # When the login behind the number ends; the owner signs in again before that.
     login_expires_at: str | None = None

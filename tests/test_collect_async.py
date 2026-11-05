@@ -13,6 +13,7 @@ import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from probe_fakes import until
@@ -142,8 +143,6 @@ def test_a_collector_that_raises_degrades_its_source_and_names_itself(
     assert set(by_name) == {
         "gateway_state",
         "limits",
-        "grok_quota",
-        "kimi_quota",
         "gemini_log",
         "drift",
         "backup",
@@ -177,8 +176,6 @@ def test_no_source_at_all_still_composes_a_snapshot(tmp_path: Path) -> None:
     assert [source.name for source in snapshot.sources] == [
         "gateway_state",
         "limits",
-        "grok_quota",
-        "kimi_quota",
         "gemini_log",
         "drift",
         "backup",
@@ -413,6 +410,220 @@ def test_a_cached_line_older_than_two_ticks_is_no_data(tmp_path: Path, pid_alive
     assert _ext_state(snapshot).state == "unavailable"
 
 
+def _keyed_tick(tmp_path: Path, get: Any, key: str) -> tuple[str, str, str]:
+    """One tick of the collector with a source that has ``key_env`` and the real
+    ``external.fetch_item`` over ``get``: the stored ``external_cache`` as JSON, the rendered
+    screen and the snapshot's repr."""
+    from functools import partial
+
+    from telegram_dashboard import external
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    base = _env(tmp_path, limits_enabled=True)
+    env = Environment(
+        hermes_home=base.hermes_home,
+        drift_command=base.drift_command,
+        limits_enabled=True,
+        limits_sources=({"url": EXT_URL, "key_env": "LIMITS_SOURCE_KEY"},),
+    )
+    caches: dict[str, object] = {}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            env,
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: None,
+            flights=Flights(),
+            external_caches=caches,
+            external_interval_seconds=300,
+            external_timeout_seconds=5,
+            external_fetch=partial(
+                external.fetch_item, get=get, environ={"LIMITS_SOURCE_KEY": key}
+            ),
+            period_seconds=1800,
+        )
+    )
+    return json.dumps(caches), render_dashboard(snapshot, now=NOW), repr(snapshot)
+
+
+def test_a_failed_request_with_a_key_leaves_the_key_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex review of 1.1.0: the transport's error text carries the header, ``Bearer <key>``.
+    Through the tick, the reason in the record's ``external_cache`` and on the screen names the
+    exception class only."""
+    key = "sk-0123456789abcdef"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    assert "request failed: ValueError" in stored
+    assert "request failed: ValueError" in screen
+    for text in (stored, screen, snapshot):
+        assert "sk-0123" not in text and "Bearer" not in text
+
+
+def test_a_get_that_takes_the_header_away_leaves_the_key_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex re-check: whether the request carried the key is decided before ``get`` runs; a
+    ``get`` that pops the header and raises with its value cannot bring the text back."""
+    key = "kq7Zr4p9XwLm2Vt8"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        value = headers.pop("Authorization")
+        raise ValueError(value.removeprefix("Bearer "))
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    assert "request failed: ValueError" in stored
+    assert "request failed: ValueError" in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text and "Bearer" not in text
+
+
+@pytest.mark.parametrize("state", ["unavailable", "ok"])
+def test_a_keyed_source_echoing_its_key_leaves_it_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, state: str
+) -> None:
+    """Codex re-check: a source that was sent the key answers with it in its reason, plan and
+    windows. Through the tick, the record's ``external_cache``, the snapshot and the screen carry
+    ``[key]`` where the key was, and no 6-character prefix of it."""
+    from test_external import echoing_answers
+
+    key = "kq7Zr4p9XwLm2Vt8"
+    body = json.dumps(echoing_answers(key)[state]).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    assert "[key]" in stored and "[key]" in screen
+    if state == "unavailable":
+        assert "denied for [key]" in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text
+
+
+@pytest.mark.parametrize("name", ["contract-object", "contract-text", "state", "severity"])
+def test_a_control_field_holding_the_key_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, name: str
+) -> None:
+    """Codex re-check: the fixed reason for a malformed control field, never an echo of it,
+    through the tick into the record's ``external_cache``, the snapshot and the screen."""
+    from test_external import malformed_answers
+
+    key = "kq7Zr4p9XwLm2Vt8"
+    answer, reason = malformed_answers(key)[name]
+    body = json.dumps(answer).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    if reason is not None:
+        assert reason in stored and reason in screen
+    for text in (stored, screen, snapshot):
+        assert key[:6] not in text
+
+
+@pytest.mark.parametrize("key", ["critical", "unavailable", "login_expired"])
+def test_a_key_that_is_a_protocol_word_keeps_the_line_and_stays_out_of_its_text(
+    tmp_path: Path, pid_alive: None, key: str
+) -> None:
+    """Codex re-check, a regression of wave 2: through the tick, a key that is a severity or a
+    state word leaves the source's windows and severities on the record and the screen, and the
+    plan that echoed it says ``[key]``."""
+    from test_external import REFERENCE_ANSWER
+
+    body = json.dumps({**REFERENCE_ANSWER, "plan": f"Max {key}"}).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, _snapshot = _keyed_tick(tmp_path, get, key)
+
+    (cache,) = json.loads(stored).values()
+    assert cache["item"]["status"] == "available"
+    assert [w["severity"] for w in cache["item"]["windows"]] == ["normal", "warning", "critical"]
+    assert cache["plan"] == "Max [key]" and "Max [key]" in screen
+    assert f"Max {key}" not in stored and f"Max {key}" not in screen
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["prefix", "fragment", "ansi-split", "markup-exact", "markup-piece", "json-escape", "honest"],
+)
+def test_a_piece_of_the_key_stays_out_of_the_cache_the_snapshot_and_the_screen(
+    tmp_path: Path, pid_alive: None, name: str
+) -> None:
+    """Codex re-check: through the tick, no 8 characters of the key in a row reach the
+    record's ``external_cache``, the snapshot or the screen, whatever piece or form of the key
+    the source echoed; an honest reason reaches the screen as it was."""
+    from test_external import key_runs, partial_echoes, strings_in
+
+    key, body = partial_echoes()[name]
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    texts = [*strings_in(json.loads(stored)), screen, snapshot]
+    assert not [run for run in key_runs(key) for text in texts if run in text]
+    if name == "honest":
+        assert "upstream busy, retry later" in screen
+
+
+@pytest.mark.parametrize("state", ["unavailable", "ok"])
+def test_an_echo_of_the_key_in_another_case_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None, state: str
+) -> None:
+    """Codex re-check 3: through the tick, an echo of the key in another case in any displayed
+    field leaves no 8 characters of the key in a row, in any case, in the record's
+    ``external_cache``, the snapshot or the screen; ``[key]`` stands where it was."""
+    from test_external import PIECE_KEY, key_runs, mixed_case_echoes, strings_in
+
+    key = PIECE_KEY
+    body = json.dumps(mixed_case_echoes(key)[state]).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, key)
+
+    texts = [text.casefold() for text in [*strings_in(json.loads(stored)), screen, snapshot]]
+    assert not [run for run in key_runs(key) for text in texts if run.casefold() in text]
+    (cache,) = json.loads(stored).values()
+    assert "[key]" in json.dumps(cache["item"]) and "[key hidden]" not in json.dumps(cache["item"])
+
+
+def test_a_key_that_is_a_moment_stays_out_of_the_cache_and_the_screen(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Codex re-check 3: a key that is itself a valid moment, returned in every moment field,
+    reaches the record's ``external_cache``, the snapshot and the screen only as this code
+    renders the time, never as the received text."""
+    from test_external import STAMP_KEY, stamp_echo
+
+    body = json.dumps(stamp_echo(STAMP_KEY)).encode("utf-8")
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        return 200, body
+
+    stored, screen, snapshot = _keyed_tick(tmp_path, get, STAMP_KEY)
+
+    assert "2025-01-02T03:04:05+00:00" in stored
+    for text in (stored, screen, snapshot):
+        assert STAMP_KEY not in text
+
+
 # ---------------------------------------------------------------- Gemini 429s from the log (0.8.1)
 
 
@@ -611,7 +822,7 @@ def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
     )
 
     providers = [q.provider for q in snapshot.capacity.quotas]
-    assert providers == ["Claude", "Codex", "Grok", "Kimi", "Gemini"]
+    assert providers == ["Claude", "Codex", "Gemini"]
 
 
 # ----------------------------------------------------------------------------- cron (0.9.0)

@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -74,45 +76,47 @@ def _source(**fields: Any) -> Source:
 # ---------------------------------------------------------------- the contract
 
 
-def test_the_reference_answer_parses_into_an_item_like_grok_s_and_kimi_s() -> None:
+def test_the_reference_answer_parses_into_a_payload_item() -> None:
     item = parse_contract(REFERENCE_ANSWER, now=NOW)
 
     assert item["status"] == "available" and item["reason"] is None
     assert item["provider"] == "Claude" and item["plan"] == "Max 5x"
-    assert item["login_expires_at"] == "2026-10-27T21:07:24Z"
-    assert item["fetched_at"] == "2026-09-29T06:59:30Z"
+    assert item["login_expires_at"] == "2026-10-27T21:07:24+00:00"
+    assert item["fetched_at"] == "2026-09-29T06:59:30+00:00"
     assert item["windows"] == [
         {
             "label": "session",
             "used_percent": 42.0,
-            "reset_at": "2026-09-29T09:00:00Z",
+            "reset_at": "2026-09-29T09:00:00+00:00",
             "scope": None,
             "severity": "normal",
         },
         {
             "label": "week",
             "used_percent": 86.0,
-            "reset_at": "2026-09-29T23:00:00Z",
+            "reset_at": "2026-09-29T23:00:00+00:00",
             "scope": None,
             "severity": "warning",
         },
         {
             "label": "week",
             "used_percent": 100.0,
-            "reset_at": "2026-09-29T23:00:00Z",
+            "reset_at": "2026-09-29T23:00:00+00:00",
             "scope": "Fable",
             "severity": "critical",
         },
     ]
 
 
-def test_another_contract_version_is_no_data_with_the_reason() -> None:
+def test_another_contract_version_is_no_data_with_a_fixed_reason() -> None:
+    """The reason never quotes the value it refuses (Codex re-check of 1.1.0): another number
+    is an unsupported contract, anything else is the wrong shape."""
     item = parse_contract({**REFERENCE_ANSWER, "contract": 2}, now=NOW)
 
-    assert item["status"] == "unavailable" and item["reason"] == "contract 2 not supported"
-    assert (
-        parse_contract({**REFERENCE_ANSWER, "contract": True}, now=NOW)["status"] == "unavailable"
-    )
+    assert item["status"] == "unavailable" and item["reason"] == "unsupported contract"
+    for odd in (True, "1", "v2", 1.5, None, [1], {"version": 1}):
+        refused = parse_contract({**REFERENCE_ANSWER, "contract": odd}, now=NOW)
+        assert (refused["status"], refused["reason"]) == ("unavailable", "answer shape: contract")
 
 
 def test_extra_keys_are_ignored_and_strings_are_sanitized() -> None:
@@ -146,9 +150,9 @@ def test_states_login_expired_and_unavailable() -> None:
     odd = parse_contract({**REFERENCE_ANSWER, "state": "sleeping"}, now=NOW)
 
     assert (expired["status"], expired["plan"]) == ("expired", "Max 5x")
-    assert expired["fetched_at"] == "2026-09-29T06:59:30Z"
+    assert expired["fetched_at"] == "2026-09-29T06:59:30+00:00"
     assert (down["status"], down["reason"]) == ("unavailable", "runner busy")
-    assert down["login_expires_at"] == "2026-10-27T21:07:24Z", "a date survives a bad tick"
+    assert down["login_expires_at"] == "2026-10-27T21:07:24+00:00", "a date survives a bad tick"
     assert (odd["status"], odd["reason"]) == ("unavailable", "answer shape: state")
 
 
@@ -229,14 +233,667 @@ def test_the_key_comes_from_the_named_variable_and_nowhere_else() -> None:
     get = RecordingGet()
     source = _source(key_env="LIMITS_SOURCE_KEY", timeout_seconds=90)
 
-    item = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": "k-123"})
+    item = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": "k-123456"})
 
     assert item["status"] == "available"
     assert get.calls == [
-        (URL, {"Accept": "application/json", "Authorization": "Bearer k-123"}, 90.0)
+        (URL, {"Accept": "application/json", "Authorization": "Bearer k-123456"}, 90.0)
     ]
     missing = fetch_item(source, now=NOW, get=get, environ={})
     assert missing["reason"] == "LIMITS_SOURCE_KEY not set" and len(get.calls) == 1
+
+
+class UnscopedSecretError(RuntimeError):
+    """Stands in for the engine's class of the same name (agent/secret_scope.py)."""
+
+
+class _NarrowerUnscopedError(UnscopedSecretError):
+    """A subclass the engine might raise one day: still an unscoped read."""
+
+
+def _engine_scope(
+    monkeypatch: pytest.MonkeyPatch, get_secret: Any, *, expose_class: bool = True
+) -> None:
+    """Install a fake ``agent.secret_scope``; ``import_module`` finds the leaf in sys.modules."""
+    module = ModuleType("agent.secret_scope")
+    if expose_class:
+        module.UnscopedSecretError = UnscopedSecretError  # type: ignore[attr-defined]
+    if get_secret is not None:
+        module.get_secret = get_secret  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", module)
+
+
+def test_the_key_goes_through_the_engines_get_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[tuple[str, str]] = []
+
+    def get_secret(name: str, default: str = "") -> str:
+        asked.append((name, default))
+        return "scoped-key"
+
+    _engine_scope(monkeypatch, get_secret)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert item["status"] == "available"
+    assert asked == [("LIMITS_SOURCE_KEY", "")]
+    assert get.calls[0][1]["Authorization"] == "Bearer scoped-key"
+
+
+def test_an_unscoped_read_is_no_data_without_a_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get_secret(name: str, default: str = "") -> str:
+        raise UnscopedSecretError("restart the gateway with --secret-scope, please")
+
+    _engine_scope(monkeypatch, get_secret)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+    assert "restart" not in str(item)
+
+
+def test_a_subclass_of_the_engine_s_unscoped_error_is_an_unscoped_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matched by the engine's own class, not by the name of the class raised (Codex review)."""
+
+    def get_secret(name: str, default: str = "") -> str:
+        raise _NarrowerUnscopedError("no scope")
+
+    _engine_scope(monkeypatch, get_secret)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+
+
+def _raising_lookalike(name: str, default: str = "") -> str:
+    """get_secret raising a class that is not the engine's but bears its name."""
+    raise type("UnscopedSecretError", (RuntimeError,), {})("no scope")
+
+
+def test_a_lookalike_of_the_engine_s_class_is_another_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex re-check: where the module exposes the class, only it (or a subclass) is an
+    unscoped read; another class of the same name is a failed lookup named by its class."""
+    _engine_scope(monkeypatch, _raising_lookalike)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key lookup failed: UnscopedSecretError"
+
+
+def test_without_the_class_in_the_module_the_class_name_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _engine_scope(monkeypatch, _raising_lookalike, expose_class=False)
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key not readable outside a profile scope"
+
+
+def test_the_real_engine_refuses_an_unscoped_read_and_reads_the_environment_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Against the engine's own ``agent.secret_scope`` where it is importable (skipped without
+    the engine, as in CI). Multiplexing on and no scope installed: the fixed reason and no
+    request. Multiplexing off: the process environment reaches the header through get_secret."""
+    scope = pytest.importorskip("agent.secret_scope")
+    assert not scope.is_multiplex_active() and scope.current_secret_scope() is None
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    scope.set_multiplex_active(True)
+    try:
+        refused = fetch_item(source, now=NOW, get=get)
+    finally:
+        scope.set_multiplex_active(False)
+    read = fetch_item(source, now=NOW, get=get)
+
+    assert refused["reason"] == "key not readable outside a profile scope"
+    assert "process-key" not in str(refused)
+    assert read["status"] == "available"
+    assert [call[1]["Authorization"] for call in get.calls] == ["Bearer process-key"]
+
+
+def test_another_failure_of_get_secret_names_only_the_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def get_secret(name: str, default: str = "") -> str:
+        raise ValueError("secret detail that must not leak")
+
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+    _engine_scope(monkeypatch, get_secret)
+
+    failed = fetch_item(source, now=NOW, get=get)
+    _engine_scope(monkeypatch, None)
+    absent = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    assert failed["reason"] == "key lookup failed: ValueError"
+    assert absent["reason"] == "key lookup failed: AttributeError"
+    assert "leak" not in str(failed)
+
+
+def test_without_the_engine_module_the_process_environment_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", None)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    item = fetch_item(source, now=NOW, get=get)
+
+    assert item["status"] == "available"
+    assert get.calls[0][1]["Authorization"] == "Bearer process-key"
+    monkeypatch.delenv("LIMITS_SOURCE_KEY")
+    assert fetch_item(source, now=NOW, get=get)["reason"] == "LIMITS_SOURCE_KEY not set"
+    assert len(get.calls) == 1
+
+
+def test_a_missing_module_inside_the_engine_does_not_fall_back_to_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine is there but one of its own imports is not (``hermes_constants``): a failed
+    lookup, not the standalone CLI. The process environment is not read."""
+    real_import = external.importlib.import_module
+
+    def import_module(name: str, package: str | None = None) -> ModuleType:
+        if name == "agent.secret_scope":
+            raise ModuleNotFoundError("No module named 'hermes_constants'", name="hermes_constants")
+        return real_import(name, package)
+
+    monkeypatch.setattr(external.importlib, "import_module", import_module)
+    monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")
+    get = RecordingGet()
+
+    item = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get)
+
+    assert get.calls == []
+    assert item["reason"] == "key lookup failed: ModuleNotFoundError"
+    assert "process-key" not in str(item)
+
+
+@pytest.mark.parametrize(
+    "key", ["sk-0123\r4567", "sk-0123\n4567", "sk-0123 4567"], ids=["cr", "lf", "space"]
+)
+def test_a_key_a_header_cannot_carry_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """http.client puts the whole header value, ``Bearer <key>``, into the text of the error it
+    raises for such a key (Codex review, 1.1.0): the key is refused before any request, with a
+    reason that names no part of it, whether it came from the environment or from get_secret."""
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    given = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key})
+    _engine_scope(monkeypatch, lambda name, default="": key)
+    scoped = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    for item in (given, scoped):
+        assert item["reason"] == "key has characters a header cannot carry"
+        assert "sk-0123" not in str(item) and "4567" not in str(item)
+
+
+@pytest.mark.parametrize("key", ["k", "key", "1", "1234567"])
+def test_a_key_shorter_than_8_characters_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """Codex re-check 3: a key of fewer than 8 characters is refused before any request,
+    whether it came from the environment or from get_secret. Every key that is sent has at
+    least 8 characters, which the check for pieces of the key in displayed text relies on."""
+    get = RecordingGet()
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+
+    given = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key})
+    _engine_scope(monkeypatch, lambda name, default="": key)
+    scoped = fetch_item(source, now=NOW, get=get)
+
+    assert get.calls == []
+    assert given["reason"] == scoped["reason"] == "key shorter than 8 characters"
+
+
+def test_a_key_of_8_characters_is_sent() -> None:
+    get = RecordingGet()
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=get,
+        environ={"LIMITS_SOURCE_KEY": "12345678"},
+    )
+
+    assert item["status"] == "available"
+    assert get.calls[0][1]["Authorization"] == "Bearer 12345678"
+
+
+def test_a_failed_request_with_a_key_names_only_the_exception_class() -> None:
+    key = "sk-0123456789abcdef"
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key}
+    )
+
+    assert item["reason"] == "request failed: ValueError"
+    assert "sk-0123" not in str(item) and "Bearer" not in str(item)
+
+
+@pytest.mark.parametrize("bare", [False, True], ids=["header", "bare-key"])
+def test_a_get_that_takes_the_header_away_still_gets_the_class_only(bare: bool) -> None:
+    """Codex re-check: whether the request carried the key is decided before ``get`` runs, and
+    ``get`` gets a copy of the headers. A ``get`` that pops the header and raises with its value
+    cannot turn the reason back into the error's text."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    passed: list[dict[str, str]] = []
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        passed.append(headers)
+        value = headers.pop("Authorization")
+        raise ValueError(value.removeprefix("Bearer ") if bare else value)
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": key}
+    )
+
+    assert item["reason"] == "request failed: ValueError"
+    assert key[:6] not in str(item) and "Bearer" not in str(item)
+    assert len(passed) == 1
+
+
+def echoing_answers(key: str) -> dict[str, dict[str, Any]]:
+    """Contract-1 answers from a source that echoes the key it was sent, in a reason, a plan,
+    a window's label and scope."""
+    return {
+        "unavailable": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "unavailable",
+            "reason": f"denied for Bearer {key}",
+            "plan": f"Pro {key}",
+            "windows": [],
+        },
+        "ok": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "ok",
+            "plan": key,
+            "windows": [{"label": f"w {key}", "used_percent": 5, "scope": "m" * 16 + key}],
+        },
+    }
+
+
+def malformed_answers(key: str) -> dict[str, tuple[dict[str, Any], str | None]]:
+    """Answers whose control fields hold the key, each with the fixed reason it gives (None: the
+    answer stands, the field is dropped)."""
+    base = {"contract": 1, "provider": "Claude", "state": "ok", "windows": []}
+    return {
+        "contract-object": ({**base, "contract": {key: 0}}, "answer shape: contract"),
+        "contract-text": ({**base, "contract": key}, "answer shape: contract"),
+        "state": ({**base, "state": key}, "answer shape: state"),
+        "severity": ({**base, "windows": [{"used_percent": 5, "severity": key}]}, None),
+    }
+
+
+@pytest.mark.parametrize("name", list(malformed_answers("k")))
+def test_a_control_field_holding_the_key_gives_a_fixed_reason(name: str) -> None:
+    """Codex re-check: a reason about a malformed control field never quotes it, so a key in a
+    contract object, a contract string, a state or a severity cannot reach the item."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    answer, reason = malformed_answers(key)[name]
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    assert item["reason"] == reason
+    if reason is None:
+        assert item["status"] == "available" and item["windows"][0]["severity"] is None
+    assert key[:6] not in json.dumps(item)
+
+
+def test_a_keyed_source_cannot_echo_its_key_into_the_item() -> None:
+    """Codex re-check: a source that was sent the key can answer with it. Every occurrence of
+    the key (and ``Bearer <key>``) is replaced by ``[key]`` before anything is cleaned or cut,
+    so no cut leaves a prefix of it either. A source without a key is read as it answers."""
+    key = "kq7Zr4p9XwLm2Vt8"
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+    items = {
+        name: fetch_item(
+            source,
+            now=NOW,
+            get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        for name, answer in echoing_answers(key).items()
+    }
+
+    for item in items.values():
+        assert key[:6] not in json.dumps(item)
+    assert items["unavailable"]["reason"] == "denied for [key]"
+    assert items["unavailable"]["plan"] == "Pro [key]"
+    assert items["ok"]["plan"] == "[key]"
+    assert items["ok"]["windows"][0]["label"] == "w [key]"
+    assert items["ok"]["windows"][0]["scope"] == "m" * 16 + "[key]"
+    unkeyed = RecordingGet(body=json.dumps(echoing_answers(key)["ok"]).encode("utf-8"))
+    assert fetch_item(_source(), now=NOW, get=unkeyed)["plan"] == key
+
+
+# Protocol words long enough to be a key (a key has at least 8 characters, Codex re-check 3).
+PROTOCOL_WORD_KEYS = ["critical", "unavailable", "login_expired"]
+
+
+def _protocol_view(item: dict[str, Any]) -> tuple[Any, ...]:
+    """What the control fields made of an answer: status, stamps, and per window the number,
+    the reset and the severity."""
+    windows = [(w["used_percent"], w["reset_at"], w["severity"]) for w in item["windows"]]
+    return item["status"], item["fetched_at"], item["login_expires_at"], windows
+
+
+def _shown_strings(item: dict[str, Any]) -> list[str]:
+    windows = item["windows"]
+    texts = [item["provider"], item["plan"], item["reason"]]
+    texts += [w["label"] for w in windows] + [w["scope"] for w in windows]
+    return [text for text in texts if isinstance(text, str)]
+
+
+@pytest.mark.parametrize("key", PROTOCOL_WORD_KEYS)
+def test_a_key_that_is_a_protocol_word_leaves_a_valid_answer_valid(key: str) -> None:
+    """Codex re-check, a regression of wave 2: the control fields are checked as received and
+    only displayed strings are kept free of the key. A key that is a severity or a state word
+    leaves the state, the windows and the severities as they are without a key."""
+    answers = [
+        {**REFERENCE_ANSWER, "plan": f"Max {key}"},
+        {**REFERENCE_ANSWER, "state": "unavailable", "reason": "maintenance", "plan": f"Max {key}"},
+        {**REFERENCE_ANSWER, "state": "login_expired", "plan": f"Max {key}"},
+    ]
+    environ = {"LIMITS_SOURCE_KEY": key}
+    statuses = []
+
+    for answer in answers:
+        body = json.dumps(answer).encode("utf-8")
+        keyed = fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=body),
+            environ=environ,
+        )
+        plain = fetch_item(_source(), now=NOW, get=RecordingGet(body=body))
+
+        statuses.append(keyed["status"])
+        assert _protocol_view(keyed) == _protocol_view(plain)
+        assert keyed["plan"] == "Max [key]"
+        shown = [text.casefold() for text in _shown_strings(keyed)]
+        assert not [run for run in key_runs(key) for text in shown if run.casefold() in text]
+    assert statuses == ["available", "unavailable", "expired"]
+
+
+PIECE_KEY = "kq7Zr4p9XwLm2Vt8"
+# Header-safe (no whitespace, no control character), with characters markup rewrites.
+MARKUP_KEY = 'Ab<c&d"e12345678'
+HIDDEN = "[key hidden]"
+
+
+def _answer(**fields: Any) -> bytes:
+    return json.dumps({"contract": 1, "provider": "Claude", **fields}).encode("utf-8")
+
+
+def partial_echoes() -> dict[str, tuple[str, bytes]]:
+    """``(key, body)`` of answers that echo a piece of the key, or the key in a form an exact
+    match before cleaning cannot see, or not at all (``honest``)."""
+    k = PIECE_KEY
+    escaped = "".join(f"\\u{ord(ch):04x}" for ch in k)
+    return {
+        "prefix": (k, _answer(state="unavailable", reason=f"invalid key {k[:8]}...")),
+        "fragment": (
+            k,
+            _answer(
+                state="ok", windows=[{"label": k[4:16], "scope": f"m{k[2:12]}", "used_percent": 5}]
+            ),
+        ),
+        "ansi-split": (k, _answer(state="unavailable", reason=f"denied {k[:5]}\x1b[0m{k[5:]}")),
+        "markup-exact": (MARKUP_KEY, _answer(state="unavailable", reason=f"denied {MARKUP_KEY}")),
+        "markup-piece": (
+            MARKUP_KEY,
+            _answer(state="unavailable", reason=f"denied {MARKUP_KEY[:9]}"),
+        ),
+        "json-escape": (
+            k,
+            b'{"contract": 1, "provider": "Claude", "state": "unavailable", "reason": "denied '
+            + escaped.encode("ascii")
+            + b'"}',
+        ),
+        "honest": (k, _answer(state="unavailable", reason="upstream busy, retry later")),
+    }
+
+
+def key_runs(key: str) -> set[str]:
+    """Every 8 characters of the key in a row."""
+    return {key[i : i + 8] for i in range(len(key) - 7)}
+
+
+def strings_in(value: object) -> list[str]:
+    """Every string in a decoded JSON value, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*strings_in(k), *strings_in(v))]
+    if isinstance(value, list):
+        return [s for part in value for s in strings_in(part)]
+    return []
+
+
+_PIECE_EXPECTED = {
+    "prefix": ("reason", HIDDEN),
+    "fragment": ("window", (HIDDEN, HIDDEN)),
+    "ansi-split": ("reason", HIDDEN),
+    "markup-exact": ("reason", "denied [key]"),
+    "markup-piece": ("reason", HIDDEN),
+    "json-escape": ("reason", "denied [key]"),
+    "honest": ("reason", "upstream busy, retry later"),
+}
+
+
+@pytest.mark.parametrize("name", list(_PIECE_EXPECTED))
+def test_a_piece_of_the_key_in_a_displayed_string_hides_the_whole_field(name: str) -> None:
+    """Codex re-check: honest services print part of a token, and cleaning can change a
+    string. After cleaning and cutting, a displayed string that still holds 8 characters of the
+    key in a row is replaced as a whole; an exact echo is ``[key]`` before that; an honest
+    reason passes unchanged."""
+    key, body = partial_echoes()[name]
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=body),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    field, expected = _PIECE_EXPECTED[name]
+    if field == "window":
+        assert (item["windows"][0]["label"], item["windows"][0]["scope"]) == expected
+    else:
+        assert item["reason"] == expected
+    assert not [run for run in key_runs(key) for text in strings_in(item) if run in text]
+
+
+def mixed_case_echoes(key: str) -> dict[str, dict[str, Any]]:
+    """Answers echoing the key in other cases in every displayed field, two of them placed where
+    the 60- and 24-character cuts would fall inside the key."""
+    return {
+        "unavailable": {
+            "contract": 1,
+            "provider": f"P{key.upper()}",
+            "state": "unavailable",
+            "reason": "x" * 50 + key.upper(),
+            "plan": f"bearer {key.swapcase()}",
+        },
+        "ok": {
+            "contract": 1,
+            "provider": "Claude",
+            "state": "ok",
+            "windows": [
+                {
+                    "label": "w" * 18 + key.lower(),
+                    "scope": "m" * 16 + key.swapcase(),
+                    "used_percent": 5,
+                }
+            ],
+        },
+    }
+
+
+def _caseless_runs(key: str, texts: list[str]) -> list[str]:
+    folded = [text.casefold() for text in texts]
+    return [run for run in key_runs(key) for text in folded if run.casefold() in text]
+
+
+def test_an_echo_of_the_key_in_another_case_is_replaced_before_the_cut() -> None:
+    """Codex re-check 3: the exact replace before cleaning ignores case, ``Bearer`` included, so
+    an echo in another case is ``[key]`` where it was, even where a cut would have left a
+    piece shorter than the check after it can see."""
+    key = PIECE_KEY
+    items = {
+        name: fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=json.dumps(answer).encode("utf-8")),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        for name, answer in mixed_case_echoes(key).items()
+    }
+
+    down, window = items["unavailable"], items["ok"]["windows"][0]
+    assert (down["provider"], down["plan"]) == ("P[key]", "[key]")
+    assert down["reason"] == "x" * 50 + "[key]"
+    assert (window["label"], window["scope"]) == ("w" * 18 + "[key]", "m" * 16 + "[key]")
+    for item in items.values():
+        assert not _caseless_runs(key, strings_in(item))
+
+
+def test_the_piece_check_cuts_its_windows_from_the_key_s_own_characters() -> None:
+    """Codex re-check 3: the 8-character windows are cut from the key as it is and folded one
+    by one. Folding the key first shifts them where a character folds to two (``ß`` -> ``ss``):
+    ``sabcdefg`` holds only 7 of the key's own characters and is an honest string."""
+    key = "ßabcdefgh"
+
+    def reason_of(reason: str) -> str:
+        item = fetch_item(
+            _source(key_env="LIMITS_SOURCE_KEY"),
+            now=NOW,
+            get=RecordingGet(body=_answer(state="unavailable", reason=reason)),
+            environ={"LIMITS_SOURCE_KEY": key},
+        )
+        return str(item["reason"])
+
+    assert reason_of("code sabcdefg") == "code sabcdefg"
+    assert reason_of("code ABCDEFGH") == HIDDEN
+    assert reason_of("code ßABCDEFG") == HIDDEN
+
+
+STAMP_KEY = "2025-01-02T03:04:05Z"
+
+
+def stamp_echo(key: str) -> dict[str, Any]:
+    """An answer that returns the key, itself a valid moment, in every moment field."""
+    return {
+        "contract": 1,
+        "provider": "Claude",
+        "state": "ok",
+        "login_expires_at": key,
+        "fetched_at": key,
+        "windows": [{"used_percent": 5, "resets_at": key}],
+    }
+
+
+def test_a_moment_is_stored_as_rendered_never_as_received() -> None:
+    """Codex re-check 3: a moment is checked as received and stored as this code renders the
+    parsed time, never as the received text, so a key that is itself a valid moment does not
+    pass through verbatim."""
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=json.dumps(stamp_echo(STAMP_KEY)).encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": STAMP_KEY},
+    )
+
+    rendered = "2025-01-02T03:04:05+00:00"
+    assert (item["login_expires_at"], item["fetched_at"]) == (rendered, rendered)
+    assert item["windows"][0]["reset_at"] == rendered
+    assert STAMP_KEY not in json.dumps(item)
+
+
+def test_an_answer_nested_too_deep_is_no_data_and_never_raises() -> None:
+    """An answer nested deeper than the interpreter's json takes is "no data" with the reason,
+    never an exception, keyed or not; a json that takes such a depth (newer interpreters guard
+    the C stack instead of counting) sees a list, not an object."""
+    body = b"[" * 30000 + b"]" * 30000
+    environ = {"LIMITS_SOURCE_KEY": "kq7Zr4p9XwLm2Vt8"}
+    get = RecordingGet(body=body)
+
+    keyed = fetch_item(_source(key_env="LIMITS_SOURCE_KEY"), now=NOW, get=get, environ=environ)
+    unkeyed = fetch_item(_source(), now=NOW, get=get)
+
+    for item in (keyed, unkeyed):
+        assert item["reason"] in ("answer shape: nested too deep", "answer shape: not an object")
+
+
+def test_a_key_of_digits_never_reaches_a_reason_through_a_number() -> None:
+    """The reason for another contract number is fixed text: a number that holds a key of
+    digits does not reach it."""
+    key = "48151623"
+    body = json.dumps({"contract": 48151623, "provider": "Claude", "state": "ok"})
+
+    item = fetch_item(
+        _source(key_env="LIMITS_SOURCE_KEY"),
+        now=NOW,
+        get=RecordingGet(body=body.encode("utf-8")),
+        environ={"LIMITS_SOURCE_KEY": key},
+    )
+
+    assert item["reason"] == "unsupported contract"
+    assert "481516" not in json.dumps(item)
+
+
+def test_a_failed_request_without_a_key_keeps_the_error_text() -> None:
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise OSError("connection refused")
+
+    item = fetch_item(_source(), now=NOW, get=get)
+
+    assert item["reason"] == "request failed: connection refused"
+
+
+def test_the_transport_s_own_error_for_a_key_names_only_its_class(server: _Server) -> None:
+    """The real request path: http.client cannot encode a character outside latin-1 and names
+    it in the error text. With a key in the request, only the class reaches the reason."""
+    (source,) = read_sources([{"url": server.url(), "key_env": "LIMITS_SOURCE_KEY"}])
+
+    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "sk-0123й"})
+
+    assert item["reason"] == "request failed: UnicodeEncodeError"
+    assert "sk-0123" not in str(item) and "й" not in str(item) and "0439" not in str(item)
+    assert server.seen == []  # type: ignore[attr-defined]
 
 
 def test_http_codes_size_and_json_shape() -> None:
@@ -317,7 +974,7 @@ def test_a_real_answer_over_loopback(server: _Server) -> None:
 def test_a_redirect_is_not_followed(server: _Server) -> None:
     (source,) = read_sources([{"url": server.url("/moved"), "key_env": "LIMITS_SOURCE_KEY"}])
 
-    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "k-123"})
+    item = fetch_item(source, now=NOW, environ={"LIMITS_SOURCE_KEY": "k-123456"})
 
     assert item["reason"] == "HTTP 302"
     assert server.seen == ["/moved"], "the key must not travel on to another path"  # type: ignore[attr-defined]

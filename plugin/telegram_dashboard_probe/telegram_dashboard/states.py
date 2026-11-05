@@ -83,7 +83,6 @@ def _limits_ok() -> CapacitySummary:
                 detail="official",
             ),
             QuotaMetric("Gemini", "unsupported", detail="source not confirmed"),
-            QuotaMetric("Grok", "unsupported", detail="source not confirmed"),
         )
     )
 
@@ -146,7 +145,7 @@ def _version(running: str, published: str, behind: int) -> VersionSummary:
     )
 
 
-# The showcase states (14-16): one healthy installation with all seven sources on 2026-09-26, the
+# The showcase states (14-16): one healthy installation with all its sources on 2026-09-26, the
 # catalog screenshots: every line the screen can show, then the same screen with a drift incident,
 # then the same screen under the stale banner. The release dates are upstream's real ones (0.21.3
 # is v2026.9.14, 0.21.5 is v2026.9.24, 0.21.4 between them); every other number is made up. The
@@ -186,19 +185,6 @@ def _showcase_limits() -> CapacitySummary:
                 detail="official",
             ),
             QuotaMetric("Gemini", "unsupported", detail=_GEMINI_REASON, refusal=Refusal()),
-            QuotaMetric(
-                "Grok",
-                "official",
-                windows=(QuotaWindow("7d", 31.0, "2026-10-02T21:00:00+00:00"),),
-            ),
-            QuotaMetric(
-                "Kimi",
-                "official",
-                windows=(
-                    QuotaWindow("5h", 8.0, "2026-09-27T00:40:00+00:00"),
-                    QuotaWindow("month", 46.0, "2026-10-17T21:00:00+00:00"),
-                ),
-            ),
         )
     )
 
@@ -321,8 +307,6 @@ def _showcase_snapshot(
         sources=(
             *_sources(at=_S_MINUS_2M, drift_at=_S_DRIFT_08),
             SourceObservation("backup", "official", "fresh", observed_at=_S_BACKUP),
-            SourceObservation("grok_quota", "official", "fresh", observed_at=_S_MINUS_2M),
-            SourceObservation("kimi_quota", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("gemini_log", "local", "fresh", observed_at=_S),
             SourceObservation("cron", "official", "fresh", observed_at=_S_MINUS_2M),
             SourceObservation("cron_runs", "official", "fresh", observed_at=_S),
@@ -400,8 +384,8 @@ def _showcase_states() -> tuple[State, ...]:
 
 # The external source states (17-18): the showcase installation with Claude answered by a local
 # process in contract 1 (README, "External limit sources"), as the tick builds it from the answer:
-# the account's windows, a model's own limits, the plan and the login date; Codex and Grok with
-# the plans their sources name. The login dates are counted from SHOWCASE_NOW.
+# the account's windows, a model's own limits, the plan and the login date; Codex with the plan
+# its source names. The login dates are counted from SHOWCASE_NOW.
 _EXTERNAL_SOURCE = SourceObservation("Claude limits", "official", "fresh", observed_at=_S)
 _LOGIN_ENDING = "2026-09-28T19:00:00+00:00"  # 46 hours after SHOWCASE_NOW
 _LOGIN_ENDED = "2026-09-26T19:00:00+00:00"  # two hours before it
@@ -409,7 +393,7 @@ _S_WEEK_RESET = "2026-09-29T21:00:00+00:00"
 
 
 def _external_limits(claude: QuotaMetric) -> CapacitySummary:
-    plans = {"Codex": "Prolite", "Grok": "SuperGrok"}
+    plans = {"Codex": "Prolite"}
     quotas = []
     for quota in _showcase_limits().quotas:
         if quota.provider == "Claude":

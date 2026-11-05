@@ -480,7 +480,7 @@ def test_the_cadence_keeps_well_inside_github_s_hourly_limit_without_a_token() -
 # ----------------------------------------------------------------------------- the collector
 #
 # The plugin makes the request itself, in its own worker thread under a deadline, through the
-# same ``Flights`` as Grok and Kimi: no LLM, no agent session, no agent tool. A hung or failing
+# same ``Flights`` as every other source: no LLM, no agent session, no agent tool. A hung or failing
 # GitHub costs this one line its answer and nothing else: not the gateway's event loop (which
 # the agent shares), not the rest of the screen.
 
@@ -705,26 +705,20 @@ def test_a_crashing_check_is_cached_for_the_interval_not_retried_every_tick(tmp_
     assert crashed not in [incident.title for incident in second.incidents]  # served from cache
 
 
-def _facade():
-    def fetch(provider: str):
-        return None
-
-    return fetch
-
-
 def test_a_hung_github_does_not_hold_back_the_other_sources(tmp_path: Path) -> None:
-    """The check starts with the tick and runs beside every other source: Grok's attempt starts
-    while GitHub still hangs. Held back until GitHub gave up, Grok would never start here."""
-    grok_started = threading.Event()
+    """The check starts with the tick and runs beside every other source: the limits facade is
+    asked while GitHub still hangs. Held back until GitHub gave up, the facade would never be
+    asked here."""
+    limits_started = threading.Event()
 
     def github(*, now: datetime, previous: object = None) -> dict[str, Any]:
-        if grok_started.wait(2):
+        if limits_started.wait(2):
             return _available(checked_at=now.isoformat())
-        return {"status": "unavailable", "reason": "Grok never started", "checked_at": None}
+        return {"status": "unavailable", "reason": "limits never started", "checked_at": None}
 
-    def grok(*, now: datetime) -> dict[str, Any]:
-        grok_started.set()
-        return {"provider": "grok", "status": "unavailable", "reason": "x", "windows": []}
+    def facade() -> Any:
+        limits_started.set()
+        return lambda provider: None
 
     env = Environment(hermes_home=_env(tmp_path).hermes_home, limits_enabled=True)
     snapshot = asyncio.run(
@@ -732,9 +726,7 @@ def test_a_hung_github_does_not_hold_back_the_other_sources(tmp_path: Path) -> N
             env,
             Runner(),
             now=NOW,
-            resolve_limits=_facade,
-            grok_cache={},
-            grok_fetch=grok,
+            resolve_limits=facade,
             version_cache={},
             version_fetch=github,
             version_local=_local,

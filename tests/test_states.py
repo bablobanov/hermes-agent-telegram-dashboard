@@ -118,7 +118,6 @@ def test_state_1_is_this_exact_screen() -> None:
         "Claude 37% (3h) · 12% (4d3h)",
         "Codex 61% (2h30m)",
         "Gemini · no data",
-        "Grok · no data",
         "",
         "🤖 Hermes 0.21.1 ✓",
         "",
@@ -129,7 +128,6 @@ def test_state_1_is_this_exact_screen() -> None:
         ">",
         "> ## No data",
         "> Gemini: source not confirmed",
-        "> Grok: source not confirmed",
         ">",
         "> Screen Sep 9 21:00 UTC",
         "> Confirmed 20:58",
@@ -296,8 +294,6 @@ SHOWCASE_HEALTHY = [
     "Claude 42% (2h10m) · 67% (3d)",
     "⚠️ Codex 93% (1h20m) · 58% (5d)",
     "Gemini · no data",
-    "Grok 31% (6d)",
-    "Kimi 8% (3h40m) · 46% (21d)",
     "",
     "🤖 Hermes 0.21.3 → 0.21.5",
     "",
@@ -305,7 +301,7 @@ SHOWCASE_HEALTHY = [
 
 
 def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_screen() -> None:
-    """The screenshot state for the catalog: a healthy installation with all ten sources and
+    """The screenshot state for the catalog: a healthy installation with all eight sources and
     every line the screen can show on 2026-09-26, made-up numbers except upstream's real
     release dates, one warning mark on a spent limit. Not a verification state: the thirteen
     above keep their golden texts. 1.0.0: the five lines of what works are one ✓ row, their
@@ -322,7 +318,7 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     assert text.count("⚠") == 1  # the limit line only: no incident, the status stays green
     assert "Needs attention" not in text
     assert "> Confirmed 20:58" in lines
-    assert "> Profiles 1/1 · sources 10/10" in lines
+    assert "> Profiles 1/1 · sources 8/8" in lines
     assert "> Cron 27 active · 3 paused · ticker 20:58" in lines
     assert "> ✓ Telegram last update seen Sep 26 20:30 · polling ok 20:58" in lines
     assert "> Telegram send errors: none in the log" in lines
@@ -406,9 +402,9 @@ def test_state_17_external_source_shows_a_model_limit_plans_and_an_ending_login(
     ]
     # An exception is never pushed out, so only the width is the budget here.
     assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 11/11" in lines
+    assert "> Profiles 1/1 · sources 9/9" in lines
     assert not any(line.startswith("> Claude Sonnet") for line in lines)
-    assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
+    assert "> Plans: Claude Max 5x · Codex Prolite" in lines
     assert "> Claude login until Sep 28" in lines
     assert "Data " not in text  # the source answered within the tick: one stamp for all
 
@@ -434,8 +430,8 @@ def test_state_18_external_source_says_the_login_expired() -> None:
         *SHOWCASE_HEALTHY[6:],
     ]
     assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
-    assert "> Profiles 1/1 · sources 11/11" in lines
-    assert "> Plans: Claude Max 5x · Codex Prolite · Grok SuperGrok" in lines
+    assert "> Profiles 1/1 · sources 9/9" in lines
+    assert "> Plans: Claude Max 5x · Codex Prolite" in lines
     assert "> Claude login ended Sep 26" in lines
     assert "> Claude: " not in text  # not a "no data" reason
 
@@ -447,7 +443,7 @@ def test_the_external_states_leave_the_showcase_untouched() -> None:
         text = _render(state)
         assert "Plans:" not in text
         assert "login" not in text
-        assert "> Profiles 1/1 · sources 10/10" in text.splitlines()
+        assert "> Profiles 1/1 · sources 8/8" in text.splitlines()
 
 
 def test_the_external_states_carry_the_events_the_collector_builds() -> None:
@@ -484,7 +480,7 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
         in lines
     )
     assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
-    assert "> Profiles 1/1 · sources 10/10" in lines
+    assert "> Profiles 1/1 · sources 8/8" in lines
 
 
 def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
@@ -680,7 +676,7 @@ def test_state_25_rules_only_in_the_gateway_s_directory_is_a_warning_with_the_pl
         "> Rules Telegram: AGENTS.md only in the gateway's directory, the agent works in another"
         in lines
     )
-    assert "> Profiles 1/1 · sources 11/11" in lines
+    assert "> Profiles 1/1 · sources 9/9" in lines
 
 
 def test_state_26_an_edited_file_says_new() -> None:
@@ -821,7 +817,7 @@ def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
             "> Screen Sep 26 21:00 UTC",
             "> Confirmed 20:58",
             "> Period 5 min",
-            "> Profiles 1/1 · sources 11/11",
+            "> Profiles 1/1 · sources 9/9",
             ">",
             f"> Dashboard {__version__}",
         ]
