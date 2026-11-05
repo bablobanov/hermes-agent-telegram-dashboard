@@ -1607,12 +1607,26 @@ def test_an_answer_brings_a_hidden_provider_back_at_once_and_clears_its_count(
     assert caches["claude"]["none_attempts"] == 1
 
 
+@pytest.mark.parametrize("count", [True, -5, "7", 2.5, None])
+def test_a_hand_edited_count_that_is_no_count_is_taken_as_none(tmp_path: Path, count) -> None:
+    """B2 review N8: ``none_attempts`` is the plugin's own record, but the state file is JSON an
+    owner can edit. A value that is no count (a boolean, a negative number, a string, a float,
+    ``null``) is none: the next ``None`` makes it 1, and the provider keeps its line."""
+    caches = {"claude": {**_quiet_cache("claude", 0), "none_attempts": count}}
+    facade = _Facade(lambda provider, now: None if provider == "anthropic" else _snapshot())
+
+    capacity, _source, _probe = _facade_tick(tmp_path, facade, caches, NOW)
+
+    assert (capacity.quotas[0].kind, capacity.quotas[0].detail) == ("unavailable", _NO_ANSWER)
+    assert caches["claude"]["none_attempts"] == 1
+
+
 def test_a_provider_that_answered_then_went_quiet_is_shown_for_seven_days_then_hidden(
     tmp_path: Path,
 ) -> None:
     """The second half of the promise: a provider that answered before is a "no data" line while
     its last answer is at most seven days old, however many ``None`` attempts followed, and has
-    no line after that."""
+    no line after that: at exactly seven days it is still shown, a second later it is not."""
     from telegram_dashboard.limits import QUIET_SHOWN_SECONDS
 
     answered = NOW - timedelta(seconds=QUIET_SHOWN_SECONDS) + timedelta(minutes=10)
@@ -1620,14 +1634,14 @@ def test_a_provider_that_answered_then_went_quiet_is_shown_for_seven_days_then_h
     facade = _Facade(lambda provider, now: None if provider == "anthropic" else _snapshot())
 
     kinds = []
-    for seconds in (0, 599, 601, 900):
+    for seconds in (0, 599, 600, 601, 900):  # 600: the last answer exactly seven days old
         capacity, _source, _probe = _facade_tick(
             tmp_path, facade, caches, NOW + timedelta(seconds=seconds)
         )
         kinds.append(capacity.quotas[0].kind)
 
     assert QUIET_SHOWN_SECONDS == 7 * 86400
-    assert kinds == ["unavailable", "unavailable", "not_configured", "not_configured"]
+    assert kinds == ["unavailable"] * 3 + ["not_configured"] * 2
     assert caches["claude"]["answered_at"] == answered.isoformat()
 
 

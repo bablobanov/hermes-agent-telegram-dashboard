@@ -948,6 +948,17 @@ def test_limits_providers_on_the_tick_asks_only_the_listed_ones(
 
     from telegram_dashboard.workers import Flights
 
+    class Spied(Flights):
+        """The workers the tick starts, by name (B2 review N7)."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.names: list[str] = []
+
+        async def run(self, name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+            self.names.append(name)
+            return await super().run(name, fn, *args, **kwargs)
+
     (tmp_path / "logs").mkdir()
     asked: list[str] = []
 
@@ -969,9 +980,9 @@ def test_limits_providers_on_the_tick_asks_only_the_listed_ones(
             gemini_cache=gemini_cache,
         )
 
-    codex_only = Flights()
+    codex_only = Spied()
     snapshot = asyncio.run(tick(("codex",), codex_only))
-    nothing = Flights()
+    nothing = Spied()
     empty = asyncio.run(tick((), nothing))
 
     assert asked == ["openai-codex"]
@@ -981,6 +992,8 @@ def test_limits_providers_on_the_tick_asks_only_the_listed_ones(
     assert [s.name for s in snapshot.sources if s.name in ("limits", "gemini_log")] == ["limits"]
     assert [s.name for s in empty.sources if s.name in ("limits", "gemini_log")] == []
     assert gemini_cache == {}  # the log was never read
+    assert "limits" in codex_only.names and collect.GEMINI_LOG not in codex_only.names
+    assert "limits" not in nothing.names and collect.GEMINI_LOG not in nothing.names
 
 
 # ---------------------------------------------------------------- the usage facade on a cadence (#16)
