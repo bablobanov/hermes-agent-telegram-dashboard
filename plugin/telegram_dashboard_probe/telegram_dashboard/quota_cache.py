@@ -72,11 +72,13 @@ def not_older_than(item: dict[str, Any], *, now: datetime, limit_seconds: float)
     """``item`` as is while its number is young enough; otherwise "no data" with the reason.
 
     The guard behind the policy: whatever put an old number into the cache (a clock jump, a
-    hand-edited state file), the screen does not show it under a fresh stamp."""
+    hand-edited state file), the screen does not show it under a fresh stamp. A number stamped
+    a little after ``now`` is no old number: a worker that returns late stamps its answer after
+    the tick's moment, so the same skew ``last_answer`` allows is allowed here."""
     if item.get("status") != "available":
         return item
     fetched = parse_timestamp(item.get("fetched_at"))
     age = age_seconds(fetched, now) if fetched is not None else None
-    if age is None or age < 0 or age > limit_seconds:
+    if age is None or is_from_the_future(age) or age > limit_seconds:
         return {**item, "status": "unavailable", "reason": "cached number too old", "windows": []}
     return item

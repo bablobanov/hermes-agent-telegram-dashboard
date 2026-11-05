@@ -109,3 +109,18 @@ def test_a_cached_number_older_than_the_interval_is_not_a_number() -> None:
     assert fetch.calls == 0
     assert item["status"] == "unavailable" and item["reason"] == "cached number too old"
     assert item["windows"] == []
+
+
+def test_a_number_stamped_just_after_the_tick_is_a_number_one_far_ahead_is_not() -> None:
+    """A worker that returns between the tick's moment and the tick's own check stamps its
+    answer a fraction of a second after ``now``: that is the clock-skew tolerance
+    ``last_answer`` allows, not an old number. A stamp beyond it is a clock that ran away."""
+    from telegram_dashboard.quota_cache import not_older_than
+    from telegram_dashboard.timeparse import CLOCK_SKEW_TOLERANCE_SECONDS
+
+    late = {**AVAILABLE, "fetched_at": (NOW + timedelta(seconds=0.2)).isoformat()}
+    ahead = CLOCK_SKEW_TOLERANCE_SECONDS + 60
+    runaway = {**AVAILABLE, "fetched_at": (NOW + timedelta(seconds=ahead)).isoformat()}
+
+    assert not_older_than(late, now=NOW, limit_seconds=300) == late
+    assert not_older_than(runaway, now=NOW, limit_seconds=300)["reason"] == "cached number too old"
