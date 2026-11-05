@@ -180,13 +180,27 @@ def _provider_tick(key: str, provider: str, fetch: Fetcher, cadence: Cadence) ->
         # Our own code failed around the call (reading the answer or the record): an attempt
         # too, kept for the interval, or a bug in reading would call the facade on every tick.
         logger.exception("usage facade answer for %s not read; attempt recorded", key)
-        item = _failed(key, f"collector crashed: {type(exc).__name__}")
-        cache["attempted_at"] = cadence.now.isoformat()
-        cache["item"] = item
+        item = _crashed(cache, key, exc, cadence.now)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:
+        # ``SystemExit`` and the like out of the facade: an attempt as well, or the facade is
+        # asked again on every tick; then on to the worker boundary, which turns it into an
+        # ordinary miss of this tick (``workers.py``).
+        _crashed(cache, key, exc, cadence.now)
+        raise
     plan = item.get("plan")
     if isinstance(plan, str) and plan:
         cache["plan"] = plan
     return _plan_filled(cache, item)
+
+
+def _crashed(cache: dict[str, Any], key: str, exc: BaseException, now: datetime) -> dict[str, Any]:
+    """The attempt recorded for a failure around the call: its class name, never its text."""
+    item = _failed(key, f"collector crashed: {type(exc).__name__}")
+    cache["attempted_at"] = now.isoformat()
+    cache["item"] = item
+    return item
 
 
 def _attempt(

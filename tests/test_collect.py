@@ -1168,6 +1168,54 @@ def test_a_crash_after_the_facade_call_is_an_attempt_kept_for_the_cadence(tmp_pa
     assert caches["claude"]["answered_at"] == NOW.isoformat()  # the facade did answer
 
 
+def test_a_system_exit_from_the_facade_is_an_attempt_and_still_reaches_the_worker_boundary(
+    tmp_path: Path,
+) -> None:
+    """B1 review M4: a ``BaseException`` outside ``Exception`` out of the facade is recorded as
+    an attempt like any crash, then re-raised: the worker boundary turns it into this tick's
+    miss, and the next ticks do not ask that provider again before its interval."""
+    from telegram_dashboard.workers import Flights
+
+    calls: list[str] = []
+
+    def fetch(provider: str):
+        calls.append(provider)
+        if provider == "anthropic":
+            raise SystemExit(3)
+        return _snapshot(fetched_at=NOW)
+
+    caches: dict = {}
+    flights = Flights()
+
+    def tick(seconds: float):
+        return collect_limits_async(
+            Environment(hermes_home=tmp_path),
+            now=NOW + timedelta(seconds=seconds),
+            resolve=lambda: fetch,
+            timeout_seconds=5,
+            flights=flights,
+            caches=caches,
+            interval_seconds=300,
+        )
+
+    async def scenario():
+        return [(await tick(s))[0] for s in (0, 60, 120)]
+
+    first, second, third = asyncio.run(scenario())
+
+    assert calls == ["anthropic", "openai-codex"]
+    assert caches["claude"]["attempted_at"] == NOW.isoformat()
+    assert caches["claude"]["item"]["reason"] == "collector crashed: SystemExit"
+    assert "answered_at" not in caches["claude"]
+    assert [(q.provider, q.detail) for q in first.quotas] == [
+        ("Claude", "collector crashed: SystemExit"),
+        ("Codex", "error: SystemExit"),
+    ]
+    for later in (second, third):
+        assert later.quotas[0].detail == "collector crashed: SystemExit"
+        assert later.quotas[1].kind == "official"
+
+
 # A string a token could look like; planted, never real.
 _PLANTED = "sk-ant-oat01-PLANTEDfakeTOKENforThisTestOnly0000"
 
