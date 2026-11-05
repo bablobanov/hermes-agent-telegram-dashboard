@@ -1,6 +1,6 @@
 name: telegram_dashboard_probe
 version: 1.1.0
-requires_hermes: ">=0.21.1"
+requires_hermes: ">=0.22.2"
 description: >-
   Read-only Hermes dashboard as one pinned Telegram message edited in place on every tick by a
   task inside the gateway: status, freshness, coverage, last backup, account limits, config

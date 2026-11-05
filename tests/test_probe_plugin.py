@@ -282,6 +282,26 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     manager.unload()
 
 
+def test_the_engine_s_own_gate_reads_the_manifest_s_floor() -> None:
+    """``requires_hermes`` is what the engine checks before it imports the plugin (from 0.21.3
+    on, hermes_cli/plugins_manifest.py): this engine lets the manifest through, and its own
+    comparison refuses a release below the floor. A version it cannot tell (a checkout with no
+    tag or stamp, as in the CI job) passes the gate by the engine's design."""
+    import re
+
+    from hermes_cli.plugins_manifest import requires_hermes_error, version_satisfies
+
+    manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    declared = re.search(r'^requires_hermes: "([^"]+)"$', manifest, re.MULTILINE)
+    assert declared is not None
+    spec = declared.group(1)
+
+    assert spec == ">=0.22.2"
+    assert requires_hermes_error({"requires_hermes": spec}) is None
+    assert version_satisfies(spec, "0.22.2") and version_satisfies(spec, "0.22.7")
+    assert not version_satisfies(spec, "0.22.1") and not version_satisfies(spec, "0.21.6")
+
+
 def test_lost_message_is_recreated_once_and_recorded(
     probe_env, caplog: pytest.LogCaptureFixture
 ) -> None:

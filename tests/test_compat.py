@@ -87,7 +87,7 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
     assert "isinstance" in external["key_probe"]
     assert "only where the module has no such class" in external["key_probe"]
     assert "if that connect ran inside one" in external["key_probe"]
-    assert {"0.21.1", "0.21.6", "0.22.5"} == set(external["verified"])
+    assert {"0.21.1", "0.21.6", "0.22.2", "0.22.5", "0.22.7"} == set(external["verified"])
     assert "f27cdbce5a" in external["verified"]["0.21.6"]
     assert ":219" in external["verified"]["0.21.6"] and ":115" in external["verified"]["0.21.6"]
     assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
@@ -197,6 +197,30 @@ def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
     for name, entry in load_matrix()["sources"].items():
         if name not in engine_free:
             assert "0.21.6" in entry["verified"], name
+
+
+def test_only_the_rows_the_engine_job_runs_say_executed_on_0_22_2_and_0_22_7() -> None:
+    """1.1.0: the floor is 0.22.2, the engines the CI engine job runs the suite against are
+    0.22.2 and 0.22.7. A row names 0.22.7 only when a test of that run covers it, and says so
+    for both; a row the run does not cover keeps what it had (0.22.2 read in the source for the
+    cron and rich rows). The floor and the manifest agree (tests/test_dashboard_version.py)."""
+    matrix = load_matrix()
+    run = {
+        "plugin_platform_handler",
+        "screen_html",
+        "hermes_version",
+        "external_limits",
+        "context_files",
+        "memory",
+    }
+    sources = matrix["sources"]
+    assert {name for name, entry in sources.items() if "0.22.7" in entry["verified"]} == run
+    for name in run:
+        for version in ("0.22.2", "0.22.7"):
+            assert sources[name]["verified"][version].startswith("executed, CI engine job"), name
+    for name in ("cron", "screen_rich"):
+        assert sources[name]["verified"]["0.22.2"].startswith("read-by-code"), name
+    assert matrix["floors"]["delivery_plugin"]["minimum_version"] == "0.22.2"
 
 
 def test_the_memory_section_is_a_row_that_names_what_it_never_reads() -> None:
