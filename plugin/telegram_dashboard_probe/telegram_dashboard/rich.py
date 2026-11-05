@@ -35,6 +35,7 @@ from .render import (
     _Details,
     _html_line,
     _quota_rows,
+    drawn_quotas,
     render_parts,
 )
 from .schema import CronJob, CronSummary, DashboardSnapshot, QuotaMetric
@@ -183,8 +184,10 @@ def _section(title: str, lines: Sequence[str]) -> str:
 def _limits_table(quotas: Sequence[QuotaMetric], reference: datetime | None, zone: tzinfo) -> str:
     """Every line of the limits block as a row (1.0.0): the provider, then a cell per window,
     the spent share and the time to its reset; a row with fewer cells than the widest spans its
-    last one, a state in words spans them all."""
-    rows = [row for quota in quotas for row in _quota_rows(quota, reference, zone)]
+    last one, a state in words spans them all. A provider without a line has no row either
+    (``render.drawn_quotas``, issue #14)."""
+    drawn = drawn_quotas(quotas, reference)
+    rows = [row for quota in drawn for row in _quota_rows(quota, reference, zone)]
     if not rows:
         return ""
     width = max(len(cells) for _name, cells in rows)

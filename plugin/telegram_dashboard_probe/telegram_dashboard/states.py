@@ -1,8 +1,10 @@
 """Static verification states from section 11 of the hypotheses research, plus two of our own
 for the pinned message itself, one for the Hermes version line, three showcase states for the
 catalog screenshots, two for an external limits source, two for Gemini's 429 from the
-engine's log, three for the cron line and the deaf channel, one for the narrow phone, and two
-for the rules line. No real Hermes is touched: every state is a snapshot literal.
+engine's log, three for the cron line and the deaf channel, one for the narrow phone, two
+for the rules line, one for the memory, one for a new Hermes release, and one for a provider
+that is not configured (issue #14). No real Hermes is touched: every state is a snapshot
+literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -16,6 +18,7 @@ from typing import Any
 
 from .cron_jobs import job_of, job_rows
 from .freshness import DeliveryRecord
+from .limits import NOT_CONFIGURED_REASON
 from .schema import (
     BackupSummary,
     CapacitySummary,
@@ -803,6 +806,28 @@ def _release_states() -> tuple[State, ...]:
     )
 
 
+# The state of issue #14 (29): the showcase installation whose only provider is Codex. Claude
+# never answered the facade, so it has no line, no place in the coverage and one details line
+# naming it; Gemini, whose log holds no refusal, has no line either. No "no data" is left.
+def _not_configured_states() -> tuple[State, ...]:
+    claude = QuotaMetric("Claude", "not_configured", detail=NOT_CONFIGURED_REASON)
+    capacity = CapacitySummary(
+        tuple(
+            claude if quota.provider == "Claude" else quota for quota in _showcase_limits().quotas
+        )
+    )
+    return (
+        State(
+            29,
+            "Codex only: Claude not configured",
+            _showcase_snapshot("normal", capacity=capacity),
+            _delivery_ok(_S_MINUS_2M),
+            "normal",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -985,4 +1010,5 @@ def all_states() -> tuple[State, ...]:
         *_rules_states(),
         *_memory_states(),
         *_release_states(),
+        *_not_configured_states(),
     )

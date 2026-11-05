@@ -65,8 +65,8 @@ def _held_to_width(main: list[str]) -> list[str]:
     return [line for line in main if not line.startswith(("#@", f"✓{NBSP}", *_CRON_EVENTS))]
 
 
-def test_twenty_eight_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 29))
+def test_twenty_nine_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 30))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -293,7 +293,6 @@ SHOWCASE_HEALTHY = [
     "## 🧠 Limits used",
     "Claude 42% (2h10m) · 67% (3d)",
     "⚠️ Codex 93% (1h20m) · 58% (5d)",
-    "Gemini · no data",
     "",
     "🤖 Hermes 0.21.3 → 0.21.5",
     "",
@@ -305,7 +304,8 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     every line the screen can show on 2026-09-26, made-up numbers except upstream's real
     release dates, one warning mark on a spent limit. Not a verification state: the thirteen
     above keep their golden texts. 1.0.0: the five lines of what works are one ✓ row, their
-    ages and counts in the details."""
+    ages and counts in the details. Issue #14: Gemini, whose log holds no refusal, has no line
+    and no "no data" reason; the details still say what the log saw."""
     state = STATES[13]
     text = _render(state)
     main = _main_part(text)
@@ -326,8 +326,9 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     assert "> ✓ Drift 0 of 481 · checked 08:00" in lines
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
     assert "> 2 releases behind · checked Sep 26 21:00" in lines
-    assert "> Gemini: Google reports Gemini quota only with billing enabled" in lines
     assert "> Gemini refusals seen by Hermes: none" in lines
+    assert "Gemini · no data" not in text and "> Gemini: " not in text
+    assert "## No data" not in text
 
 
 def test_state_15_showcase_warning_is_the_healthy_screen_with_a_drift_incident() -> None:
@@ -470,7 +471,7 @@ def test_state_19_a_per_minute_429_marks_the_gemini_line_and_the_status_stays_gr
     lines = text.splitlines()
 
     assert state.title == "Gemini minute quota hit"
-    assert main == [*SHOWCASE_HEALTHY[:7], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[8:]]
+    assert main == [*SHOWCASE_HEALTHY[:7], "⚠️ Gemini hit limit 20 min ago", *SHOWCASE_HEALTHY[7:]]
     assert len(main) <= PHONE_LINES
     assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 2  # the spent Codex limit and the Gemini line
@@ -501,7 +502,7 @@ def test_state_20_a_daily_429_is_an_event_until_the_reset() -> None:
         "",
         *SHOWCASE_HEALTHY[2:7],
         "⚠️ Gemini paused till 23:00",
-        *SHOWCASE_HEALTHY[8:],
+        *SHOWCASE_HEALTHY[7:],
     ]
     assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
     assert text.count("⚠") == 2
@@ -730,8 +731,9 @@ def test_the_details_read_by_source_with_a_blank_line_between() -> None:
     """Ilya, 09.10: the details were one run of lines. A blank line now parts the sources, in
     the order of the rich form's Details (1.0.0): the plans with the logins and the Gemini
     refusals, the rules, the memory, Telegram, backup with drift and cron, the Hermes version,
-    then the reasons for "no data", the screen itself and the dashboard's own version; a source
-    with nothing to say leaves no blank line of its own."""
+    then the reasons for "no data" (none here since #14: Gemini without a refusal has no line),
+    the screen itself and the dashboard's own version; a source with nothing to say leaves no
+    blank line of its own."""
     from dataclasses import replace
 
     from telegram_dashboard.schema import PlatformRules, RulesSummary
@@ -759,7 +761,6 @@ def test_the_details_read_by_source_with_a_blank_line_between() -> None:
         "Telegram",
         "Backup",
         "Hermes",
-        "##",
         "Screen",
         "Dashboard",
     ]
@@ -789,7 +790,7 @@ def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
     )
     cuts = []
     # Each step moves everything after the first failure one character past the fixed cut.
-    for name, length in [(name, length) for name in (1, 12, 23) for length in range(1, 25)]:
+    for name, length in [(name, length) for name in (1, 12, 23, 34, 45) for length in range(1, 25)]:
         failing = tuple(
             CronFailure(
                 f"j{i}",
@@ -823,3 +824,38 @@ def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
         ]
         cuts.append(lines[footer - 2])
     assert "> …" in cuts  # the sweep meets a cut right at a blank line
+
+
+# ----------------------------------------------------------------------------- not configured (29)
+
+
+def test_state_29_codex_only_names_claude_once_and_leaves_no_no_data() -> None:
+    """Issue #14, the installation of the issue: Codex is the only provider. Claude never
+    answered the facade, so it has no line and no place on the ❔ line or in the coverage, and
+    the details name it once; Gemini, whose log holds no refusal, has no line either. No
+    ``## No data`` is left."""
+    state = STATES[28]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Codex only: Claude not configured"
+    assert main == [
+        _top("🟢 Healthy", state),
+        "",
+        _row("Gateway", "Telegram", "Backup", "Drift", "Cron"),
+        "",
+        "## 🧠 Limits used",
+        "⚠️ Codex 93% (1h20m) · 58% (5d)",
+        "",
+        "🤖 Hermes 0.21.3 → 0.21.5",
+        "",
+    ]
+    assert lines[lines.index("> ## Details") + 1 : lines.index("> ## Details") + 3] == [
+        "> Not configured: Claude",
+        "> Gemini refusals seen by Hermes: none",
+    ]
+    assert "## No data" not in text and "no data" not in text
+    assert "Claude" not in "\n".join(main)
+    assert "> Profiles 1/1 · sources 8/8" in lines
+    assert "Not checked" not in text

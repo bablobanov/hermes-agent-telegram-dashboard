@@ -208,7 +208,6 @@ def test_details_is_a_section_per_source_a_thin_line_between_and_the_stamps_last
         "<p><b>📡 Telegram channel",
         "<p><b>💾 Backup · Drift",
         "<p><b>🤖 Hermes version",
-        "<p><b>❔ No data · 1",
     ]
     assert sections[2] == (
         "<p><b>💾 Backup · Drift</b><br>✓ Backup Sep 26 11:00 · 10 h ago · integrity ok<br>"
@@ -241,8 +240,36 @@ def test_the_limits_table_has_a_row_per_line_and_a_cell_per_window() -> None:
         '<tr><td>Claude Fable</td><td colspan="2">⚠️ 100% · 3d</td>',
         '<tr><td>Claude Sonnet</td><td colspan="2">20% · 3d</td>',
         "<tr><td>Codex</td><td>⚠️ 93% · 1h20m</td><td>58% · 5d</td>",
-        '<tr><td>Gemini</td><td colspan="2">no data</td>',
     ]
+
+
+def test_a_provider_without_a_line_has_no_row_and_is_named_in_the_details() -> None:
+    """Issue #14 (state 29): the rich table takes the text lines' predicate, so Claude (not
+    configured) and Gemini (no refusal) have no row and no "no data" fold; the limits section of
+    Details names Claude once. With no row at all the limits block and its heading go too."""
+    markup = _rich(29)
+    table = markup.split("<table compact bordered>")[1].split("</table>")[0]
+
+    assert table.split("</tr>")[:-1] == [
+        '<tr><th>Provider</th><th colspan="2">Used · resets in</th>',
+        "<tr><td>Codex</td><td>⚠️ 93% · 1h20m</td><td>58% · 5d</td>",
+    ]
+    limits = _details_body(markup).split("<hr/>")[0]
+    assert limits == (
+        "<p><b>🧠 Limits</b><br>Not configured: Claude<br>Gemini refusals seen by Hermes: none</p>"
+    )
+    assert "❔ No data" not in markup
+
+    state = _state(29)
+    hidden = tuple(
+        replace(quota, kind="not_configured") if quota.provider == "Codex" else quota
+        for quota in state.snapshot.capacity.quotas
+    )
+    bare = to_telegram_rich(
+        replace(state.snapshot, capacity=CapacitySummary(hidden)), now=state.now
+    )
+    assert bare is not None
+    assert "🧠 Limits used" not in bare and "<table compact bordered><tr><th>Provider" not in bare
 
 
 def test_a_table_of_single_windows_spans_nothing_and_a_word_state_stays_a_word() -> None:

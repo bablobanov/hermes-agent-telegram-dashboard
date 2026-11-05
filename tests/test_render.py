@@ -1092,13 +1092,16 @@ def _ahead(**delta: float) -> str:
     return (NOW + timedelta(**delta)).isoformat()
 
 
-def test_a_gemini_log_without_a_429_says_so_in_the_details() -> None:
+def test_a_gemini_log_without_a_429_has_no_line_and_says_so_in_the_details() -> None:
+    """Issue #14: a line with nothing to say but "no data" is left out, heading and reason with
+    it; the details still say what the log saw, on every screen."""
     text = _limits_only(_gemini(Refusal()))
 
-    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert _screen_lines(text, "Gemini") == []
+    assert "🧠 Limits used" not in text and "## No data" not in text
     details = _details_lines(text)
     assert f"{_REFUSALS}none" in details
-    assert f"Gemini: {_GEMINI_REASON}" in details
+    assert f"Gemini: {_GEMINI_REASON}" not in details
 
 
 def test_a_recent_429_marks_the_gemini_line_and_leaves_the_status_alone() -> None:
@@ -1130,7 +1133,7 @@ def test_after_its_window_the_429_is_only_in_the_details() -> None:
 
     text = _limits_only(_gemini(refusal))
 
-    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert _screen_lines(text, "Gemini") == []
     assert f"{_REFUSALS}last Sep 25 05:21, per-minute limit" in _details_lines(text)
 
 
@@ -1231,7 +1234,7 @@ def test_a_daily_429_past_or_without_its_reset_is_only_in_the_details(
 ) -> None:
     text = _limits_only(_gemini(refusal))
 
-    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert _screen_lines(text, "Gemini") == []
     assert f"{_REFUSALS}{details}" in _details_lines(text)
     assert incidents_for(refusal, NOW) == ()
 
@@ -1265,6 +1268,58 @@ def test_the_marked_gemini_line_fits_a_phone_line(refusal: Refusal) -> None:
 
     assert line.startswith("⚠️ Gemini ")
     assert len(line) <= 32, line
+
+
+# ----------------------------------------------------------------------------- not configured (#14)
+#
+# One predicate (``render.drawn_quotas``) for the text lines, the rich rows and the reasons under
+# ``## No data``: a provider without a line is named once in the details, never as "no data".
+
+
+def test_a_provider_that_is_not_configured_has_no_line_and_one_details_line() -> None:
+    text = _limits_only(
+        QuotaMetric("Claude", "not_configured", detail="not configured"),
+        QuotaMetric("Codex", "official", windows=(QuotaWindow("5h", 14.0, _IN_2H),)),
+        QuotaMetric("Mistral", "not_configured", detail="not configured"),
+        QuotaMetric("Gemini", "not_configured", detail="off in the dashboard settings"),
+    )
+
+    assert _main_part(text)[2:] == ["## 🧠 Limits used", "Codex 14% (2h)", ""]
+    assert _screen_lines(text, "Claude") == [] and _screen_lines(text, "Gemini") == []
+    details = _details_lines(text)
+    assert "Not configured: Claude, Mistral" in details
+    assert "Off in the dashboard settings: Gemini" in details
+    assert "## No data" not in text and "no data" not in text
+
+
+def test_a_limits_block_with_nothing_to_draw_has_no_heading_and_keeps_its_details() -> None:
+    """Issue #14: the heading only above at least one line; the details of the limits group
+    (the providers without a line, what the Gemini log saw) are written all the same."""
+    text = _limits_only(
+        QuotaMetric("Claude", "not_configured", detail="not configured"),
+        QuotaMetric("Codex", "not_configured", detail="not configured"),
+        _gemini(Refusal()),
+    )
+
+    assert "🧠 Limits used" not in text
+    assert _main_part(text) == [TOP_HEALTHY, ""]
+    details = _details_lines(text)
+    assert details[:3] == [
+        "## Details",
+        "Not configured: Claude, Codex",
+        f"{_REFUSALS}none",
+    ]
+
+
+def test_a_pinned_gemini_keeps_its_line_without_a_refusal() -> None:
+    """``limits_providers`` naming Gemini: its line stays, "no data" with the reason, as in
+    1.1.0."""
+    from dataclasses import replace
+
+    text = _limits_only(replace(_gemini(Refusal()), pinned=True))
+
+    assert _screen_lines(text, "Gemini") == ["Gemini · no data"]
+    assert f"Gemini: {_GEMINI_REASON}" in _details_lines(text)
 
 
 def test_a_gemini_log_that_is_not_there_is_named_as_such() -> None:

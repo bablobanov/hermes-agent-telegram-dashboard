@@ -871,6 +871,9 @@ def test_an_installation_without_claude_and_codex_leaves_the_limits_source_on_th
     last = render_dashboard(snapshots[2], now=NOW + timedelta(minutes=10))
     assert "limits (unavailable)" in first
     assert "limits (" not in last
+    assert "Claude · no data" in first and "> Claude: no answer: no credential or" in first
+    assert "Claude" not in last.split("> ## Details")[0]
+    assert "> Not configured: Claude, Codex" in last.splitlines()
     assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (3, 3)
 
 
