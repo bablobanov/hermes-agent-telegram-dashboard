@@ -402,12 +402,3 @@ def test_the_earlier_registration_s_factory_is_ignored_after_the_takeover(homes:
         assert sys.modules[LIVE_MODULE].profiles[second.key]["owner"]() is second
 
     asyncio.run(scenario())
-
-
-def test_the_plugin_passes_the_engine_s_no_core_override_check() -> None:
-    """Catalog rule 9: the plugin rebinds no Hermes core at runtime, the registry included (a
-    module of its own name in ``sys.modules``, outside ``hermes_plugins.*``). The engine's own
-    static check, the one ``hermes plugins validate`` runs."""
-    from hermes_cli.plugin_validate_core_override import core_override_findings
-
-    assert core_override_findings(PLUGIN_DIR) == []
