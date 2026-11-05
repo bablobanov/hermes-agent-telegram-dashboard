@@ -17,7 +17,7 @@ import shutil
 import socket
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, Literal
 
 import pytest
@@ -201,13 +201,25 @@ def _check(verb: str, sock: socket.socket, address: Any) -> None:
 
 def _install_network_guard() -> None:
     """For the whole process and from before collection, never undone: a module that connects
-    at import or a worker thread that outlives its test is held too."""
+    at import or a worker thread that outlives its test is held too.
+
+    Python's own ways off the machine: a connect, a datagram sent to an address, a name or
+    address lookup. A client written in C that opens its own sockets or resolves on its own
+    (uvloop, grpc, c-ares, pycurl) passes under any Python-level guard; none is on the test
+    path today."""
     global _guard_installed
     if _guard_installed:
         return
     _guard_installed = True
+    _guard_sockets()
+    _guard_lookups()
+    if sys.platform == "win32":
+        _guard_proactor()
+
+
+def _guard_sockets() -> None:
     real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
-    real_getaddrinfo = socket.getaddrinfo
+    real_sendto = socket.socket.sendto
 
     def connect(sock: socket.socket, address: Any) -> None:
         _check("connect", sock, address)
@@ -217,27 +229,76 @@ def _install_network_guard() -> None:
         _check("connect_ex", sock, address)
         return real_connect_ex(sock, address)
 
+    def sendto(sock: socket.socket, data: Any, *args: Any) -> int:
+        # (data, address) or (data, flags, address)
+        _check("sendto", sock, args[-1] if args else None)
+        return real_sendto(sock, data, *args)
+
+    socket.socket.connect = connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+    socket.socket.sendto = sendto  # type: ignore[assignment]
+    if hasattr(socket.socket, "sendmsg"):  # POSIX only
+        real_sendmsg = socket.socket.sendmsg
+
+        def sendmsg(sock: socket.socket, *args: Any) -> int:
+            # (buffers, ancdata, flags, address), the address optional
+            _check("sendmsg", sock, args[3] if len(args) > 3 else None)
+            return real_sendmsg(sock, *args)
+
+        socket.socket.sendmsg = sendmsg  # type: ignore[method-assign]
+
+
+def _guard_lookups() -> None:
+    real_getaddrinfo, real_getnameinfo = socket.getaddrinfo, socket.getnameinfo
+    real_byname, real_byname_ex = socket.gethostbyname, socket.gethostbyname_ex
+    real_byaddr = socket.gethostbyaddr
+
     def getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
         # asyncio's loop.getaddrinfo comes here too.
         if not _loopback(host):
             _refuse(f"getaddrinfo {host}:{port}")
         return real_getaddrinfo(host, port, *args, **kwargs)
 
-    socket.socket.connect = connect  # type: ignore[method-assign]
-    socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+    def getnameinfo(sockaddr: Any, flags: int) -> Any:
+        if not _loopback(sockaddr[0]):
+            _refuse(f"getnameinfo {sockaddr[0]}:{sockaddr[1]}")
+        return real_getnameinfo(sockaddr, flags)
+
+    def by(verb: str, real: Any) -> Any:
+        def lookup(name: Any) -> Any:
+            if not _loopback(name):
+                _refuse(f"{verb} {name}")
+            return real(name)
+
+        return lookup
+
     socket.getaddrinfo = getaddrinfo
-    if sys.platform == "win32":
-        # asyncio's proactor loop connects through IOCP (Overlapped.ConnectEx), never through
-        # socket.connect.
-        from asyncio import windows_events
+    socket.getnameinfo = getnameinfo
+    socket.gethostbyname = by("gethostbyname", real_byname)
+    socket.gethostbyname_ex = by("gethostbyname_ex", real_byname_ex)
+    socket.gethostbyaddr = by("gethostbyaddr", real_byaddr)
 
-        real_iocp_connect = windows_events.IocpProactor.connect
 
-        def iocp_connect(proactor: Any, conn: socket.socket, address: Any) -> Any:
-            _check("IocpProactor.connect", conn, address)
-            return real_iocp_connect(proactor, conn, address)
+def _guard_proactor() -> None:
+    """asyncio's proactor loop connects and sends datagrams through IOCP (Overlapped.ConnectEx,
+    WSASendTo), never through the socket's own methods."""
+    from asyncio import windows_events
 
-        windows_events.IocpProactor.connect = iocp_connect  # type: ignore[method-assign]
+    real_connect = windows_events.IocpProactor.connect
+    real_sendto = windows_events.IocpProactor.sendto
+
+    def connect(proactor: Any, conn: socket.socket, address: Any) -> Any:
+        _check("IocpProactor.connect", conn, address)
+        return real_connect(proactor, conn, address)
+
+    def sendto(
+        proactor: Any, conn: socket.socket, buf: Any, flags: int = 0, addr: Any = None
+    ) -> Any:
+        _check("IocpProactor.sendto", conn, addr)
+        return real_sendto(proactor, conn, buf, flags, addr)
+
+    windows_events.IocpProactor.connect = connect  # type: ignore[method-assign]
+    windows_events.IocpProactor.sendto = sendto  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)
@@ -252,6 +313,12 @@ def no_network() -> Iterator[list[str]]:
         _SINK[0] = _STRAY
     if attempts:
         pytest.fail(f"network attempts in this test, all refused: {attempts}", pytrace=False)
+
+
+@pytest.fixture
+def loopback_rule() -> Callable[[object], bool]:
+    """The guard's own decision of what stays on this machine, for the test that pins it."""
+    return _loopback
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

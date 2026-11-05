@@ -8,6 +8,7 @@ so is the temporary HERMES_HOME of the session. Offline, a second or two."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import socket
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -161,6 +163,7 @@ def test_without_the_variable_every_skip_stays_a_skip(tmp_path: Path) -> None:
 # TEST-NET-1 (RFC 5737) and the reserved .invalid (RFC 6761): nothing answers there even if the
 # guard let a packet out.
 OFF_MACHINE = ("192.0.2.1", 443)
+OFF_MACHINE_UDP = ("192.0.2.1", 53)
 
 
 def test_the_guard_refuses_a_host_off_this_machine_and_records_it(no_network: list[str]) -> None:
@@ -171,59 +174,149 @@ def test_the_guard_refuses_a_host_off_this_machine_and_records_it(no_network: li
             sock.connect(OFF_MACHINE)
         with pytest.raises(RuntimeError, match=r"connect_ex 192\.0\.2\.1:443"):
             sock.connect_ex(OFF_MACHINE)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        with pytest.raises(RuntimeError, match=r"sendto 192\.0\.2\.1:53"):
+            udp.sendto(b"x", OFF_MACHINE_UDP)
+        with pytest.raises(RuntimeError, match=r"sendto 192\.0\.2\.1:53"):
+            udp.sendto(b"x", 0, OFF_MACHINE_UDP)
+        if hasattr(udp, "sendmsg"):  # POSIX; Windows sockets have no sendmsg
+            with pytest.raises(RuntimeError, match=r"sendmsg 192\.0\.2\.1:53"):
+                udp.sendmsg([b"x"], [], 0, OFF_MACHINE_UDP)
     with pytest.raises(RuntimeError, match=r"getaddrinfo example\.invalid:443"):
         socket.getaddrinfo("example.invalid", 443)
+    with pytest.raises(RuntimeError, match=r"gethostbyname example\.invalid"):
+        socket.gethostbyname("example.invalid")
+    with pytest.raises(RuntimeError, match=r"gethostbyname_ex example\.invalid"):
+        socket.gethostbyname_ex("example.invalid")
+    with pytest.raises(RuntimeError, match=r"gethostbyaddr 192\.0\.2\.1"):
+        socket.gethostbyaddr("192.0.2.1")
+    with pytest.raises(RuntimeError, match=r"getnameinfo 192\.0\.2\.1:443"):
+        socket.getnameinfo(OFF_MACHINE, 0)
 
     assert refused.type.__name__ == "NetworkBlockedError"
+    sent = ["sendto 192.0.2.1:53"] * 2 + (
+        ["sendmsg 192.0.2.1:53"] if hasattr(socket.socket, "sendmsg") else []
+    )
     assert no_network == [
         "connect 192.0.2.1:443",
         "connect_ex 192.0.2.1:443",
+        *sent,
         "getaddrinfo example.invalid:443",
+        "gethostbyname example.invalid",
+        "gethostbyname_ex example.invalid",
+        "gethostbyaddr 192.0.2.1",
+        "getnameinfo 192.0.2.1:443",
     ]
     no_network.clear()  # refused on purpose: these must not fail this test at its end
 
 
 # The platform's own loop (the proactor on Windows, the selector elsewhere) and the selector
-# loop wherever it runs: the proactor connects through IOCP's ConnectEx and never calls
-# socket.connect, the selector calls socket.connect.
+# loop wherever it runs: the proactor connects and sends datagrams through IOCP and never calls
+# the socket's own methods, the selector calls them.
 LOOPS = {"default": asyncio.new_event_loop, "selector": asyncio.SelectorEventLoop}
 
 
 @pytest.mark.parametrize("loop_name", sorted(LOOPS))
-def test_an_event_loop_connect_off_this_machine_is_refused(
-    loop_name: str, no_network: list[str]
-) -> None:
+def test_an_event_loop_off_this_machine_is_refused(loop_name: str, no_network: list[str]) -> None:
     async def reach() -> str:
         with pytest.raises(RuntimeError, match=r"^network blocked in tests: .*192\.0\.2\.1:443"):
             await asyncio.open_connection(*OFF_MACHINE)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.setblocking(False)
+            with pytest.raises(RuntimeError, match=r"^network blocked in tests: .*192\.0\.2\.1:53"):
+                await asyncio.get_running_loop().sock_sendto(udp, b"x", OFF_MACHINE_UDP)
         return type(asyncio.get_running_loop()).__name__
 
     with asyncio.Runner(loop_factory=LOOPS[loop_name]) as runner:
         loop = runner.run(reach())
 
-    via = "IocpProactor.connect" if loop == "ProactorEventLoop" else "connect"
-    assert no_network == [f"{via} 192.0.2.1:443"], loop
+    via = "IocpProactor." if loop == "ProactorEventLoop" else ""
+    assert no_network == [f"{via}connect 192.0.2.1:443", f"{via}sendto 192.0.2.1:53"], loop
     assert loop_name != "default" or (loop == "ProactorEventLoop") == (sys.platform == "win32")
     no_network.clear()
 
 
-def test_the_guard_leaves_loopback_and_local_pairs_open(no_network: list[str]) -> None:
-    with socket.create_server(("127.0.0.1", 0)) as server:
+# All of 127.0.0.0/8, ::1, IPv4-mapped loopback and the name localhost; None is the local host
+# to getaddrinfo.
+THIS_MACHINE = [
+    "127.0.0.1",
+    "127.8.9.10",
+    "127.255.255.254",
+    "::1",
+    "::ffff:127.0.0.1",
+    "localhost",
+    "LocalHost",
+    b"127.0.0.1",
+    None,
+]
+OFF_THIS_MACHINE = [
+    "192.0.2.1",
+    "10.0.0.1",
+    "128.0.0.1",
+    "0.0.0.0",
+    "::",
+    "::ffff:192.0.2.1",
+    "2001:db8::1",
+    "fe80::1%1",
+    "example.invalid",
+    "localhost.example.invalid",
+    "127.0.0.1.example.invalid",
+    "",
+]
+
+
+@pytest.mark.parametrize("host", THIS_MACHINE)
+def test_the_guard_counts_these_as_this_machine(loopback_rule: Any, host: object) -> None:
+    assert loopback_rule(host)
+
+
+@pytest.mark.parametrize("host", OFF_THIS_MACHINE)
+def test_the_guard_counts_these_off_this_machine(loopback_rule: Any, host: object) -> None:
+    assert not loopback_rule(host)
+
+
+def _round_trip(host: str, family: socket.AddressFamily) -> None:
+    """A real connect to a listener on ``host``, plain and through the event loop."""
+    with socket.create_server((host, 0), family=family) as server:
         port = server.getsockname()[1]
-        with socket.create_connection(("127.0.0.1", port), timeout=5):
+        with socket.create_connection((host, port), timeout=5):
             pass
-        assert socket.getaddrinfo("localhost", port)
 
         async def through_the_event_loop() -> None:
-            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            _reader, writer = await asyncio.open_connection(host, port)
             writer.close()
             await writer.wait_closed()
 
         asyncio.run(through_the_event_loop())  # its self-pipe is a local pair too
+
+
+def test_the_guard_leaves_loopback_and_local_pairs_open(no_network: list[str]) -> None:
+    _round_trip("127.0.0.1", socket.AF_INET)
+    assert socket.getaddrinfo("localhost", 80)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+        receiver.bind(("127.0.0.1", 0))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            sender.sendto(b"x", receiver.getsockname())
+        receiver.settimeout(5)
+        assert receiver.recv(1) == b"x"
     left, right = socket.socketpair()  # AF_UNIX on POSIX, loopback TCP on Windows
     with left, right:
         left.sendall(b"x")
         assert right.recv(1) == b"x"
+
+    assert no_network == []
+
+
+def test_the_guard_leaves_ipv6_loopback_open_where_the_host_has_it(
+    no_network: list[str], loopback_rule: Any
+) -> None:
+    """A real round trip on ::1 where this host allows one. Where it does not (no IPv6, or the
+    host refuses the connect: WinError 10013 on the Windows machine of 06.11), the guard's own
+    decision for ::1 is the proof, and nothing is skipped. A refusal by the guard is a
+    RuntimeError, never the OSError caught here, and it would be recorded too."""
+    assert loopback_rule("::1")
+    with contextlib.suppress(OSError):
+        _round_trip("::1", socket.AF_INET6)
 
     assert no_network == []
 
