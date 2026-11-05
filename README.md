@@ -65,7 +65,9 @@ limit is never rounded for the width:
 Provider  Used · resets in              reset of every window, in the provider's own
 Claude    42% · 2h10m    67% · 3d       order; ⚠️ from 90% spent; a provider without
 Codex     ⚠️ 93% · 1h20m 58% · 5d       a number never shows a zero, the reason is in
-Gemini    no data                       Details
+                                        Details; one not set up here has no row, and
+                                        Gemini has one only while Google's last
+                                        refusal is recent
 🤖 Hermes 0.21.3 → 0.21.5                the version the gateway runs → the latest
                                         upstream release; 🆕 and its age for a day
                                         after a release came out
@@ -73,7 +75,8 @@ Gemini    no data                       Details
                                         collapsed: every job in one table, by how
                                         often it runs (see "The cron line")
 ▸ Details                               collapsed, a section per source: the plans,
-                                        logins and Gemini refusals; the agent's rules;
+                                        logins, providers not configured and Gemini
+                                        refusals; the agent's rules;
                                         its memory; the Telegram channel; backup and
                                         drift; the Hermes version; every "no data"
                                         with its reason; then the screen's time, the
@@ -99,11 +102,12 @@ Cron ⚠️ 1 of 27 failing                 is not well, even one an event alrea
 ```
 
 The classic view (`rich: false`, the default) is the same blocks as text, a blank line between
-two: the limits a line per provider (`⚠️ Codex 93% (1h20m) · 58% (5d)`, `Gemini · no data`),
-no fold for the cron jobs (their lines sit in the details with backup and drift, the job table
-is the one part this view does not carry), and the details one collapsed quote. In HTML the top
-line and the headings are bold; in plain text the headings are upper case (`🧠 LIMITS USED`) and
-the details are shown in full. Both views come from the same snapshot.
+two: the limits a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
+`Claude · no data` with its reason in the details), no fold for the cron jobs (their lines sit
+in the details with backup and drift, the job table is the one part this view does not carry),
+and the details one collapsed quote. In HTML the top line and the headings are bold; in plain
+text the headings are upper case (`🧠 LIMITS USED`) and the details are shown in full. Both views
+come from the same snapshot.
 
 The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
@@ -125,9 +129,12 @@ itself is the screen above.
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
 Account limits: Claude and Codex from the Hermes usage facade (see "Limits" below), and any
-other provider from a local process of your own (see "External limit sources"). Gemini has no number without billing, never a zero: the last
-time Google refused the engine a call is on its line while it is recent and always in the
-details (see "Gemini refusals from the engine log"). The one-screen layout moved lines to the
+other provider from a local process of your own (see "External limit sources"). Gemini has no
+number without billing, never a zero: it has a line only while the last time Google refused the
+engine a call is recent, and the details always say that last refusal (see "Gemini refusals from
+the engine log"). A provider this installation shows no sign of having (Claude or Codex without
+an account here) has no line at all, and the details name it once: `Not configured: Claude` (see
+"Limits: three kinds that never mix"). The one-screen layout moved lines to the
 details rather than dropping them: a line without a number still names its reason there. 1.1.0
 does drop two limit lines, the ones the dashboard used to read from vendor CLIs' private
 endpoints; an operator's `limits_sources` can bring such lines back (see
@@ -141,8 +148,11 @@ only when it is incomplete, as one line:
 `❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3` (and
 `2 sources unavailable` for failed sources the line does not name). An item of the ✓ row with no
 source on this installation, or no data from a source that line names, is left out of the row
-and said by that line once. The details close with the dashboard's own version
-(`Dashboard 1.1.0`), so the installed copy can be told from the pinned message at a glance.
+and said by that line once. A provider that is not configured here is not counted at all: no
+line, no place on the ❔ line or in the coverage; when neither Claude nor Codex has a line, the
+`limits` source itself is gone, so an installation without either does not stay grey. The
+details close with the dashboard's own version (`Dashboard 1.1.0`), so the installed copy can be
+told from the pinned message at a glance.
 
 **Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
 API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
@@ -373,6 +383,7 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often your `limits_sources` are asked (not every tick) |
    | `facade_refresh_seconds` | `HERMES_DASHBOARD_PROBE_FACADE_REFRESH` | default 300, floor 60, no ceiling; how often Claude and Codex are each asked through the usage facade (not every tick: the default gives 288 calls a day per provider at a 60 s period; an attempt due within 5 s goes out on the current tick); see "Limits: three kinds that never mix" |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
+   | `limits_providers` | (config only, a list) | optional: the built-in limit providers to ask, `claude`, `codex`, `gemini` in any case. Unset, every one is asked and one with no sign of an account here has no line. Set, exactly the listed ones are asked and each always keeps its line (`Claude · no data` with the reason, Gemini's line with no refusal too); one left out is never asked (the facade is not called for it, the Gemini log is not read: no source, no event) and the details say `Off in the dashboard settings: Gemini`. An empty list asks none of them. An unknown name is skipped with a warning in the log that names its place in the list; anything but a list is ignored with a warning. `limits_sources` are not subject to it. The fallback tick reads the same list from its JSON config; see "Limits: three kinds that never mix" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is the classic view, HTML or plain, and a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
@@ -422,9 +433,10 @@ facade's providers the same way, one entry each (`claude`, `codex`): the last at
 (`attempted_at`), its item (the provider, the status, the reason, the source's name,
 `fetched_at`, the plan, and the windows, each with its label, share and reset; every text
 cleaned and cut to the length the screen shows), the last time the facade answered with a
-snapshot at all (`answered_at`) and the plan it last named. Never the account's identity, the
-raw answer, the details the facade reports beside the windows (a credit balance), or an
-exception's text, only its class. `gemini_log_cache` keeps the last
+snapshot at all (`answered_at`), how many attempts in a row since then got the facade's empty
+answer (`none_attempts`, gone again with the next answer) and the plan it last named. Never the
+account's identity, the raw answer, the details the facade reports beside the windows (a credit
+balance), or an exception's text, only its class. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
 message; the limit and the retry are kept, not shown) and when the log was last read
 (`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
@@ -891,7 +903,7 @@ is the HTTP 429 the engine logs when Google turns a call down, and it is said as
 plain words: a per-minute refusal is `⚠️ Gemini hit limit 5 min ago` on the line, which moves
 no status, like the mark from 90%; a daily one is `⚠️ Gemini paused till 23:00` and an event
 until the reset; the last one is always in the details (see "Gemini refusals from the engine
-log").
+log"). Between refusals there is nothing to say on the screen, and Gemini has no line.
 
 An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
@@ -943,9 +955,31 @@ fresh stamp looks like knowledge, which is the one thing a limits block must nev
 through a failed attempt. The engine names Codex's first window `Session` whatever its length,
 so the line shows the share and the reset only.
 
-**Claude on an installation without an Anthropic credential**: the line says `no data` and the
-details say `no account token`, a reason, never a zero. A local source that answers for Claude
-takes the line's place (see "External limit sources").
+**A provider this installation does not have has no line.** The facade answers with the same
+empty value whether there is no credential or the call failed (it swallows every error of the
+provider's API, on every engine version read), so one answer cannot tell the two apart, and the
+record decides (`facade_cache`):
+
+- a provider that has never answered since the record began is `no data` with
+  `no answer: no credential or the call failed` in the details for its first two attempts; from
+  the third empty answer in a row (10 to 15 minutes after the install at the default cadence) it
+  has no line, no place on the ❔ line or in the coverage, and the details name it once:
+  `Not configured: Claude`
+- a provider that answered before and then went quiet stays a `no data` line while its last
+  answer is at most 7 days old (the longest window these providers report), then is treated the
+  same way
+- any answer brings the line back at once and starts the count again. Claude on an API key
+  answers (the engine's reason, `Anthropic account limits are only available for OAuth-backed…`)
+  and keeps its line. A missed deadline or a worker still running is no answer and no empty one:
+  it changes nothing, and a provider without a line stays without one
+- when neither Claude nor Codex has a line there is no `limits` source at all, so an
+  installation with neither (OpenRouter, Nous) does not stay grey on `limits (unavailable)`
+
+`limits_providers` makes it explicit: a listed provider keeps its line whatever it answers (a
+login broken from day one stays in sight), one left out is never asked. A local source that
+answers for Claude takes the line's place, shown or not (see "External limit sources").
+`python -m telegram_dashboard --demo 29` shows an installation with Codex alone: one limits line,
+and `Not configured: Claude` in the details.
 
 The check for the plugin path is the same `--check`, pointed at that file:
 
@@ -995,7 +1029,9 @@ The answer is `200` with a JSON object of at most 64 KB:
 - `contract` is `1`; another number is `no data` with `unsupported contract`, anything else
   with `answer shape: contract` (a reason never quotes the value it refuses)
 - `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex)
-  takes that line's place; any other gets a line of its own before Gemini
+  takes that line's place, a line the screen does not draw (not configured, off in
+  `limits_providers`, Gemini without a recent refusal) included; any other gets a line of its own
+  before Gemini. `limits_providers` does not apply to these sources
 - `state`: `ok` puts the windows on the screen; `login_expired` reads `Claude · login expired`
   and raises the event `Claude login expired`; `unavailable` is `no data` with `reason` (up to 60
   characters) in the details
@@ -1082,10 +1118,16 @@ log when Google refuses a call, and that refusal is what the Gemini line shows, 
   refusal is the event `Gemini daily limit used up` and `⚠️ Gemini paused till 23:00` on the
   line until the reset Google named, in the screen's zone; any other refusal, one without a
   retry among them, is the mark only, for an hour: `⚠️ Gemini hit limit 5 min ago`. After that
-  the line says `Gemini · no data` again, and the details keep `last Sep 29 14:03, per-minute
-  limit, model gemini-2.5-flash-preview-tts` (a daily one says `daily limit till …`, one
-  without a retry names no kind). A daily quota spent just before Google's reset asks for a
-  short retry and looks per-minute
+  the Gemini line is gone until the next refusal (a `Gemini · no data` line would say nothing),
+  and the details keep `last Sep 29 14:03, per-minute limit, model
+  gemini-2.5-flash-preview-tts` (a daily one says `daily limit till …`, one without a retry
+  names no kind). A daily quota spent just before Google's reset asks for a short retry and
+  looks per-minute
+- **the line**: drawn only while a refusal is active, as above. With `limits_providers` naming
+  `gemini` it stays on every screen (`Gemini · no data` between refusals); a list without it
+  leaves the log unread: no line, no source, no event, and the details say
+  `Off in the dashboard settings: Gemini`. Where nobody reads the log (limits off, or no `logs/`
+  and nothing in the record) the line stays `Gemini · no data` with the reason, as before
 - **memory**: the record keeps the last 429 (`gemini_log_cache`), so one that rotated out of the
   tail is still the last one. The fallback cron tick keeps no record, so each of its runs reads
   the whole file, up to 4 MB
@@ -1176,10 +1218,12 @@ lives there, not in code:
 
 Limits are only available when the tick runs in an interpreter that can import the engine (the
 gateway's own); elsewhere they degrade to `unsupported`. Where it can, each run asks the facade
-once per provider: the fallback tick keeps no record of it. The cron tick runs in a directory of its
-own, so the rules line looks for rules left beside the gateway only in the `gateway_dir` it is
-given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off,
-`memory: false` the memory section.
+once per provider: the fallback tick keeps no record of it, so it has no memory of an earlier
+answer either, and a provider the facade answers with nothing for is not configured at once (no
+line, out of the coverage) unless `limits_providers` in the JSON config names it. The cron tick
+runs in a directory of its own, so the rules line looks for rules left beside the gateway only
+in the `gateway_dir` it is given (the service's `WorkingDirectory`); `context_files: false` (or
+`"off"`) turns the line off, `memory: false` the memory section.
 
 ## Tests
 

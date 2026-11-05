@@ -126,6 +126,28 @@ def test_the_limits_row_says_how_often_the_facade_is_asked_and_what_the_record_k
         assert field in row["caveat"], field
 
 
+def test_the_limits_row_says_when_a_provider_is_not_configured() -> None:
+    """Issue #14: the row names the rule the code runs (three ``None`` attempts in a row for a
+    provider that never answered, seven days after the last answer for one that did), the
+    record's count, the allow-list, and that the limits source leaves with the last line; the
+    Gemini row says when the log is not read and when its line is drawn."""
+    sources = load_matrix()["sources"]
+    row, gemini = sources["limits"], sources["gemini_log"]
+
+    for words in (
+        "not_configured",
+        "3 None attempts in a row",
+        "none_attempts",
+        "7 days",
+        "limits_providers",
+        "there is none when no provider has one",
+        "not_configured at once unless the provider is listed",
+    ):
+        assert words in row["contract"], words
+    assert "limits_providers list without gemini = not read" in gemini["probe"]
+    assert "drawn only while a refusal is active" in gemini["contract"]
+
+
 def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None:
     """0.9.0: the cron line reads the engine's cron files and its run history read-only; the
     deaf verdict reads four private counters off the live adapter as a capability and the
