@@ -1150,6 +1150,41 @@ def test_a_cached_number_older_than_the_cadence_is_not_a_number(tmp_path: Path) 
     assert source.state == "unavailable"
 
 
+def test_a_long_cadence_keeps_its_number_fresh_between_attempts(tmp_path: Path) -> None:
+    """B1 review M5, the cadence half of the ``limits`` ttl rule: at
+    ``facade_refresh_seconds=1800`` and a 60 s period a number read 1000 s ago is between two
+    attempts, and the source stays ``fresh`` (ttl = max(900 s, 2 x cadence)); a ttl that forgot
+    the cadence would flash ``limits (stale)`` until the next attempt."""
+    from telegram_dashboard.workers import Flights
+
+    at = (NOW - timedelta(seconds=1000)).isoformat()
+
+    def cached(key: str) -> dict:
+        window = {"label": "5h", "used_percent": 40.0, "reset_at": None}
+        item = {"provider": key, "status": "available", "fetched_at": at, "windows": [window]}
+        return {"attempted_at": at, "item": item, "answered_at": at}
+
+    caches = {"claude": cached("claude"), "codex": cached("codex")}
+    facade = _Facade()
+
+    capacity, source, _probe = asyncio.run(
+        collect_limits_async(
+            Environment(hermes_home=tmp_path),
+            now=NOW,
+            resolve=lambda: facade,
+            timeout_seconds=5,
+            flights=Flights(),
+            caches=caches,
+            interval_seconds=1800,
+            period_seconds=60,
+        )
+    )
+
+    assert facade.calls == []
+    assert [q.kind for q in capacity.quotas] == ["official", "official"]
+    assert (source.state, source.observed_at) == ("fresh", at)
+
+
 def test_a_crash_after_the_facade_call_is_an_attempt_kept_for_the_cadence(tmp_path: Path) -> None:
     """Our own code failing on an answer (here windows that are no list) must not turn the
     cadence into every tick: the attempt is recorded with the class name, like the release
