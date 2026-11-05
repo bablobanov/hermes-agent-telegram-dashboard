@@ -1631,6 +1631,35 @@ def test_a_provider_that_answered_then_went_quiet_is_shown_for_seven_days_then_h
     assert caches["claude"]["answered_at"] == answered.isoformat()
 
 
+def test_an_answer_stamped_ahead_of_the_clock_does_not_keep_a_quiet_provider_shown(
+    tmp_path: Path,
+) -> None:
+    """B2 review M-c: an ``answered_at`` ahead of the clock beyond the skew tolerance (the clock
+    was set back after an answer) is no usable answer. The count of ``None`` attempts decides,
+    as for a provider that never answered, instead of a year of "no data". One a moment ahead,
+    within the tolerance, is an answer like any other."""
+    from telegram_dashboard.timeparse import CLOCK_SKEW_TOLERANCE_SECONDS
+
+    facade = _Facade(lambda provider, now: None if provider == "anthropic" else _snapshot())
+    ahead = NOW + timedelta(days=365)
+    caches = {"claude": _quiet_cache("claude", 0, answered=ahead)}
+
+    kinds = []
+    for k in range(4):
+        capacity, _source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(seconds=300 * k)
+        )
+        kinds.append(capacity.quotas[0].kind)
+
+    assert kinds == ["unavailable", "unavailable", "not_configured", "not_configured"]
+    assert caches["claude"]["answered_at"] == ahead.isoformat()  # a None moves no answer
+
+    near = NOW + timedelta(seconds=CLOCK_SKEW_TOLERANCE_SECONDS - 1)
+    caches = {"claude": _quiet_cache("claude", 500, answered=near)}
+    capacity, _source, _probe = _facade_tick(tmp_path, facade, caches, NOW)
+    assert (capacity.quotas[0].kind, capacity.quotas[0].detail) == ("unavailable", _NO_ANSWER)
+
+
 def test_an_exception_from_the_facade_neither_counts_nor_answers(tmp_path: Path) -> None:
     """A provider's exception is no ``None`` and no answer (the real facade swallows them; a
     fake or a late ``remember_account_usage`` raises): the count stays, and a provider that was

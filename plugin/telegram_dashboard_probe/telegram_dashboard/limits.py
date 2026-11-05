@@ -42,7 +42,7 @@ from typing import Any
 from .policy import sanitize_public_text
 from .quota_cache import cache_for, current, last_answer
 from .quota_cache import tick as quota_tick
-from .timeparse import age_seconds, parse_timestamp
+from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -280,9 +280,12 @@ def _quiet(item: dict[str, Any], cache: dict[str, Any] | None, now: datetime | N
     if cache is None or now is None:
         return item.get("status") == "unavailable" and item.get("reason") == NONE_REASON
     answered = parse_timestamp(cache.get("answered_at"))
-    if answered is None:
+    age = age_seconds(answered, now) if answered is not None else None
+    if answered is None or is_from_the_future(age):
+        # No answer, or one stamped ahead of the clock beyond the skew tolerance (the clock was
+        # set back): no usable answer, so the count of ``None`` attempts decides, or a stamp a
+        # year ahead would keep a quiet provider shown for that year (B2 review M-c).
         return none_attempts(cache) >= NOT_CONFIGURED_AFTER
-    age = age_seconds(answered, now)
     return age is not None and age > QUIET_SHOWN_SECONDS
 
 

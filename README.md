@@ -967,7 +967,8 @@ record decides (`facade_cache`):
   `Not configured: Claude`
 - a provider that answered before and then went quiet stays a `no data` line while its last
   answer is at most 7 days old (the longest window these providers report), then is treated the
-  same way
+  same way. A last answer stamped ahead of the clock (the clock was set back) counts as none:
+  the empty answers in a row decide, as above
 - any answer brings the line back at once and starts the count again. Claude on an API key
   answers (the engine's reason, `Anthropic account limits are only available for OAuth-backed…`)
   and keeps its line. A missed deadline or a worker still running is no answer and no empty one:
