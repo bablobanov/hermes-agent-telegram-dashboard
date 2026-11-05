@@ -14,6 +14,13 @@ With a ``Cadence`` (the plugin's tick) each provider is asked at most once per i
 or failure, through ``quota_cache.tick`` and the record's per-provider cache; between attempts the
 last answer stands with its own ``fetched_at``. Without one (the cron path) every call asks.
 
+The facade answers ``None`` alike for "no credential here" and "the call failed" (it swallows
+every exception, on every version read). A provider whose silence says it is not set up here is
+``not_configured`` instead of a "no data" line (issue #14, ``_judged``): one that never answered
+since the record began, after ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row; one that
+answered before, once its last answer is ``QUIET_SHOWN_SECONDS`` old. Any answer brings it back.
+Without a record (the cron path) there is no memory, and ``None`` is ``not_configured`` at once.
+
 Nothing here reads or stores credentials; the facade uses the account's own material inside the
 engine. Of a snapshot only the fields ``_item_of`` names are read: never its ``identity``, ``raw``
 or ``details``, so none of them reaches the record or the screen. This is one of the two named
@@ -35,6 +42,7 @@ from typing import Any
 from .policy import sanitize_public_text
 from .quota_cache import cache_for, current, last_answer
 from .quota_cache import tick as quota_tick
+from .timeparse import age_seconds, parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -43,6 +51,21 @@ logger = logging.getLogger(__name__)
 PROVIDERS: tuple[tuple[str, str], ...] = (("claude", "anthropic"), ("codex", "openai-codex"))
 FACADE_MODULE = "agent.account_usage"
 FACADE_FUNCTION = "fetch_account_usage"
+# The reason an item carries for the facade's ``None``.
+NONE_REASON = "none"
+# A provider that never answered since the record began is taken as not configured here after
+# this many ``None`` attempts in a row (issue #14): at the default 300 s cadence, 10 to 15
+# minutes after the install. Before that it is a "no data" line with the reason.
+NOT_CONFIGURED_AFTER = 3
+# A provider that answered once and then went quiet stays a "no data" line this long after its
+# last answer, then is taken as not configured: the longest window these providers report is a
+# week, and an answer older than that says nothing about the current one.
+QUIET_SHOWN_SECONDS = 7 * 86400.0
+# An item's status and reason for a provider without a line (``QuotaKind`` ``not_configured``).
+NOT_CONFIGURED = "not_configured"
+NOT_CONFIGURED_REASON = "not configured"
+# The record's count of ``None`` attempts in a row since the last answer, per provider.
+NONE_ATTEMPTS = "none_attempts"
 # How much of each text the record keeps: what the screen shows of it (``collect``), no more.
 _REASON_LIMIT = 60
 _SOURCE_LIMIT = 40
@@ -91,6 +114,8 @@ def build_limits_payload(
     Without a ``cadence`` every provider is called (the cron path). With one, a provider is
     called only when its attempt is due (``quota_cache.tick``) and its cache in
     ``cadence.caches`` records the attempt; between attempts the cached answer is the item.
+    Either way a provider whose silence says it is not set up here is ``not_configured``
+    (``_judged``).
 
     Runs synchronously and may take as long as the slowest provider API; call it off the event
     loop (see :func:`fetch_limits_payload_off_loop`). Never raises.
@@ -101,10 +126,13 @@ def build_limits_payload(
         return _not_ok(f"unsupported: facade resolver failed ({type(exc).__name__})")
     if fetch is None:
         return _not_ok("unsupported: facade not importable")
-    if cadence is None:
-        providers = [_provider_item(key, provider, fetch) for key, provider in PROVIDERS]
-    else:
-        providers = [_provider_tick(key, provider, fetch, cadence) for key, provider in PROVIDERS]
+    providers = []
+    for key, provider in PROVIDERS:
+        if cadence is None:
+            providers.append(_judged(key, _provider_item(key, provider, fetch), None, None))
+        else:
+            item = _provider_tick(key, provider, fetch, cadence)
+            providers.append(_judged(key, item, cache_for(cadence.caches, key), cadence.now))
     return {"ok": True, "reason": None, "providers": providers}
 
 
@@ -163,7 +191,9 @@ def _missed(reason: str, cadence: Cadence | None) -> LimitsPayload:
     providers, and one provider's hang must not rewrite the other's row. A provider whose
     attempt was due shows its last answer with its own ``fetched_at`` while it is younger than
     ``show_seconds``, else "no data" with the reason, as an external source does
-    (``collect._external_guarded``)."""
+    (``collect._external_guarded``). A miss is neither an answer nor a ``None``: a provider
+    that was not configured stays so (``_judged`` reads the record, which the miss leaves
+    alone)."""
     if cadence is None:
         return _not_ok(reason)
     providers = []
@@ -172,8 +202,50 @@ def _missed(reason: str, cadence: Cadence | None) -> LimitsPayload:
         line = current(cache, now=cadence.now, interval_seconds=cadence.interval_seconds)
         if line is None:
             line = last_answer(cache, now=cadence.now, show_seconds=cadence.show_seconds)
-        providers.append(_plan_filled(cache, line if line is not None else _failed(key, reason)))
+        item = _plan_filled(cache, line if line is not None else _failed(key, reason))
+        providers.append(_judged(key, item, cache, cadence.now))
     return {"ok": True, "reason": reason, "providers": providers}
+
+
+def _judged(
+    key: str, item: dict[str, Any], cache: dict[str, Any] | None, now: datetime | None
+) -> dict[str, Any]:
+    """``item``, or a ``not_configured`` item for a provider whose silence says it is not set
+    up on this installation (issue #14). The facade cannot tell "no credential" from "the call
+    failed", so the record decides: a provider that never answered is not configured after
+    ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row, one that answered before once its last
+    answer is older than ``QUIET_SHOWN_SECONDS``. Without a record (``cache`` ``None``, the cron
+    path) there is no memory: the facade's ``None`` is not configured at once. The cache's own
+    item stays what the attempt returned; only the payload's item changes."""
+    if not _quiet(item, cache, now):
+        return item
+    return {
+        "provider": key,
+        "status": NOT_CONFIGURED,
+        "reason": NOT_CONFIGURED_REASON,
+        "source": None,
+        "fetched_at": None,
+        "windows": [],
+    }
+
+
+def _quiet(item: dict[str, Any], cache: dict[str, Any] | None, now: datetime | None) -> bool:
+    if cache is None or now is None:
+        return item.get("status") == "unavailable" and item.get("reason") == NONE_REASON
+    answered = parse_timestamp(cache.get("answered_at"))
+    if answered is None:
+        return none_attempts(cache) >= NOT_CONFIGURED_AFTER
+    age = age_seconds(answered, now)
+    return age is not None and age > QUIET_SHOWN_SECONDS
+
+
+def none_attempts(cache: dict[str, Any]) -> int:
+    """The record's count of ``None`` attempts in a row; a hand-edited value that is no count
+    is none."""
+    count = cache.get(NONE_ATTEMPTS)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    return count
 
 
 def _provider_tick(key: str, provider: str, fetch: Fetcher, cadence: Cadence) -> dict[str, Any]:
@@ -219,11 +291,15 @@ def _attempt(
     cache: dict[str, Any], key: str, provider: str, fetch: Fetcher, *, now: datetime
 ) -> dict[str, Any]:
     """One call. Any snapshot is an answer, with windows or without (Claude on an API key): the
-    provider's ``answered_at`` moves. The facade's ``None`` and a failure are not answers."""
+    provider's ``answered_at`` moves and its count of ``None`` attempts is gone. The facade's
+    ``None`` adds one to that count; a failure (an exception) is neither and leaves both."""
     snapshot, failure = _call(provider, fetch)
+    if failure == NONE_REASON:
+        cache[NONE_ATTEMPTS] = none_attempts(cache) + 1
     if failure is not None:
         return _failed(key, failure)
     cache["answered_at"] = now.isoformat()
+    cache.pop(NONE_ATTEMPTS, None)
     return _item_of(key, snapshot)
 
 
@@ -253,7 +329,7 @@ def _call(provider: str, fetch: Fetcher) -> tuple[Any, str | None]:
     except Exception as exc:
         return None, type(exc).__name__
     if snapshot is None:
-        return None, "none"
+        return None, NONE_REASON
     return snapshot, None
 
 

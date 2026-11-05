@@ -52,6 +52,9 @@ from .hermes_version import running_version
 from .hermes_version import summarize as summarize_version
 from .hermes_version import tick as version_tick
 from .limits import (
+    NONE_REASON,
+    NOT_CONFIGURED,
+    NOT_CONFIGURED_REASON,
     Cadence,
     Resolver,
     build_limits_payload,
@@ -110,9 +113,11 @@ LocalVersion = Callable[[], tuple[str | None, str | None]]
 # The lines that close the block: Gemini, built from the engine's log (``gemini_log.py``); an
 # external source's new provider sits before it.
 _TRAILING_PROVIDERS = frozenset({GEMINI_LABEL.lower()})
-# What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
-# token resolves): the installation has no credential, not a provider that refused.
-_NO_CREDENTIAL = "no account token"
+# What the facade's ``None`` says, on a line that is still shown (issue #14): no credential, or a
+# call that failed. ``fetch_account_usage`` turns every exception of a provider's fetcher (an
+# HTTP 401, 429 or 5xx, a network error, Codex without an account) into the same ``None`` as a
+# missing token, on every version read (0.21.1 to 0.22.7), so the two cannot be told apart.
+_NO_ANSWER = "no answer: no credential or the call failed"
 # A window's own verdict as the provider states it; anything else is no verdict at all.
 _WINDOW_SEVERITIES = ("normal", "warning", "critical")
 
@@ -431,6 +436,9 @@ LIMITS_TIMEOUT_SECONDS = 45.0
 # ``facade_refresh_seconds``): 288 calls a day per provider instead of one per tick. The plugin
 # requires the name (``REQUIRED_API``): a copy without it calls the facade on every tick.
 FACADE_DEFAULT_INTERVAL_SECONDS = 300.0
+# The facade's block, its ``limits`` source (``None`` when no provider has a line: issue #14) and
+# the probe's verdict.
+LimitsResult = tuple[CapacitySummary, SourceObservation | None, ProbeResult]
 
 
 def collect_limits(
@@ -440,7 +448,7 @@ def collect_limits(
     resolve: Resolver = import_fetcher,
     caches: dict[str, Any] | None = None,
     interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+) -> LimitsResult:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
@@ -460,7 +468,7 @@ async def collect_limits_async(
     caches: dict[str, Any] | None = None,
     interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
     period_seconds: float | None = None,
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+) -> LimitsResult:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
@@ -491,11 +499,14 @@ def _limits_disabled(
 
 def parse_limits_payload(
     payload: dict[str, Any], *, now: datetime, ttl_seconds: float = LIMITS_STALE_SECONDS
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+) -> LimitsResult:
     """The block and the ``limits`` source from the facade's payload. The source stands on the
     freshest ``fetched_at`` among the providers with a number, against ``ttl_seconds``; with no
     number at all it is unavailable, with the payload's reason when it gives one (a missed
-    deadline served from the record)."""
+    deadline served from the record). It is the source of the providers that have a line: one
+    ``not_configured`` (issue #14) keeps its metric for the details, and when no provider has a
+    line there is no ``limits`` source at all, so it leaves the coverage instead of standing
+    there unavailable for good."""
     if payload.get("ok") is not True:
         reason = sanitize_public_text(str(payload.get("reason") or "no reason"), limit=80)
         if reason.startswith("unsupported"):
@@ -515,6 +526,9 @@ def parse_limits_payload(
         label = _PROVIDER_LABELS.get(key)
         if label is None:
             continue
+        if item.get("status") == NOT_CONFIGURED:
+            quotas[key] = _not_configured(label, item)
+            continue
         quotas[key] = _quota_from_item(label, item)
         fetched_at = item.get("fetched_at")
         if quotas[key].kind == "official" and isinstance(fetched_at, str):
@@ -523,6 +537,9 @@ def parse_limits_payload(
         quotas.get(key) or QuotaMetric(label, "unavailable", detail="provider not in the answer")
         for key, label in _PROVIDER_LABELS.items()
     ]
+    probe = ProbeResult("limits", "supported")
+    if all(quota.kind == "not_configured" for quota in ordered):
+        return CapacitySummary(tuple(ordered)), None, probe
     observed_at = max(fetched) if fetched else None
     if observed_at is None:
         missed = payload.get("reason")
@@ -531,7 +548,15 @@ def parse_limits_payload(
     else:
         freshness = classify_freshness(observed_at, now=now, ttl_seconds=int(ttl_seconds))
         source = SourceObservation("limits", "official", freshness, observed_at=observed_at)
-    return CapacitySummary(tuple(ordered)), source, ProbeResult("limits", "supported")
+    return CapacitySummary(tuple(ordered)), source, probe
+
+
+def _not_configured(label: str, item: dict[str, Any]) -> QuotaMetric:
+    """A provider without a line (issue #14): its metric stays in the block until the external
+    sources are merged (one naming it takes its place), the details name it by the reason."""
+    reason = item.get("reason")
+    detail = sanitize_public_text(reason, limit=60) if isinstance(reason, str) and reason else None
+    return QuotaMetric(label, "not_configured", detail=detail or NOT_CONFIGURED_REASON)
 
 
 def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
@@ -551,8 +576,8 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
         )
     if item.get("status") != "available":
         reason = item.get("reason")
-        if reason == "none":
-            detail = _NO_CREDENTIAL
+        if reason == NONE_REASON:
+            detail = _NO_ANSWER
         else:
             detail = sanitize_public_text(str(reason), limit=60) if reason else "no data"
         return QuotaMetric(label, "unavailable", detail=detail, plan=plan, login_expires_at=login)
@@ -949,7 +974,7 @@ def collect_all(
         capacity=merge_external(merge_quotas(capacity, gemini), metrics),
         sources=(
             gateway_source,
-            limits_source,
+            *_present(limits_source),
             *(part[1] for part in externals),
             gemini_source,
             drift_source,
@@ -1016,11 +1041,11 @@ def _externals_sync(
     ]
 
 
-def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation) -> GeminiPart:
+def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation | None) -> GeminiPart:
     """Limits off: the log is not read, the line and the source take the block's verdict."""
-    source = SourceObservation(
-        GEMINI_SOURCE, "local", limits_source.state, detail=limits_source.detail
-    )
+    state: SourceState = "unsupported" if limits_source is None else limits_source.state
+    detail = "disabled" if limits_source is None else limits_source.detail
+    source = SourceObservation(GEMINI_SOURCE, "local", state, detail=detail)
     return quota_off_for(GEMINI_LABEL, capacity), source, ()
 
 
@@ -1042,7 +1067,7 @@ _UNGUARDED = (asyncio.CancelledError, KeyboardInterrupt)
 
 GatewayPart = tuple[GatewaySummary, SourceObservation, tuple[Incident, ...]]
 DriftPart = tuple[DriftSummary, SourceObservation, tuple[Incident, ...]]
-LimitsPart = tuple[CapacitySummary, SourceObservation, tuple[Incident, ...]]
+LimitsPart = tuple[CapacitySummary, SourceObservation | None, tuple[Incident, ...]]
 
 
 async def collect_all_async(
@@ -1215,7 +1240,7 @@ async def collect_all_async(
             capacity=merge_external(merge_quotas(capacity, gemini), metrics),
             sources=(
                 gateway_source,
-                limits_source,
+                *_present(limits_source),
                 *(part[1] for part in externals),
                 gemini_source,
                 drift_source,

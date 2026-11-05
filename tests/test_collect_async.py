@@ -831,6 +831,49 @@ def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
         assert all("attempted_at" not in cache for cache in caches.values())
 
 
+def test_an_installation_without_claude_and_codex_leaves_the_limits_source_on_the_tick(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Issue #14 on the tick's own path (the worker, the record): the facade answers ``None``
+    for both providers. The first two attempts are "no data" lines and ``limits (unavailable)``
+    on the ❔ line; from the third on neither has a line, the ``limits`` source is gone from the
+    coverage and the details name them once."""
+    from datetime import timedelta
+
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    flights, caches = Flights(), {}
+    runner = BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, ""))
+
+    def tick(minutes: int) -> Any:
+        return collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            runner,
+            now=NOW + timedelta(minutes=minutes),
+            resolve_limits=lambda: lambda provider: None,
+            flights=flights,
+            facade_caches=caches,
+            facade_interval_seconds=300,
+            period_seconds=60,
+        )
+
+    async def scenario():
+        return [await tick(minutes) for minutes in (0, 5, 10)]
+
+    snapshots = asyncio.run(scenario())
+
+    names = [[s.name for s in snapshot.sources] for snapshot in snapshots]
+    assert ["limits" in each for each in names] == [True, True, False]
+    assert [q.kind for q in snapshots[0].capacity.quotas[:2]] == ["unavailable"] * 2
+    assert [q.kind for q in snapshots[2].capacity.quotas[:2]] == ["not_configured"] * 2
+    first = render_dashboard(snapshots[0], now=NOW)
+    last = render_dashboard(snapshots[2], now=NOW + timedelta(minutes=10))
+    assert "limits (unavailable)" in first
+    assert "limits (" not in last
+    assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (3, 3)
+
+
 # ---------------------------------------------------------------- the usage facade on a cadence (#16)
 
 

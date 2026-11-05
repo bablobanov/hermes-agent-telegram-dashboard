@@ -10,8 +10,10 @@ Severity = Literal["normal", "warning", "critical", "unknown"]
 SourceState = Literal["fresh", "stale", "unavailable", "unsupported"]
 Authority = Literal["official", "local", "derived", "unknown"]
 # ``expired``: the provider answered that the login behind the number has ended; the line says
-# so instead of a number, and the owner signs in again.
-QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired"]
+# so instead of a number, and the owner signs in again. ``not_configured``: nothing says this
+# installation has the provider (issue #14): no line, no source, out of the coverage; the details
+# name it in one line (``Not configured: Claude``). Unlike ``unsupported`` it is never drawn.
+QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired", "not_configured"]
 DriftState = Literal["clean", "drift", "unknown", "unsupported"]
 BackupState = Literal["ok", "failed", "unknown", "unsupported"]
 GatewayProcessState = Literal["running", "stopped", "unknown", "unsupported"]

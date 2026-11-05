@@ -258,7 +258,10 @@ def test_limits_payload_keeps_official_local_and_unsupported_apart() -> None:
     assert source.state == "fresh" and probe.status == "supported"
 
 
-def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> None:
+def test_the_facade_s_none_is_named_as_no_answer_not_as_a_missing_token() -> None:
+    """Issue #14: the facade answers ``None`` alike for no credential and for a call that
+    failed (an HTTP 401, 429 or 5xx, a network error), so a ``None`` line that is still shown
+    says both, never "no account token"."""
     payload = {
         "ok": True,
         "providers": [
@@ -269,7 +272,7 @@ def test_the_facade_s_none_is_named_as_a_missing_credential_not_a_refusal() -> N
 
     capacity, _, _ = parse_limits_payload(payload, now=NOW)
 
-    assert capacity.quotas[0].detail == "no account token"
+    assert capacity.quotas[0].detail == "no answer: no credential or the call failed"
     assert capacity.quotas[1].detail == "AuthError"
     assert [q.provider for q in capacity.quotas] == ["Claude", "Codex"]
 
@@ -1020,7 +1023,7 @@ def test_the_record_keeps_the_attempt_the_item_the_last_answer_and_the_plan(
 ) -> None:
     """Per provider: ``attempted_at``, the item exactly as the reader builds it, ``answered_at``
     (the last snapshot the facade gave) and ``plan``. The facade's ``None`` is an attempt
-    without an answer."""
+    without an answer, counted in ``none_attempts`` (issue #14) until the next answer."""
 
     def answer(provider: str, now: datetime):
         return _snapshot(fetched_at=now, plan="Prolite") if provider == "openai-codex" else None
@@ -1047,6 +1050,7 @@ def test_the_record_keeps_the_attempt_the_item_the_last_answer_and_the_plan(
     }
     assert caches["claude"] == {
         "attempted_at": NOW.isoformat(),
+        "none_attempts": 1,
         "item": {
             "provider": "claude",
             "status": "unavailable",
@@ -1471,11 +1475,11 @@ def test_one_provider_s_hang_leaves_the_other_s_failure_row_alone(tmp_path: Path
 
     assert calls == ["openai-codex"]
     assert [(q.provider, q.detail) for q in first.quotas] == [
-        ("Claude", "no account token"),
+        ("Claude", "no answer: no credential or the call failed"),
         ("Codex", "timeout: facade did not answer within 0.05s"),
     ]
     assert [(q.provider, q.detail) for q in second.quotas] == [
-        ("Claude", "no account token"),
+        ("Claude", "no answer: no credential or the call failed"),
         ("Codex", "busy: the previous facade call has not returned yet"),
     ]
 
@@ -1511,3 +1515,265 @@ def test_a_day_at_a_60_second_period_asks_each_provider_288_times(tmp_path: Path
     assert FACADE_DEFAULT_INTERVAL_SECONDS == 300.0
     assert facade.calls.count("anthropic") == 288
     assert facade.calls.count("openai-codex") == 288
+
+
+# ---------------------------------------------------------------- not configured (#14)
+#
+# The facade answers ``None`` alike for "no credential" and "the call failed". The record
+# decides: a provider that never answered is not configured after three ``None`` attempts in a
+# row, one that answered before after a week of silence; any answer brings it back. Without a
+# record (the cron path) ``None`` is not configured at once.
+
+_NO_ANSWER = "no answer: no credential or the call failed"
+
+
+def _none_item(key: str) -> dict:
+    return {
+        "provider": key,
+        "status": "unavailable",
+        "reason": "none",
+        "source": None,
+        "fetched_at": None,
+        "windows": [],
+    }
+
+
+def _quiet_cache(key: str, nones: int, *, answered: datetime | None = None) -> dict:
+    """A provider whose last attempt (due again) was a ``None``."""
+    cache = {
+        "attempted_at": (NOW - timedelta(seconds=400)).isoformat(),
+        "item": _none_item(key),
+        "none_attempts": nones,
+    }
+    if answered is not None:
+        cache["answered_at"] = answered.isoformat()
+    return cache
+
+
+def test_a_provider_that_never_answered_is_hidden_after_exactly_the_threshold_of_nones(
+    tmp_path: Path,
+) -> None:
+    """The published promise of #14: a provider that has never answered since the record began
+    is a "no data" line with the reason for its first two ``None`` attempts and has no line from
+    the third on, between attempts too. It is still asked on its cadence."""
+    from telegram_dashboard.limits import NOT_CONFIGURED_AFTER
+
+    def answer(provider: str, now: datetime):
+        return None if provider == "anthropic" else _snapshot(fetched_at=now)
+
+    facade = _Facade(answer)
+    caches: dict = {}
+    seen = []
+
+    for k in range(4):
+        at = NOW + timedelta(seconds=300 * k)
+        on, on_source, _ = _facade_tick(tmp_path, facade, caches, at)
+        between, between_source, _ = _facade_tick(
+            tmp_path, facade, caches, at + timedelta(seconds=60)
+        )
+        claude = (on.quotas[0].kind, on.quotas[0].detail, between.quotas[0].kind)
+        seen.append((*claude, caches["claude"]["none_attempts"]))
+        assert on_source.state == between_source.state == "fresh"  # Codex has a line
+
+    assert NOT_CONFIGURED_AFTER == 3
+    assert seen == [
+        ("unavailable", _NO_ANSWER, "unavailable", 1),
+        ("unavailable", _NO_ANSWER, "unavailable", 2),
+        ("not_configured", "not configured", "not_configured", 3),
+        ("not_configured", "not configured", "not_configured", 4),
+    ]
+    assert "answered_at" not in caches["claude"]
+    assert caches["claude"]["item"]["reason"] == "none"  # the record keeps the attempt itself
+    assert facade.calls.count("anthropic") == 4
+
+
+def test_an_answer_brings_a_hidden_provider_back_at_once_and_clears_its_count(
+    tmp_path: Path,
+) -> None:
+    answers = iter([_snapshot(fetched_at=NOW), None])
+    facade = _Facade(lambda provider, now: next(answers) if provider == "anthropic" else None)
+    caches = {"claude": _quiet_cache("claude", 7)}
+
+    back, _source, _probe = _facade_tick(tmp_path, facade, caches, NOW)
+
+    assert back.quotas[0].kind == "official"
+    assert caches["claude"]["answered_at"] == NOW.isoformat()
+    assert "none_attempts" not in caches["claude"]
+
+    # It answered a moment ago: its next None is a shown line, the count starts again.
+    quiet, _source, _probe = _facade_tick(tmp_path, facade, caches, NOW + timedelta(minutes=5))
+
+    assert (quiet.quotas[0].kind, quiet.quotas[0].detail) == ("unavailable", _NO_ANSWER)
+    assert caches["claude"]["none_attempts"] == 1
+
+
+def test_a_provider_that_answered_then_went_quiet_is_shown_for_seven_days_then_hidden(
+    tmp_path: Path,
+) -> None:
+    """The second half of the promise: a provider that answered before is a "no data" line while
+    its last answer is at most seven days old, however many ``None`` attempts followed, and has
+    no line after that."""
+    from telegram_dashboard.limits import QUIET_SHOWN_SECONDS
+
+    answered = NOW - timedelta(seconds=QUIET_SHOWN_SECONDS) + timedelta(minutes=10)
+    caches = {"claude": _quiet_cache("claude", 500, answered=answered)}
+    facade = _Facade(lambda provider, now: None if provider == "anthropic" else _snapshot())
+
+    kinds = []
+    for seconds in (0, 599, 601, 900):
+        capacity, _source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(seconds=seconds)
+        )
+        kinds.append(capacity.quotas[0].kind)
+
+    assert QUIET_SHOWN_SECONDS == 7 * 86400
+    assert kinds == ["unavailable", "unavailable", "not_configured", "not_configured"]
+    assert caches["claude"]["answered_at"] == answered.isoformat()
+
+
+def test_an_exception_from_the_facade_neither_counts_nor_answers(tmp_path: Path) -> None:
+    """A provider's exception is no ``None`` and no answer (the real facade swallows them; a
+    fake or a late ``remember_account_usage`` raises): the count stays, and a provider that was
+    hidden stays hidden while one that was shown shows the class name."""
+
+    def answer(provider: str, now: datetime):
+        raise RuntimeError("refresh failed")
+
+    caches = {"claude": _quiet_cache("claude", 2), "codex": _quiet_cache("codex", 3)}
+
+    capacity, _source, _probe = _facade_tick(tmp_path, _Facade(answer), caches, NOW)
+
+    assert [(q.kind, q.detail) for q in capacity.quotas] == [
+        ("unavailable", "RuntimeError"),
+        ("not_configured", "not configured"),
+    ]
+    assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (2, 3)
+    assert "answered_at" not in caches["claude"] and "answered_at" not in caches["codex"]
+
+
+def test_a_missed_deadline_changes_neither_the_count_nor_the_answer() -> None:
+    """A deadline or a busy worker is not an answer and not a ``None``: a hidden provider stays
+    hidden, a shown one shows the miss, and neither count moves until the worker returns."""
+    import copy
+
+    from probe_fakes import until
+
+    from telegram_dashboard.limits import Cadence, fetch_limits_payload_off_loop
+    from telegram_dashboard.workers import Flights
+
+    release = threading.Event()
+
+    def fetch(provider: str):
+        release.wait(5)
+        return None
+
+    caches = {"claude": _quiet_cache("claude", 3), "codex": _quiet_cache("codex", 2)}
+    flights = Flights()
+
+    def ask(seconds: float):
+        cadence = Cadence(caches, NOW + timedelta(seconds=seconds), 300.0, 600.0)
+        return fetch_limits_payload_off_loop(
+            lambda: fetch, timeout_seconds=0.05, flights=flights, cadence=cadence
+        )
+
+    async def scenario():
+        first = await ask(0)
+        second = await ask(60)
+        record = copy.deepcopy(caches)
+        release.set()
+        await until(lambda: not flights.busy("limits"))
+        return first, second, record
+
+    first, second, record = asyncio.run(scenario())
+
+    for payload, reason in (
+        (first, "timeout: facade did not answer within 0.05s"),
+        (second, "busy: the previous facade call has not returned yet"),
+    ):
+        claude, codex = payload["providers"]
+        assert (claude["status"], codex["status"], codex["reason"]) == (
+            "not_configured",
+            "unavailable",
+            reason,
+        )
+    assert (record["claude"]["none_attempts"], record["codex"]["none_attempts"]) == (3, 2)
+    assert "answered_at" not in record["claude"] and "answered_at" not in record["codex"]
+    # The worker's own attempt, when it returns, is a None like any other.
+    assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (4, 3)
+
+
+def test_claude_on_an_api_key_is_an_answer_and_keeps_its_line(tmp_path: Path) -> None:
+    """A snapshot without numbers (Claude on an API key) is an answer: the account is there, the
+    line stays "no data" with the engine's reason however often it comes."""
+    reason = "Anthropic account limits are only available for OAuth-backed Claude accounts."
+
+    def answer(provider: str, now: datetime):
+        return _snapshot(available=False, windows=(), fetched_at=now, unavailable_reason=reason)
+
+    facade, caches = _Facade(answer), {}
+    for k in range(5):
+        capacity, _source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(minutes=5 * k)
+        )
+        assert capacity.quotas[0].kind == "unavailable"
+        assert capacity.quotas[0].detail == reason[:59] + "…"
+
+    assert "none_attempts" not in caches["claude"]
+
+
+def test_the_cron_path_has_no_memory_and_takes_the_facade_s_none_as_not_configured(
+    tmp_path: Path,
+) -> None:
+    """Without a record (``__main__``) there is nothing to remember: the facade's ``None`` is
+    not configured at once; an exception still shows its class name."""
+
+    def answer(provider: str, now: datetime):
+        if provider == "openai-codex":
+            raise RuntimeError("refresh failed")
+        return None
+
+    capacity, source, _probe = collect_limits(
+        Environment(hermes_home=tmp_path), now=NOW, resolve=lambda: _Facade(answer)
+    )
+
+    assert [(q.provider, q.kind, q.detail) for q in capacity.quotas] == [
+        ("Claude", "not_configured", "not configured"),
+        ("Codex", "unavailable", "RuntimeError"),
+    ]
+    assert source is not None and source.state == "unavailable"
+
+
+def test_no_limits_source_at_all_when_no_facade_provider_has_a_line(tmp_path: Path) -> None:
+    """Issue #14, the installation without Claude and Codex: once neither has a line there is
+    no ``limits`` source, so it leaves the coverage and no longer holds the status at grey;
+    before that it is ``limits (unavailable)`` like any failing source."""
+    from telegram_dashboard.collect import build_snapshot
+    from telegram_dashboard.schema import SourceObservation
+
+    gateway = SourceObservation("gateway_state", "official", "fresh", observed_at=NOW.isoformat())
+    facade = _Facade(lambda provider, now: None)
+    caches: dict = {}
+    seen = []
+    for k in range(3):
+        capacity, source, _probe = _facade_tick(
+            tmp_path, facade, caches, NOW + timedelta(minutes=5 * k)
+        )
+        sources = (gateway,) if source is None else (gateway, source)
+        snapshot = build_snapshot(
+            now=NOW, gateway=None, drift=None, capacity=capacity, sources=sources, incidents=()
+        )
+        seen.append((None if source is None else source.state, snapshot.overall))
+
+    assert seen == [("unavailable", "unknown"), ("unavailable", "unknown"), (None, "normal")]
+
+    cron = collect_all(
+        Environment(hermes_home=tmp_path),
+        FakeRunner(CommandResult(0, "", "")),
+        now=NOW,
+        resolve_limits=lambda: facade,
+    )
+    assert "limits" not in [s.name for s in cron.sources]
+    assert [(q.provider, q.kind) for q in cron.capacity.quotas][:2] == [
+        ("Claude", "not_configured"),
+        ("Codex", "not_configured"),
+    ]
