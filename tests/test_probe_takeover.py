@@ -319,6 +319,36 @@ def test_a_loop_spawned_just_after_its_registration_was_unloaded_never_ticks(
     asyncio.run(scenario())
 
 
+def test_the_launch_profile_takes_over_when_the_earlier_adapter_is_gone(tmp_path: Path) -> None:
+    """Review M2: the earlier registration's adapter is gone (collected after the runner
+    replaced it inside the reload). For the launch profile the registry keeps the runner, so
+    the new registration starts a loop anyway and delivers through the adapter the runner
+    publishes. A profile that is not marked as the launch profile's has nothing to take over."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    old = FakeAdapter()  # its runner publishes it: the launch profile's adapter
+
+    async def scenario() -> None:
+        first.wire(object(), old)
+        await until(lambda: old.html_edits)
+        first.retire()  # the engine's unload
+        first.task.cancel()
+        replacement = FakeAdapter()
+        old.gateway_runner.adapters["telegram"] = replacement  # published inside the reload
+        entry = sys.modules[LIVE_MODULE].profiles[first.key]
+        assert entry["primary"] is True and entry["runner"]() is old.gateway_runner
+        entry["adapter"] = lambda: None  # the old adapter collected
+
+        second = await asyncio.to_thread(load_plugin().register, _context(tmp_path / "home"))
+        await until(lambda: len(replacement.html_edits) >= 1)
+
+        assert _loops() == [second.task] and second.latest is replacement
+        second.task.cancel()
+
+    asyncio.run(scenario())
+
+
 def test_an_entry_of_a_later_release_is_read_by_the_keys_this_one_knows(tmp_path: Path) -> None:
     """A later release may write ``version`` 2 and keys this one does not know: the takeover uses
     the adapter, loop, task and generation, and the entry it writes says ``version`` 1."""

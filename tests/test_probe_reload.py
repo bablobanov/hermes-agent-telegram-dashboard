@@ -39,6 +39,7 @@ os.environ.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)
 pytest.importorskip("hermes_cli.plugins", reason="Hermes engine not importable in this interpreter")
 pytest.importorskip("telegram", reason="python-telegram-bot not installed")
 
+import hermes_cli.plugins_loader as plugins_loader
 from gateway.config import Platform, PlatformConfig
 from gateway.run import _profile_runtime_scope
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin, reload_plugins_verb
@@ -345,6 +346,64 @@ def test_a_disabled_plugin_reloaded_runs_no_loop_and_comes_back_when_enabled(
         assert back, "the loop did not come back after the plugin was enabled again"
         assert _loops() == [_runtime(default.manager).task]
         default.bot.send_message.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def _reconnect_in_the_reload(runner: Runner, old: Profile, new: Profile) -> None:
+    """Telegram reconnects inside the reload: the old client torn down, the replacement's
+    connect() wires what the manager holds (no factory of the probe: it is unloaded) and the
+    runner publishes it. Runs on the reload's thread, where the engine is about to call the
+    probe's register()."""
+    old.adapter._bot = None
+    old.adapter._app = None
+    old.adapter._mark_disconnected()
+    new.adapter._wire_plugin_handlers(new.adapter._app)
+    new.adapter._mark_connected()
+    runner.adapters[Platform.TELEGRAM] = new.adapter
+
+
+@pytest.mark.parametrize("old_adapter", ["kept", "collected"])
+def test_a_reconnect_inside_the_reload_is_picked_up(
+    homes: Homes, monkeypatch: pytest.MonkeyPatch, old_adapter: str
+) -> None:
+    """Review M2: the replacement connects after the unload and before the new ``register()``,
+    with no factory of the probe to call, and no re-wire follows (the probe was loaded before).
+    The launch profile's registration takes the published replacement up, whether the old
+    adapter is still in memory (``kept``: taken over first, then replaced) or gone
+    (``collected``: the registry's reference to it is dead, the runner's map has the adapter)."""
+
+    async def scenario() -> None:
+        runner = Runner(homes)
+        default = _start_default(runner)
+        first = _runtime(default.manager)
+        _connect(runner, default)
+        assert await _settle(lambda: default.bot.edit_message_text.await_count >= 1)
+        replacement = Profile(default.manager, *_adapter(runner, 999))
+        real, hooked = plugins_loader.run_with_load_deadline, []
+
+        def in_the_window(plugin_key: str, ctx: Any, fn: Callable[[], Any]) -> Any:
+            if PLUGIN in str(plugin_key) and not hooked:
+                hooked.append(plugin_key)
+                _reconnect_in_the_reload(runner, default, replacement)
+                if old_adapter == "collected":
+                    sys.modules[LIVE_MODULE].profiles[first.key]["adapter"] = lambda: None
+            return real(plugin_key, ctx, fn)
+
+        monkeypatch.setattr(plugins_loader, "run_with_load_deadline", in_the_window)
+        await _reload("force-discover", runner)
+        assert hooked, "the probe's load was not reached"
+        delivered = await _settle(lambda: replacement.bot.edit_message_text.await_count >= 2)
+
+        second = _runtime(default.manager)
+        assert delivered, (
+            f"the replacement was not taken up: edits={replacement.bot.edit_message_text.await_count}"
+            f" record={_record(homes.root).get('last_status')!r} live loops={len(_loops())}"
+        )
+        assert _loops() == [second.task] and second.latest is replacement.adapter
+        replacement.bot.send_message.assert_not_awaited()  # the same message, edited
+        assert _record(homes.root)["message_id"] == "101"
+        assert sys.modules[LIVE_MODULE].profiles[second.key]["primary"] is True
 
     asyncio.run(scenario())
 

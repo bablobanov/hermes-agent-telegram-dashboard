@@ -26,7 +26,9 @@ the third is issue #12, read on 0.22.2 to 0.22.7):
   gateway loop, the task and the generation; ``register()`` claims the profile and, when an
   earlier registration was handed an adapter, takes its loop over on the gateway loop
   (``ProbeRuntime.claim_profile``). One loop per profile, run by the newest registration; the
-  factory of an earlier one does nothing.
+  factory of an earlier one does nothing. The launch profile's registration (marked once an
+  adapter handed to it is the one the runner publishes) also takes up an adapter the runner
+  published while no factory of the plugin was registered: a reconnect inside the reload.
 
 Also: the factory fires BEFORE the adapter finishes ``initialize()``/``start()``, so the first
 tick waits for ``is_connected`` instead of sending into a bot that is not initialised yet.
@@ -249,11 +251,14 @@ Collector = Callable[[datetime], Awaitable[Any]]
 # reads what this one wrote, and this one what a later one writes: an entry carries ``version``,
 # and a reader takes only the keys it knows (``LIVE_KEYS``), whatever else is there. The module
 # has ``version``, ``lock`` (a ``threading.Lock``) and ``profiles`` (key -> entry); an entry has
-# ``version``, ``owner`` and ``adapter`` (references: call one for the object, ``None`` once it
-# is gone), ``loop`` (the gateway's event loop), ``task`` and ``generation``.
+# ``version``, ``owner``, ``adapter`` and ``runner`` (references: call one for the object, ``None``
+# once it is gone; ``runner`` is the adapter's ``gateway_runner``), ``platform`` (the adapter's
+# key in the runner's map), ``loop`` (the gateway's event loop), ``task``, ``generation`` and
+# ``primary`` (true once an adapter handed to this profile's registration was the one the runner
+# publishes: the launch profile, whose adapter the runner's map holds).
 LIVE_MODULE = "_telegram_dashboard_probe_live"
 LIVE_VERSION = 1
-LIVE_KEYS = ("adapter", "loop", "task", "generation")
+LIVE_KEYS = ("adapter", "runner", "platform", "loop", "task", "generation", "primary")
 
 
 @dataclass(frozen=True)
@@ -704,12 +709,17 @@ class _Live:
 
 @dataclass(frozen=True)
 class _Handover:
-    """What a registration takes over from an earlier one of its profile."""
+    """What a registration takes over from an earlier one of its profile. ``adapter`` is
+    ``None`` when it is gone and the profile is the launch profile (``primary``): the runner's
+    map then has the adapter to use."""
 
     loop: asyncio.AbstractEventLoop
     adapter: Any
     task: Any
     generation: int
+    primary: bool = False
+    runner: Callable[[], Any] | None = None
+    platform: Any = None
 
 
 def _live() -> _Live | None:
@@ -760,6 +770,10 @@ def _alive(task: object) -> bool:
     return callable(done) and not done()
 
 
+def _connected(adapter: object) -> bool:
+    return adapter is not None and bool(getattr(adapter, "is_connected", False))
+
+
 def _known(entry: object) -> dict[str, Any]:
     """The keys of a registry entry this release knows, whichever release wrote it."""
     if not isinstance(entry, dict):
@@ -774,14 +788,20 @@ def _owner(entry: object) -> Any:
 
 def _handover(entry: dict[str, Any]) -> _Handover | None:
     """What a takeover needs from an earlier registration's entry: the gateway loop, still open,
-    and the adapter that registration was handed, still alive; ``None`` without either."""
+    and the adapter that registration was handed, still alive, or for the launch profile the
+    runner, whose map has its adapter; ``None`` without them."""
     loop, adapter = entry.get("loop"), _deref(entry.get("adapter"))
-    if adapter is None or not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+    if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+        return None
+    primary = entry.get("primary") is True
+    runner = entry.get("runner") if callable(entry.get("runner")) else None
+    if adapter is None and not (primary and _deref(runner) is not None):
         return None
     generation = entry.get("generation")
     if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
         generation = 1
-    return _Handover(loop, adapter, entry.get("task"), generation)
+    task = entry.get("task")
+    return _Handover(loop, adapter, task, generation, primary, runner, entry.get("platform"))
 
 
 class ProbeRuntime:
@@ -808,6 +828,11 @@ class ProbeRuntime:
         # engine unloaded it since (``retire``).
         self.key = profile_key(ctx, settings)
         self._retired = False
+        # The runner and the platform key of the adapters handed here, and whether this is the
+        # launch profile's registration (``_note_published``).
+        self._runner: Callable[[], Any] | None = None
+        self._platform: Any = None
+        self.primary = False
         self.ticks = 0
         self.record: dict[str, Any] = {}
         # ``None`` until the first edit answers; ``False`` while HTML is refused, with the tick
@@ -850,6 +875,9 @@ class ProbeRuntime:
         for key in gone:
             del self._generations[key]
         self._generations[id(adapter)] = (_ref(adapter), self.generation)
+        runner = getattr(adapter, "gateway_runner", None)
+        if runner is not None:
+            self._runner, self._platform = _ref(runner), getattr(adapter, "platform", None)
 
     def _start(self) -> None:
         """The one place the loop is spawned: through the engine, so an unload cancels it."""
@@ -881,13 +909,18 @@ class ProbeRuntime:
         """On the gateway loop: the earlier registration's loop stops (if the unload has not
         stopped it yet) and this one's starts on the adapter that one was handed. Nothing when
         this registration was unloaded meanwhile, no longer serves the profile, or runs a loop
-        already (a reconnect wired it first)."""
+        already (a reconnect wired it first). The launch profile's registration starts without
+        an adapter when the earlier one's is gone: the runner's map has the current one."""
         if self._retired or _alive(self.task) or not self._owns_profile():
             return
         if _alive(handover.task):
             handover.task.cancel()
         self.generation = handover.generation
-        self._hand(handover.adapter)
+        self.primary = self.primary or handover.primary
+        if handover.adapter is not None:
+            self._hand(handover.adapter)
+        else:
+            self._runner, self._platform = handover.runner, handover.platform
         self._start()
         logger.info(
             "probe: plugin registered again; tick loop taken over on adapter generation %d",
@@ -912,8 +945,9 @@ class ProbeRuntime:
 
     def _publish(self) -> None:
         """What a later registration of this profile needs to take the loop over: the adapter
-        last handed here, the gateway loop (``wire`` and ``_adopt`` run on it), the task and the
-        generation. Only the registration that serves the profile writes."""
+        last handed here and its runner, the gateway loop (``wire``, ``_adopt`` and the tick run
+        on it), the task, the generation and the launch-profile marker. Only the registration
+        that serves the profile writes."""
         live = _live()
         try:
             loop = asyncio.get_running_loop()
@@ -925,9 +959,12 @@ class ProbeRuntime:
             "version": LIVE_VERSION,
             "owner": _ref(self),
             "adapter": _ref(self.latest),
+            "runner": self._runner,
+            "platform": self._platform,
             "loop": loop,
             "task": self.task,
             "generation": self.generation,
+            "primary": self.primary,
         }
         with live.lock:
             current = live.profiles.get(self.key)
@@ -941,20 +978,44 @@ class ProbeRuntime:
         replacement's ``connect()`` hands it here first), else the one last handed to us;
         connected only. The runner's map holds the launch profile's adapters, also for the
         adapter of a served secondary profile: one never handed here is never used, or a
-        secondary profile's screen would go out through another profile's bot."""
-        latest = self.latest
-        runner = getattr(latest, "gateway_runner", None)
-        adapters = getattr(runner, "adapters", None)
-        candidates: list[Any] = []
-        if isinstance(adapters, dict):
-            published = adapters.get(getattr(latest, "platform", None))
-            if self.generation_of(published):
-                candidates.append(published)
-        candidates.append(latest)
+        secondary profile's screen would go out through another profile's bot. The launch
+        profile's registration takes such an adapter up as handed (``_note_published``)."""
+        published = self._published()
+        if published is not None:
+            self._note_published(published)
+        candidates = [published] if self.generation_of(published) else []
+        candidates.append(self.latest)
         for candidate in candidates:
-            if candidate is not None and bool(getattr(candidate, "is_connected", False)):
+            if _connected(candidate):
                 return candidate
         return None
+
+    def _published(self) -> Any:
+        """What the runner publishes now for the platform of the adapters handed here: the
+        launch profile's adapter, whichever profile this registration serves."""
+        adapters = getattr(_deref(self._runner), "adapters", None)
+        return adapters.get(self._platform) if isinstance(adapters, dict) else None
+
+    def _note_published(self, published: Any) -> None:
+        """The launch-profile marker (issue #12). An adapter handed here that the runner
+        publishes makes this the launch profile's registration: a served secondary profile's
+        adapters are never in the runner's map. The launch profile's registration takes a
+        connected published adapter it was never handed as handed: Telegram reconnected while
+        no factory of this plugin was registered (inside a reload), and the new adapter's
+        ``connect()`` had nothing to call. A secondary profile's registration never does."""
+        if self.generation_of(published):
+            if not self.primary:
+                self.primary = True
+                self._publish()
+            return
+        if self.primary and _connected(published):
+            self.generation += 1
+            self._hand(published)
+            self._publish()
+            logger.info(
+                "probe: Telegram reconnected while the plugin was loading; adapter generation %d",
+                self.generation,
+            )
 
     def generation_of(self, adapter: Any) -> int:
         """The generation ``adapter`` was handed here with; 0 for one never handed here. Held by

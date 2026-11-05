@@ -168,6 +168,35 @@ def test_an_adapter_never_handed_to_the_registration_is_never_used(
     assert launch.texts == []
 
 
+def test_the_launch_profile_takes_up_an_adapter_the_runner_published_unhanded(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The launch profile's registration (an adapter handed to it is the one the runner
+    publishes) takes up a connected published adapter it was never handed: Telegram reconnected
+    inside a reload, with no factory of the plugin to call. A secondary profile's registration
+    never does (``test_an_adapter_never_handed_to_the_registration_is_never_used``)."""
+    plugin = _load_plugin()
+    runtime = plugin.register(FakeContext(_settings(monkeypatch, tmp_path)))
+    assert runtime is not None
+    first = FakeAdapter()  # its runner publishes it: the launch profile's adapter
+
+    async def scenario() -> None:
+        runtime.wire(object(), first)
+        await _until(lambda: len(first.html_edits) >= 1)
+        assert runtime.primary
+        replacement = FakeAdapter()
+        first.is_connected = False
+        first.gateway_runner.adapters["telegram"] = replacement  # published, never wired
+
+        await _until(lambda: len(replacement.html_edits) >= 1)
+
+        assert runtime.latest is replacement and runtime.generation_of(replacement) == 2
+        assert runtime.record["adapter_generation"] == 2 and replacement.sent == []
+        runtime.task.cancel()
+
+    asyncio.run(scenario())
+
+
 def test_a_generation_is_held_by_reference_not_by_id_alone(monkeypatch, tmp_path: Path) -> None:
     """An id may come back on another object once the adapter it named is gone: that object was
     never handed here and has no generation."""
