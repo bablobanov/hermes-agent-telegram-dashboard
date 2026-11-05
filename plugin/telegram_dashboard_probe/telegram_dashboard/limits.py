@@ -129,7 +129,7 @@ async def fetch_limits_payload_off_loop(
         for key, _provider in PROVIDERS:
             cache_for(cadence.caches, key)
     try:
-        return await (flights or Flights()).run(
+        payload = await (flights or Flights()).run(
             "limits", build_limits_payload, resolve, cadence, timeout_seconds=timeout_seconds
         )
     except TimeoutError:
@@ -138,6 +138,18 @@ async def fetch_limits_payload_off_loop(
         return _missed("busy: the previous facade call has not returned yet", cadence)
     except Exception as exc:  # thread start failure, SystemExit in the facade; the tick goes on
         return _missed(f"error: {failure_name(exc)}", cadence)
+    if cadence is not None and payload.get("ok") is not True:
+        _drop_unused(cadence.caches)
+    return payload
+
+
+def _drop_unused(caches: dict[str, Any]) -> None:
+    """The provider dicts made for a worker that asked nobody (no facade here): gone again, so
+    the record holds no empty entry, as after the synchronous form. The worker has returned;
+    nothing else writes them now."""
+    for key, _provider in PROVIDERS:
+        if caches.get(key) == {}:
+            del caches[key]
 
 
 def _not_ok(reason: str) -> LimitsPayload:

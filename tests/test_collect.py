@@ -1315,18 +1315,34 @@ def test_the_cron_path_without_a_record_asks_the_facade_on_every_run(tmp_path: P
 def test_a_facade_that_cannot_be_imported_is_unsupported_and_writes_no_record(
     tmp_path: Path,
 ) -> None:
+    """Neither form leaves an entry in the record when there is no facade to ask: the tick's
+    form makes the provider dicts on the loop before its worker starts and drops them again
+    when the worker asked nobody (B1 review M7)."""
+
     def broken_resolver():
         raise ImportError("engine half-installed")
 
-    caches: dict = {}
+    sync_caches: dict = {}
+    async_caches: dict = {}
+
+    async def tick(resolve):
+        return await collect_limits_async(
+            Environment(hermes_home=tmp_path),
+            now=NOW,
+            resolve=resolve,
+            timeout_seconds=5,
+            caches=async_caches,
+        )
 
     for resolve in (lambda: None, broken_resolver):
         _capacity, source, probe = collect_limits(
-            Environment(hermes_home=tmp_path), now=NOW, resolve=resolve, caches=caches
+            Environment(hermes_home=tmp_path), now=NOW, resolve=resolve, caches=sync_caches
         )
         assert probe.status == "unsupported" and source.state == "unsupported"
+        _capacity, source, probe = asyncio.run(tick(resolve))
+        assert probe.status == "unsupported" and source.state == "unsupported"
 
-    assert caches == {}
+    assert sync_caches == {} and async_caches == {}
 
 
 def test_a_facade_worker_abandoned_by_its_deadline_records_its_attempt_when_it_returns() -> None:
