@@ -94,23 +94,37 @@ class FakeAdapter:
     ``busy`` is the engine's shared per-chat slot (telegram adapter, #116312) held by a reply in
     the same chat: the public verb then edits nothing and answers success with
     ``raw_response={"skipped": True}``, as ``edit_message`` without ``finalize`` does on 0.22.2
-    and 0.22.7. ``_edit_text`` is not gated by the slot, as in the engine."""
+    and 0.22.7. ``_edit_text`` is not gated by the slot, as in the engine.
+
+    ``bot_id`` gives the adapter a bot with that numeric id, as PTB's ``Bot.id`` holds the one
+    getMe answered at the bot's start (a fixture number); without it the adapter has no bot, and
+    the plugin cannot tell which bot sent a message. ``message_id`` is what ``send`` answers."""
 
     platform = "telegram"
 
     def __init__(
-        self, *, reject_html: str | None = None, fail_plain: str | None = None, busy: bool = False
+        self,
+        *,
+        reject_html: str | None = None,
+        fail_plain: str | None = None,
+        busy: bool = False,
+        bot_id: int | None = None,
+        message_id: str = "101",
     ) -> None:
         self.gateway_runner = SimpleNamespace(adapters={"telegram": self})
         self.is_connected = True
         self.reject_html = reject_html
         self.fail_plain = fail_plain
         self.busy = busy
+        if bot_id is not None:
+            self._bot = SimpleNamespace(id=bot_id)
+        self.message_id = message_id
         self.sent: list[str] = []
         self.edits: list[str] = []  # plain, through edit_message
         self.html_edits: list[tuple[str, Any]] = []  # (text, parse_mode), through _edit_text
         self.texts: list[str] = []  # everything that reached Telegram, in order
         self.skipped: list[str] = []  # the form of each edit the slot held back: plain or html
+        self.targets: list[str] = []  # the message id of every edit asked for, by either verb
 
     def _skip(self, form: str, message_id: str) -> Any:
         """The engine's answer to an edit it held back: success, the same id, nothing edited."""
@@ -122,9 +136,10 @@ class FakeAdapter:
     async def send(self, chat: str, text: str, metadata: Any = None) -> Any:
         self.sent.append(text)
         self.texts.append(text)
-        return SimpleNamespace(success=True, message_id="101", error=None)
+        return SimpleNamespace(success=True, message_id=self.message_id, error=None)
 
     async def edit_message(self, chat: str, message_id: str, text: str) -> Any:
+        self.targets.append(message_id)
         if self.busy:
             return self._skip("plain", message_id)
         if self.fail_plain is not None:
@@ -136,6 +151,7 @@ class FakeAdapter:
     async def _edit_text(
         self, chat_id: str, message_id: str, text: str, parse_mode: Any = None
     ) -> None:
+        self.targets.append(message_id)
         self.html_edits.append((text, parse_mode))
         if self.reject_html is not None:
             raise RuntimeError(self.reject_html)
@@ -170,6 +186,7 @@ class PublicHtmlAdapter(FakeAdapter):
     ) -> Any:
         if parse_mode is None:
             return await super().edit_message(chat, message_id, text)
+        self.targets.append(message_id)
         if self.busy:
             return self._skip("html", message_id)
         self.public_html_edits.append((text, parse_mode))

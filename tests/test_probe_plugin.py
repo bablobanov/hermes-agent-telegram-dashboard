@@ -443,3 +443,22 @@ def test_an_edit_the_engine_holds_back_for_a_busy_chat_is_deferred_and_the_next_
     said = [r.getMessage() for r in caplog.records if r.name.endswith("telegram_dashboard_probe")]
     assert sum("deferred" in line for line in said) == 1
     assert sum("HTML edit refused" in line for line in said) == 1  # once the plain edit landed
+
+
+def test_the_sender_s_id_is_the_one_ptb_keeps_from_get_me(probe_env) -> None:
+    """The record keeps the id of the bot that sent the message (``_bot_id``), read off the
+    adapter's PTB bot the way PTB keeps it: ``Bot.id``, the user getMe answered at
+    ``initialize()``, cached on the object, so no request goes out (conftest's guard would refuse
+    one). A bot that has not started raises there, and the plugin reads no id. The PTB bot here
+    is made without credentials: only its cached user is set."""
+    from telegram import Bot, User
+
+    plugin = _load_plugin()
+    adapter, _ = _adapter(101, SimpleNamespace(adapters={}))
+    bot = Bot.__new__(Bot)
+    object.__setattr__(bot, "_bot_user", None)  # what Bot.__init__ leaves before initialize()
+    adapter._bot = bot
+
+    assert plugin._bot_id(adapter) is None
+    object.__setattr__(bot, "_bot_user", User(id=4242, first_name="probe", is_bot=True))
+    assert plugin._bot_id(adapter) == 4242
