@@ -157,6 +157,38 @@ def test_the_factory_of_an_earlier_registration_is_ignored(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_an_earlier_registration_writes_nothing_once_a_newer_one_claimed_the_profile(
+    tmp_path: Path,
+) -> None:
+    """The earlier registration's loop may publish (a ``wire`` that passed its ownership check, a
+    reconnect taken up) after the newer one claimed the profile on the load thread and before its
+    takeover ran. That write must not hand the profile back: the newer registration's takeover
+    would then refuse (not the owner) while the unload retires the earlier one, and no loop would
+    be left until the next reconnect. The entry keeps the newer owner, the adapter and the
+    generation it had."""
+    plugin = load_plugin()
+    ctx = _context(tmp_path / "home")
+    first = plugin.register(ctx)
+    adapter = FakeAdapter()
+
+    async def scenario() -> None:
+        first.wire(object(), adapter)
+        await until(lambda: adapter.html_edits)
+        second = plugin.register(ctx)  # claims the profile; its takeover is scheduled, not run
+        first.latest, first.generation = FakeAdapter(), 5  # what a late publish would carry
+
+        first._publish()
+
+        entry = sys.modules[LIVE_MODULE].profiles[first.key]
+        assert entry["owner"]() is second
+        assert entry["adapter"]() is adapter and entry["generation"] == 1
+        await until(lambda: second.task is not None and first.task.done())  # taken over
+        assert second.latest is adapter and _loops() == [second.task]
+        second.task.cancel()
+
+    asyncio.run(scenario())
+
+
 def test_a_registration_unloaded_before_its_takeover_ran_takes_nothing_over(
     tmp_path: Path,
 ) -> None:
