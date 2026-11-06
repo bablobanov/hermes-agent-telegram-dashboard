@@ -46,12 +46,15 @@ def current(
 ) -> dict[str, Any] | None:
     """The cached item while its attempt still stands (younger than the interval, less
     ``DUE_TOLERANCE_SECONDS``), failure or answer, through ``not_older_than``; ``None`` when
-    the attempt is due or there is none."""
+    the attempt is due or there is none. An attempt dated ahead of ``now`` within the clock-skew
+    tolerance stands (the clock set back a little, or an attempt stamped after the moment of the
+    check that reads it); one further ahead is a corrupt stamp, due at once."""
     attempted = parse_timestamp(cache.get("attempted_at"))
     cached = cache.get("item")
     if attempted is not None and isinstance(cached, dict):
         age = age_seconds(attempted, now)
-        if age is not None and 0 <= age < interval_seconds - DUE_TOLERANCE_SECONDS:
+        due = interval_seconds - DUE_TOLERANCE_SECONDS
+        if age is not None and not is_from_the_future(age) and age < due:
             return not_older_than(cached, now=now, limit_seconds=interval_seconds)
     return None
 

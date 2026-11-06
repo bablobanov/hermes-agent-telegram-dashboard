@@ -124,3 +124,27 @@ def test_a_number_stamped_just_after_the_tick_is_a_number_one_far_ahead_is_not()
 
     assert not_older_than(late, now=NOW, limit_seconds=300) == late
     assert not_older_than(runaway, now=NOW, limit_seconds=300)["reason"] == "cached number too old"
+
+
+def test_an_attempt_stamped_a_little_ahead_stands_one_far_ahead_is_one_attempt() -> None:
+    """The clock set back a few seconds, or a check that reads an attempt stamped after its own
+    moment: an attempt dated ahead within the clock-skew tolerance stands like a fresh one,
+    instead of being due at once. A stamp beyond the tolerance is a corrupt one: one attempt,
+    which stamps it anew, and that attempt stands."""
+    from telegram_dashboard.quota_cache import current
+    from telegram_dashboard.timeparse import CLOCK_SKEW_TOLERANCE_SECONDS
+
+    fetch = CountingFetch(FAILED)
+    near = {"attempted_at": (NOW + timedelta(seconds=3)).isoformat(), "item": dict(FAILED)}
+
+    assert current(near, now=NOW, interval_seconds=300) == FAILED
+    assert tick(near, now=NOW, interval_seconds=300, fetch=fetch)["reason"] == "HTTP 503"
+    assert fetch.calls == 0
+
+    ahead = timedelta(seconds=CLOCK_SKEW_TOLERANCE_SECONDS + 1)
+    far = {"attempted_at": (NOW + ahead).isoformat(), "item": dict(FAILED)}
+
+    assert current(far, now=NOW, interval_seconds=300) is None
+    tick(far, now=NOW, interval_seconds=300, fetch=fetch)
+    tick(far, now=NOW + timedelta(seconds=60), interval_seconds=300, fetch=fetch)
+    assert fetch.calls == 1 and far["attempted_at"] == NOW.isoformat()
