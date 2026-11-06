@@ -214,12 +214,20 @@ def test_only_the_rows_the_engine_job_runs_say_executed_on_0_22_2_and_0_22_7() -
         "memory",
     }
     sources = matrix["sources"]
-    assert {name for name, entry in sources.items() if "0.22.7" in entry["verified"]} == run
+
+    def executed(entry: dict, version: str) -> bool:
+        return str(entry["verified"].get(version, "")).startswith("executed")
+
+    assert {name for name, entry in sources.items() if executed(entry, "0.22.7")} == run
     for name in run:
         for version in ("0.22.2", "0.22.7"):
             assert sources[name]["verified"][version].startswith("executed, CI engine job"), name
     for name in ("cron", "screen_rich"):
         assert sources[name]["verified"]["0.22.2"].startswith("read-by-code"), name
+    # The usage facade is read in the source on the supported engines: the run skips its test,
+    # which would call the providers' APIs.
+    for version in ("0.22.2", "0.22.7", "0.23.0"):
+        assert sources["limits"]["verified"][version].startswith("read-by-code"), version
     assert matrix["floors"]["delivery_plugin"]["minimum_version"] == "0.22.2"
 
 

@@ -118,7 +118,7 @@ _TRAILING_PROVIDERS = frozenset({GEMINI_LABEL.lower()})
 # What the facade's ``None`` says, on a line that is still shown (issue #14): no credential, or a
 # call that failed. ``fetch_account_usage`` turns every exception of a provider's fetcher (an
 # HTTP 401, 429 or 5xx, a network error, Codex without an account) into the same ``None`` as a
-# missing token, on every version read (0.21.1 to 0.22.7), so the two cannot be told apart.
+# missing token, on every version read (0.21.1 to 0.23.0), so the two cannot be told apart.
 _NO_ANSWER = "no answer: no credential or the call failed"
 # A window's own verdict as the provider states it; anything else is no verdict at all.
 _WINDOW_SEVERITIES = ("normal", "warning", "critical")

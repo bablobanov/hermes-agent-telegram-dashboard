@@ -24,9 +24,11 @@ Without a record (the cron path) there is no memory, and ``None`` is ``not_confi
 Nothing here reads or stores credentials; the facade uses the account's own material inside the
 engine. Of a snapshot only the fields ``_item_of`` names are read: never its ``identity``, ``raw``
 or ``details``, so none of them reaches the record or the screen. This is one of the two named
-exceptions to "no engine imports": one public function with the same signature on 0.20.5 and
-0.21.1, recorded as such in ``compat_matrix.json``. The other is ``agent.secret_scope.get_secret``
-for the key of a ``limits_sources`` entry (``external.py``).
+exceptions to "no engine imports": one public function, called with the provider alone as
+``/usage`` calls it, the same call from 0.20.5 to 0.23.0 (0.21.6 added the keyword-only
+``read_only`` and ``identity_id``, with defaults), recorded as such in ``compat_matrix.json``.
+The other is ``agent.secret_scope.get_secret`` for the key of a ``limits_sources`` entry
+(``external.py``).
 """
 
 from __future__ import annotations

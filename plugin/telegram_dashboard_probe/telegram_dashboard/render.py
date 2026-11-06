@@ -577,9 +577,9 @@ def _freshness(
 
 
 def _unchecked_line(snapshot: DashboardSnapshot, details: _Details) -> str | None:
-    """``❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3``:
-    every exception of the coverage in one line on the screen (1.0.0), the full count in the
-    details."""
+    """Every exception of the coverage in one line on the screen (1.0.0), the full count in the
+    details: ``❔ Not checked: Gemini log (not on this installation), Mistral limits (stale),
+    profiles 2/3`` (the README's example)."""
     coverage = snapshot.coverage
     missing = [source for source in snapshot.sources if source.state not in ("fresh", "stale")]
     stale = [source for source in snapshot.sources if source.state == "stale"]
