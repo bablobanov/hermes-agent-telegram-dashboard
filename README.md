@@ -305,9 +305,12 @@ sent through that profile's bot. The limits:
   that moment would
 - when Telegram reconnects while the plugin is being loaded again (after the unload and before
   the new registration, when no factory of the plugin is registered), the launch profile's loop
-  takes the new connection up, unless the reload comes before the first tick after Telegram
-  connected at start (at most 30 s); a secondary profile's loop never takes up a connection it
-  was not handed. Both then wait for the next reconnect or a restart
+  takes the new connection up, unless the reload comes before the first tick that sees the
+  runner publish Telegram's adapter. The runner publishes the launch profile's adapters once
+  every platform of that profile has answered its connect: that tick comes within 30 s of
+  Telegram connecting when Telegram is the last of them to connect, and otherwise up to one
+  period (`period_seconds`) after the slowest one. A secondary profile's loop never takes up a
+  connection it was not handed. Both then wait for the next reconnect or a restart
 
 **Updating from 1.0.0.** Restart the gateway once after the update (the first limit above). The
 record now keeps, next to the message's id, the id of the bot that sent it, and only that bot
@@ -318,8 +321,18 @@ starts a new message, from its own bot (in a private chat, in the conversation w
 Pin the new one and unpin the old one, which the launch profile's bot sent and nothing edits
 any more. The launch profile's dashboard keeps its message. While the gateway starts, until it
 has installed the adapters that connected, a record from 1.0.0 waits (`waiting`, with the
-reason) rather than guess which profile it belongs to. A profile whose bot is replaced by
-another bot starts a new message the same way.
+reason) rather than guess which profile it belongs to, for at most five minutes from the
+plugin's start. When the gateway installs no adapter of the launch profile at all (a platform
+whose token is only in a secondary profile's `.env` is skipped for the launch profile, or the
+launch profile's only platform failed at start), the wait runs out: a served profile's
+dashboard then takes its message as another bot's and starts a new one from its own bot,
+announced the same way. A message whose sender is unknown is never edited. Once the record
+names the sender (1.1.0 on), a profile whose bot is replaced by another bot starts a new message
+the same way. A launch profile whose bot was replaced while it still ran 1.0.0 cannot be told:
+its record names no sender, so the new bot is kept as the sender and edits that message id as
+1.0.0 did. Where Telegram refuses the edit, the message is taken as lost and a new one is sent;
+in a private chat the number may name one of the new bot's own messages, which the edit
+overwrites.
 
 **Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
 snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
