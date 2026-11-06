@@ -189,12 +189,13 @@ records per source how it is probed and on which versions it was verified. A new
 coverage and names what is missing instead of breaking.
 
 What "verified" means here, honestly. Supported is Hermes 0.22.2 or newer (the floor below), and
-these are the two releases the CI `engine` job runs the whole suite against:
+these are the three releases the CI `engine` job runs the whole suite against:
 
 | Hermes | How |
 |---|---|
 | 0.22.2 (`v0.22.2`, `d923a5eb48`) | the production engine and the floor: the whole suite against the engine installed from its own lock (Python 3.14, the `telegram` extra) with `REQUIRE_ENGINE_TESTS=1`, so a test that skips there fails the job unless `tests/conftest.py` allows it; the plugin path against the real engine objects (`tests/test_probe_plugin.py`, `tests/test_probe_reload.py`: send, the HTML edit through `_edit_text`, an edit the engine holds back for a busy chat, a lost message, a reconnect, a forced re-discovery, served profiles, the engine's own plugin discovery), the engine's own `requires_hermes` gate put to the manifest at the job's release (the checkout is a commit with no tags, so the engine itself reports `unknown`, which passes any `requires_hermes`; the job hands the test the release from its matrix as `HERMES_ENGINE_TAG`), the version line, the key of an external source through the engine's `get_secret` (not yet on a live gateway), the rules line and the memory section against the engine's own functions (`compat_matrix.json`, the `0.22.2` entries) |
-| 0.22.7 (`v0.22.7`, `b200f5bc60`) | the current release: the same suite in the same job (the `0.22.7` entries) |
+| 0.22.7 (`v0.22.7`, `b200f5bc60`) | the last 0.22 release: the same suite in the same job (the `0.22.7` entries) |
+| 0.23.0 (`v0.23.0`, `2bd378ed1b`) | the current release: the same suite in the same job (the `0.23.0` entries) |
 
 Sources that run does not reach (the usage facade, which would call the providers' APIs, the
 gateway state, the cron files, the Telegram counters, Gemini's log) keep the verification their
@@ -214,7 +215,7 @@ source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for
 | main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
-Anything else is not verified. On a release after 0.22.7 the sources are probed at runtime and
+Anything else is not verified. On a release after 0.23.0 the sources are probed at runtime and
 degrade to `unsupported`; nothing here promises "works on all versions".
 
 **Delivery has a floor: Hermes 0.22.2.** It is the production engine and the oldest one the
@@ -293,13 +294,32 @@ sent through that profile's bot. The limits:
 
 - the registry that hands the loop over first ships in the 1.1.0 release: the first reload onto
   it from 1.0.0 or earlier, or from a copy of `main` taken before it (that copy already says
-  1.1.0), has nothing to take over; restart the gateway once, or let the adapter reconnect
+  1.1.0), has nothing to take over, and the screen stands still until the adapter reconnects or
+  the gateway restarts; restart the gateway once after such an update. On Hermes 0.23.0 the
+  opt-in `plugins.auto_apply` (off by default) also updates catalog installs unattended, but it
+  only replaces the plugin's folder: the new code loads at the next gateway start or at the
+  next forced re-discovery (any `reload-plugins`: a Desktop or dashboard Update, an install or
+  enable of another plugin), and from a version without the registry that re-discovery leaves
+  no loop until a reconnect or a restart (measured on 0.23.0)
 - a stop that lands in the middle of a send may leave one extra message, as a gateway stop at
   that moment would
-- when Telegram reconnects while the plugin is being loaded again, the launch profile's loop
+- when Telegram reconnects while the plugin is being loaded again (after the unload and before
+  the new registration, when no factory of the plugin is registered), the launch profile's loop
   takes the new connection up, unless the reload comes before the first tick after Telegram
   connected at start (at most 30 s); a secondary profile's loop never takes up a connection it
   was not handed. Both then wait for the next reconnect or a restart
+
+**Updating from 1.0.0.** Restart the gateway once after the update (the first limit above). The
+record now keeps, next to the message's id, the id of the bot that sent it, and only that bot
+edits the message: one another bot sent is taken as lost, and a new one is sent and announced.
+On a gateway that serves several profiles, 1.0.0 sent a secondary profile's screen through the
+launch profile's bot, and 1.1.0 sends it through the profile's own bot: that profile's dashboard
+starts a new message, from its own bot (in a private chat, in the conversation with that bot).
+Pin the new one and unpin the old one, which the launch profile's bot sent and nothing edits
+any more. The launch profile's dashboard keeps its message. While the gateway starts, until it
+has installed the adapters that connected, a record from 1.0.0 waits (`waiting`, with the
+reason) rather than guess which profile it belongs to. A profile whose bot is replaced by
+another bot starts a new message the same way.
 
 **Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
 snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
@@ -324,7 +344,7 @@ read off the adapter object on every tick, never off a version number, in this o
    keyword would send the markup as plain text and answer success). Called with
    `parse_mode="HTML"`; a `SendResult` with `success=False` is a refusal of the form
 2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on every
-   engine read (0.21.1 to 0.22.7, and main), which takes a parse mode and raises on refusal
+   engine read (0.21.1 to 0.23.0, and main), which takes a parse mode and raises on refusal
 3. otherwise plain, with `html_error: no HTML verb (edit_message without parse_mode, no
    _edit_text)`
 
@@ -458,10 +478,12 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
 
 Use a chat you can sacrifice. The plugin writes its delivery record to the plugin state
 (`$HERMES_HOME/plugin-data/<namespace>/state.json`, one key `probe`) so a gateway restart edits
-the same message. The directory name carries a digest of the plugin id
-(`agent-plugin-telegram_dashboard_probe-<8 hex>`); the plugin logs the exact path at start
-(`probe: delivery record for --check plugin_state_path: ...`) at INFO, which a gateway that
-journals WARNING and above never shows: take the path from disk
+the same message. Next to the message's id it keeps `bot_id`, the numeric id Telegram gives the
+bot that sent it, as the engine's bot holds it from getMe at its start (nothing of the bot's
+token): only that bot edits the message (see "Updating from 1.0.0"). The directory name carries
+a digest of the plugin id (`agent-plugin-telegram_dashboard_probe-<8 hex>`); the plugin logs the
+exact path at start (`probe: delivery record for --check plugin_state_path: ...`) at INFO, which
+a gateway that journals WARNING and above never shows: take the path from disk
 (`ls $HERMES_HOME/plugin-data/ | grep probe`). The plugin's observability rests on that state
 file, not on the journal; an empty `grep probe:` in the journal means nothing.
 
@@ -473,7 +495,7 @@ built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads t
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
 with the provider, the plan and the login date it last named. `facade_cache` keeps the usage
 facade's providers the same way, one entry each (`claude`, `codex`): the last attempt
-(`attempted_at`), its item (the provider, the status, the reason, the source's name,
+(`attempted_at`, the moment that provider was asked), its item (the provider, the status, the reason, the source's name,
 `fetched_at`, the plan, and the windows, each with its label, share and reset; every text
 cleaned and cut to the length the screen shows), the last time the facade answered with a
 snapshot at all (`answered_at`), how many attempts in a row since then got the facade's empty
@@ -775,8 +797,8 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   vanished
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
-engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6 before 1.1.0, 0.22.2 and
-0.22.7 in the CI engine job: every kind of file, a
+engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6 before 1.1.0, 0.22.2,
+0.22.7 and 0.23.0 in the CI engine job: every kind of file, a
 BOM-only file and a BOM before blank lines, a chain in
 a repository, a chain with a cut file, a chain cut twice, a cut cursor bundle, an override file,
 a directory reached through a link); it skips where Hermes is not importable.
@@ -817,8 +839,8 @@ The numbers are in the details, always:
 
 - **counted the engine's way**: the entries split on the line holding `§`, stripped, empty and
   repeated ones dropped, joined with the delimiter; the engine's own `MemoryStore` gives the same
-  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6, and on 0.22.2 and 0.22.7 in the CI
-  engine job). The share of one entry shows when it
+  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6, and on 0.22.2, 0.22.7 and 0.23.0 in the
+  CI engine job). The share of one entry shows when it
   holds half the limit or more
 - **the last write** is the notebooks' modification time: the engine keeps no journal of applied
   writes, so a hand edit moves it too; for skills, the curator's ledger. A waiting write's time
@@ -1039,9 +1061,10 @@ one period plus slack, `lagging` up to two, `stale` past that). The record also 
 `tick_failed` when a tick raised, so a loop that dies every tick does not keep an old `edited`
 on disk, and `deferred` when the engine held the edit back for a busy chat, which the check
 judges like any tick that is not a failure: by the age of the last confirmation. The check's
-line (and the watchdog's) ends with the plugin's `last_status`, so a `stale ... error=None
-status=deferred` says the edits are being held back, and the plugin's journal has one WARNING
-once such a run outlasts the screen's lagging threshold.
+line (and the watchdog's) ends with the plugin's `last_status`, one of the statuses the plugin
+writes (any other value is printed as `None`), so a `stale ... error=None status=deferred` says
+the edits are being held back, and the plugin's journal has one WARNING once such a run
+outlasts the screen's lagging threshold.
 
 ### External limit sources
 
