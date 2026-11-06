@@ -266,9 +266,18 @@ def _record(ctx: FakeContext, **fields: Any) -> None:
 
 def _served(launch: FakeAdapter, *adapters: FakeAdapter) -> None:
     """Adapters of a served profile under the multiplex: their runner's map publishes the launch
-    profile's adapter for the platform, never theirs."""
+    profile's adapter for the platform, never theirs, and the runner's verdict says it serves
+    several profiles (``config.multiplex_profiles``, what ``GatewayRunner._multiplex_on`` reads)."""
+    launch.gateway_runner.config = SimpleNamespace(multiplex_profiles=True)
     for adapter in adapters:
         adapter.gateway_runner = launch.gateway_runner
+
+
+def _one_profile_runner(adapters: dict[str, Any]) -> SimpleNamespace:
+    """The runner of a gateway that serves one profile: the engine settles the verdict at boot
+    (``resolve_multiplex_mode``: a single-profile home has nothing to multiplex) and starts no
+    secondary profile's adapters then."""
+    return SimpleNamespace(adapters=adapters, config=SimpleNamespace(multiplex_profiles=False))
 
 
 def _started_ago(runtime: Any, seconds: float) -> None:
@@ -360,6 +369,53 @@ def test_the_launch_profile_keeps_editing_a_message_from_before_the_sender_was_k
     assert "lost_at" not in stored
 
 
+@pytest.mark.parametrize("past_the_wait", [False, True])
+@pytest.mark.parametrize("published", ["nothing yet", "an adapter never handed here"])
+def test_a_single_profile_gateway_keeps_editing_its_message_from_1_0_0(
+    monkeypatch, tmp_path: Path, past_the_wait: bool, published: str
+) -> None:
+    """The update from 1.0.0 on a gateway that serves one profile, the common case: the record
+    names message 4242 and no sender. Such a runner starts no other profile's adapters, so the
+    message was sent by this profile's bot: the first tick edits it and keeps the bot's id, with
+    no wait and no new message, whatever the runner's map holds yet. Its map may be empty (a
+    start before every platform answered, Telegram unreachable at boot, a raised connect bound),
+    and may still hold an adapter never handed here (the one a reconnect is replacing). Neither
+    tells anything on one profile, before or past ``SENDER_WAIT_SECONDS``."""
+    plugin = _load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, tmp_path))
+    _record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    adapter = FakeAdapter(bot_id=LAUNCH_BOT, message_id="202")
+    stale = FakeAdapter(bot_id=LAUNCH_BOT, message_id="303")
+    map_ = {} if published == "nothing yet" else {"telegram": stale}
+    adapter.gateway_runner = _one_profile_runner(map_)
+    if past_the_wait:
+        _started_ago(runtime, plugin.SENDER_WAIT_SECONDS + 1)
+    statuses: list[tuple[Any, Any]] = []
+    note = runtime._note
+
+    def spy(**fields: Any) -> None:
+        statuses.append((fields.get("status"), fields.get("error")))
+        note(**fields)
+
+    runtime._note = spy
+
+    async def scenario() -> None:
+        runtime.wire(object(), adapter)
+        await _until(lambda: len(adapter.html_edits) >= 2)
+        runtime.task.cancel()
+
+    asyncio.run(scenario())
+
+    assert adapter.sent == [] and set(adapter.targets) == {"4242"}
+    assert stale.texts == [] and stale.targets == []
+    assert statuses and all(status == "edited" for status, _ in statuses), statuses
+    stored = ctx.state.data["probe"]
+    assert (stored["message_id"], stored["bot_id"]) == ("4242", LAUNCH_BOT)
+    assert "lost_at" not in stored and stored["last_status"] == "edited"
+
+
 def test_a_served_profile_never_edits_a_message_from_before_the_sender_was_kept(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -420,13 +476,15 @@ def test_a_profile_whose_bot_was_replaced_starts_a_new_message(monkeypatch, tmp_
     assert (stored["message_id"], stored["bot_id"]) == ("202", NEW_ALPHA_BOT)
 
 
+@pytest.mark.parametrize("verdict", ["multiplexing", "none told"])
 def test_a_message_from_before_the_sender_was_kept_waits_for_the_runner_s_adapters(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, verdict: str
 ) -> None:
     """At a start the runner installs the adapters that connected only once every platform has
-    answered, so for a while its map is empty and the launch profile cannot be told from a
-    served one. A record without a sender is neither edited nor replaced then: the tick waits.
-    Once the runner publishes this adapter, it is the launch profile's: edited and stamped."""
+    answered, so for a while its map is empty. On a gateway that serves several profiles, or
+    one whose runner tells no verdict, the launch profile cannot be told from a served one then.
+    A record without a sender is neither edited nor replaced: the tick waits. Once the runner
+    publishes this adapter, it is the launch profile's: edited and stamped."""
     plugin = _load_plugin()
     ctx = FakeContext(_settings(monkeypatch, tmp_path))
     _record(ctx)
@@ -434,6 +492,8 @@ def test_a_message_from_before_the_sender_was_kept_waits_for_the_runner_s_adapte
     assert runtime is not None
     adapter = FakeAdapter(bot_id=LAUNCH_BOT)
     runner = SimpleNamespace(adapters={})
+    if verdict == "multiplexing":
+        runner.config = SimpleNamespace(multiplex_profiles=True)
     adapter.gateway_runner = runner
 
     async def scenario() -> None:
@@ -468,7 +528,9 @@ def test_a_message_from_before_the_sender_was_kept_is_replaced_once_the_wait_run
     runtime = plugin.register(ctx)
     assert runtime is not None
     own = FakeAdapter(bot_id=ALPHA_BOT, message_id="202")
-    own.gateway_runner = SimpleNamespace(adapters={})  # the launch profile installs nothing
+    own.gateway_runner = SimpleNamespace(  # the launch profile installs nothing
+        adapters={}, config=SimpleNamespace(multiplex_profiles=True)
+    )
 
     async def scenario() -> None:
         _started_ago(runtime, plugin.SENDER_WAIT_SECONDS - 60)

@@ -475,3 +475,44 @@ def test_the_sender_s_id_is_the_one_ptb_keeps_from_get_me(probe_env) -> None:
     assert plugin._bot_id(adapter) is None
     object.__setattr__(bot, "_bot_user", User(id=4242, first_name="probe", is_bot=True))
     assert plugin._bot_id(adapter) == 4242
+
+
+def test_a_single_profile_gateway_keeps_editing_its_message_from_1_0_0(
+    probe_env, monkeypatch
+) -> None:
+    """The update from 1.0.0 on a gateway that serves one profile, with the engine's own verdict:
+    ``load_gateway_config_for_runner`` (where ``GatewayRunner`` takes its config from) settles
+    ``multiplex_profiles`` to false for this home, which holds one profile, and such a runner
+    starts no other profile's adapters. The record on disk names message 4242 and no sender; the
+    runner's map is still empty and the wait for a sender has run out. The plugin edits message
+    4242 through the real adapter, keeps the bot's id and sends nothing."""
+    from gateway.run import load_gateway_config_for_runner
+
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    config = load_gateway_config_for_runner()
+    assert config.multiplex_profiles is False
+    manager, ctx = _context()
+    ctx.state.set("probe", {"message_id": "4242", "chat_id": CHAT, "last_status": "edited"})
+    plugin = _load_plugin()
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    runtime.started_monotonic = time.monotonic() - plugin.SENDER_WAIT_SECONDS - 1
+    runner = SimpleNamespace(adapters={}, config=config)
+
+    async def scenario() -> None:
+        adapter, bot = _adapter(101, runner)
+        bot.id = 1111  # PTB's Bot.id: the user getMe answered at the bot's start
+        _wire(adapter, manager)
+        adapter._mark_connected()
+        await _until(lambda: runtime.record.get("bot_id") == 1111)
+        await _until(lambda: bot.edit_message_text.await_count >= 2)
+        manager.unload()
+        edited = {call.kwargs.get("message_id") for call in bot.edit_message_text.await_args_list}
+        assert edited == {4242}
+        assert bot.send_message.await_count == 0
+
+    asyncio.run(scenario())
+
+    stored = ctx.state.get("probe")
+    assert (stored["message_id"], stored["bot_id"]) == ("4242", 1111)
+    assert stored["last_status"] == "edited" and "lost_at" not in stored

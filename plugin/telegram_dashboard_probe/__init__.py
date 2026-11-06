@@ -37,10 +37,11 @@ Only the bot that sent the message edits it. The record keeps the sender's numer
 ``message_id`` (``BOT_ID_KEY``); a message another bot sent is taken as lost and a new one is sent
 (``_sender``): a served profile's message from 1.0.0 (that release sent the screen through the
 launch profile's bot), or one the profile's earlier bot sent. In a private chat the same number
-names one of this bot's own messages, which an edit would overwrite and report as the screen. A
-message from 1.0.0 whose profile the runner cannot tell yet waits, at most
-``SENDER_WAIT_SECONDS`` from the start, and is then taken the same way: never edited while its
-sender is unknown.
+names one of this bot's own messages, which an edit would overwrite and report as the screen. On
+a gateway that serves one profile a message from 1.0.0 is that profile's own, edited from the
+first tick. On a multiplexing gateway, one whose profile the runner cannot tell yet waits, at
+most ``SENDER_WAIT_SECONDS`` from the start, and is then taken the same way: never edited while
+its sender is unknown.
 
 The screen goes out as HTML when the adapter has a verb for it, plain otherwise. Which verb is
 read off the adapter object, never off a version number (``_html_verb``): the public
@@ -264,7 +265,8 @@ LAUNCH_BOT = (
     "through the launch profile's bot"
 )
 SENDER_UNKNOWN = "the runner has installed no adapter yet: the message's sender cannot be told"
-# How long a record without a sender waits for the runner to tell the profile, counted from this
+# How long a record without a sender waits for a multiplexing runner to tell the profile (a runner
+# that serves one profile tells it at once: ``_serves_one_profile``), counted from this
 # registration's start on the monotonic clock (a wall clock set right after a boot would end the
 # wait at once). The runner installs the launch profile's adapters once every platform of that
 # profile has answered its first connect; the engine runs those connects together and bounds them
@@ -275,7 +277,7 @@ SENDER_UNKNOWN = "the runner has installed no adapter yet: the message's sender 
 # a platform whose token is only in a secondary profile's ``.env`` is skipped for the launch
 # profile (#64674), or the launch profile's only platform failed at start. Past the wait the
 # message is taken as another bot's (``SENDER_UNPLACED``): never edited while its sender is
-# unknown. A connect bound raised past the wait (the engine's
+# unknown. On a multiplexing gateway a connect bound raised past the wait (the engine's
 # ``HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT``) may run the launch profile's own wait out: its
 # message is then replaced, not edited.
 SENDER_WAIT_SECONDS = 300.0
@@ -742,6 +744,22 @@ def _a_bot_id(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return None
     return value
+
+
+def _serves_one_profile(runner: object) -> bool:
+    """Whether ``runner`` serves only the profile it was started for, read the way the runner
+    reads it (``GatewayRunner._multiplex_on``: ``config.multiplex_profiles``, settled at boot by
+    ``resolve_multiplex_mode``; v0.22.2 to v0.23.0). Such a runner starts no secondary profile's
+    adapters: a single-profile home, a standalone profile. ``False`` for a runner without a
+    config, which tells nothing (the map decides then), and when the verdict cannot be read."""
+    config = getattr(runner, "config", None)
+    if config is None:
+        return False
+    try:
+        return not getattr(config, "multiplex_profiles", False)
+    except Exception as exc:
+        logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
+        return False
 
 
 def _rich_message(markup: str) -> dict[str, Any]:
@@ -1266,8 +1284,9 @@ class ProbeRuntime:
         while that cannot be told yet, ``None`` when it is. The record keeps the sender's id
         (``BOT_ID_KEY``): another id is another bot (the profile's bot was replaced). A record
         without one was written before 1.1.0: the launch profile's message went through its own
-        bot then as now, so it is edited and the id kept; a served profile's went through the
-        launch profile's bot. While the runner tells neither (``_served``), the tick waits, for
+        bot then as now, so it is edited and the id kept (on a runner that serves one profile,
+        from the first tick); a served profile's went through the launch profile's bot. While a
+        multiplexing runner tells neither (``_served``), the tick waits, for
         ``SENDER_WAIT_SECONDS`` from this registration's start; then the message is taken as
         another bot's (``SENDER_UNPLACED``), as a message whose sender is unknown is never
         edited. A bot that tells no id leaves nothing to compare: edited as before."""
@@ -1286,16 +1305,22 @@ class ProbeRuntime:
         return None
 
     def _served(self) -> bool | None:
-        """Whether this registration serves a secondary profile of a multiplexing gateway, read
-        off the runner's map, which holds the launch profile's adapters (``_note_published``):
-        true when it publishes a Telegram adapter never handed here; false for the launch
-        profile, for an adapter without a runner, and for a map with no Telegram adapter (1.0.0
-        then sent through this profile's own); ``None`` while the map is empty (a start: the
-        runner installs the adapters that connected once every platform has answered; or a
-        launch profile that installs none, which ``_sender`` waits for only so long)."""
+        """Whether this registration serves a secondary profile of a multiplexing gateway. False
+        on a runner that serves one profile (``_serves_one_profile``): it starts no other
+        profile's adapters, so whatever its map holds yet, this is the launch profile. Otherwise
+        read off the runner's map, which holds the launch profile's adapters
+        (``_note_published``): true when it publishes a Telegram adapter never handed here; false
+        for the launch profile, for an adapter without a runner, and for a map with no Telegram
+        adapter (1.0.0 then sent through this profile's own); ``None`` while the map is empty (a
+        start: the runner installs the adapters that connected once every platform has
+        answered; or a launch profile that installs none, which ``_sender`` waits for only so
+        long)."""
         if self.primary:
             return False
-        adapters = getattr(_deref(self._runner), "adapters", None)
+        runner = _deref(self._runner)
+        if _serves_one_profile(runner):
+            return False
+        adapters = getattr(runner, "adapters", None)
         if not isinstance(adapters, dict):
             return False
         if not adapters:

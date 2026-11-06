@@ -315,12 +315,16 @@ sent through that profile's bot. The limits:
 **Updating from 1.0.0.** Restart the gateway once after the update (the first limit above). The
 record now keeps, next to the message's id, the id of the bot that sent it, and only that bot
 edits the message: one another bot sent is taken as lost, and a new one is sent and announced.
-On a gateway that serves several profiles, 1.0.0 sent a secondary profile's screen through the
-launch profile's bot, and 1.1.0 sends it through the profile's own bot: that profile's dashboard
-starts a new message, from its own bot (in a private chat, in the conversation with that bot).
-Pin the new one and unpin the old one, which the launch profile's bot sent and nothing edits
-any more. The launch profile's dashboard keeps its message. While the gateway starts, until it
-has installed the adapters that connected, a record from 1.0.0 waits (`waiting`, with the
+On a gateway that serves one profile (the engine does not multiplex: a single-profile home, or
+a standalone profile) the dashboard keeps its message: the first tick edits it and keeps the
+bot's id, with no wait. On a gateway that serves several profiles, 1.0.0 sent a secondary
+profile's screen through the launch profile's bot, and 1.1.0 sends it through the profile's own
+bot: that profile's dashboard starts a new message, from its own bot (in a private chat, in the
+conversation with that bot). The gateway plugin pins and unpins nothing: pin the new one and
+unpin the old one, which the launch profile's bot sent; the profile's own bot cannot edit it,
+and nothing edits it any more. The launch profile's dashboard keeps its message. There, while
+the gateway starts, until it has installed the adapters that connected, a record from 1.0.0
+waits (`waiting`, with the
 reason) rather than guess which profile it belongs to, for at most five minutes from the
 plugin's start. When the gateway installs no adapter of the launch profile at all (a platform
 whose token is only in a secondary profile's `.env` is skipped for the launch profile, or the
