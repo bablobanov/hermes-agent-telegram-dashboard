@@ -349,7 +349,11 @@ def test_lost_message_is_recreated_once_and_recorded(
         _wire(adapter, manager)
         adapter._mark_connected()
         runner.adapters[Platform.TELEGRAM] = adapter
-        await _until(lambda: bot.edit_message_text.await_count >= 1)
+        # The plugin's record, not the Bot mock's count: the engine awaits the Bot call through a
+        # deadline wrapper (_await_with_thread_deadline), so the count rises a few loop turns
+        # before the edit returns to the plugin and its verdict is set.
+        await _until(lambda: runtime.record.get("last_status") == "edited")
+        assert bot.edit_message_text.await_count >= 1
         assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
         assert runtime.html is True  # the first edit went out as HTML
 
