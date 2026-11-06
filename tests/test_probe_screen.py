@@ -1620,6 +1620,41 @@ def test_a_run_of_held_back_edits_past_the_lagging_threshold_says_one_warning(
     assert ctx.state.data["probe"]["last_confirmed_at"] == old.isoformat()
 
 
+def test_a_held_back_run_after_a_failed_edit_warns_once_when_it_really_lags(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The run's one WARNING is decided on the record as the tick leaves it (``deferred``, the
+    previous error gone), not on the failed edit before it: right after an ``edit_failed`` tick
+    with a fresh confirmation the run says nothing, and once the confirmation is past the
+    lagging threshold it says exactly one WARNING."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    now = datetime.now(UTC)
+    runtime.record = {
+        "message_id": "4242",
+        "chat_id": CHAT,
+        "last_status": "edit_failed",
+        "last_error": "Timed out",
+        "last_confirmed_at": (now - timedelta(seconds=30)).isoformat(),
+    }
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime._defer(1)
+        assert warnings() == []
+        assert (runtime.record["last_status"], runtime.record["last_error"]) == ("deferred", None)
+        runtime.record["last_confirmed_at"] = (now - timedelta(seconds=200)).isoformat()
+        for _ in range(3):
+            runtime._defer(1)
+
+    said = warnings()
+    assert len(said) == 1 and "past the lagging threshold" in said[0], said
+
+
 def test_external_sources_reach_the_collector_with_their_own_cache_and_the_period(
     monkeypatch, tmp_path: Path, caplog
 ) -> None:
