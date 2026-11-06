@@ -86,10 +86,11 @@ async def _until(predicate, *, timeout: float = 3.0) -> None:
 # The engine paces one chat's sends and edits through a shared per-chat slot
 # (plugins/platforms/telegram/adapter.py, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0, from 0.21.6
 # on): a send waits for the slot, an interim edit_message is skipped while it is busy. A wait
-# that spans an edit_message AND a send after it takes two slots: 1.96-2.07 s measured on 0.22.2
-# and 0.22.7, alone and in this file's run (each test in a profile of its own). The 3 s default
-# of ``_until`` predates the slot and stays for the waits that cross no slot (HTML edits go
-# through _edit_text, which the slot does not gate; measured at 0.1 s and under).
+# that spans an edit_message AND a send after it takes two slots: the lost-message test takes
+# 2.1-2.2 s on 0.22.2 and 0.22.7 with the held-back edits deferred (each test in a profile of
+# its own; 1.96-2.07 s before that change). The 3 s default of ``_until`` predates the slot
+# and stays for the waits that cross no slot (HTML edits go through _edit_text, which the slot
+# does not gate; measured at 0.1 s and under).
 SLOT_WAIT = 10.0
 
 

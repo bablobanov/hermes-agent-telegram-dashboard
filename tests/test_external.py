@@ -346,9 +346,10 @@ def test_without_the_class_in_the_module_the_class_name_decides(
 def test_the_real_engine_refuses_an_unscoped_read_and_reads_the_environment_otherwise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Against the engine's own ``agent.secret_scope`` where it is importable (skipped without
-    the engine, as in CI). Multiplexing on and no scope installed: the fixed reason and no
-    request. Multiplexing off: the process environment reaches the header through get_secret."""
+    """Against the engine's own ``agent.secret_scope`` where it is importable: the CI engine job
+    runs it, the no-engine runs skip it. Multiplexing on and no scope installed: the fixed reason
+    and no request. Multiplexing off: the process environment reaches the header through
+    get_secret."""
     scope = pytest.importorskip("agent.secret_scope")
     assert not scope.is_multiplex_active() and scope.current_secret_scope() is None
     monkeypatch.setenv("LIMITS_SOURCE_KEY", "process-key")

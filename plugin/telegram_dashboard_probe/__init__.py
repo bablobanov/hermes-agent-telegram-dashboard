@@ -54,9 +54,9 @@ one shared slot (telegram adapter, #116312, read on 0.22.2 and 0.22.7): while a 
 same chat holds it, ``edit_message`` without ``finalize`` edits nothing and answers success with
 ``raw_response={"skipped": True}`` (``_skipped``). The tick records ``deferred``: no
 confirmation, no verdict on a form, and the next tick edits again; a run of them that outlasts
-the lagging threshold is one WARNING. The plugin never asks for ``finalize``, which the slot
-does not hold back, so the agent's replies and the dashboard keep within Telegram's flood limits
-together; ``_edit_text`` and the rich call are not gated by it.
+the lagging threshold is one WARNING. The plain edits never get past the slot: the plugin never
+asks for ``finalize``, which the slot does not hold back. ``_edit_text`` and the rich call are
+not gated by the slot: they neither wait for it nor arm it.
 
 Before HTML comes the rich form (0.12.0, Bot API 10.1+ Rich Messages, ``rich.py``): the same
 first lines and a collapsed section per source. No verb of the adapter carries it; the call is the
