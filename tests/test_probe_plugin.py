@@ -296,21 +296,30 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         await _until(lambda: bot.edit_message_text.await_count >= 1)
         assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
 
-        bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
+        async def gone_until_recreated(**kwargs: object) -> bool:
+            # Only the lost message is gone: the one sent in its place can be edited.
+            if kwargs.get("message_id") == 101:
+                raise BadRequest("Message to edit not found")
+            return True
+
+        bot.edit_message_text.side_effect = gone_until_recreated
         bot.send_message.return_value = MagicMock(message_id=102)
         # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
         # to is skipped by the engine's chat slot, which the first send still holds, and comes
         # back as a success (raw_response {"skipped": True}). The plugin today misreads that: a
         # false "HTML refused" verdict, and no loss seen until a later tick. That is a plugin
-        # defect, fixed in PR-B. This test pins only that the message is recreated once: when
-        # the slot frees, an edit fires and confirms the loss, and the new send waits for the
-        # slot that edit took (SLOT_WAIT).
+        # defect, fixed in the next pull request. This test pins only that the message is
+        # recreated once: when the slot frees, an edit fires and confirms the loss, and the new
+        # send waits for the slot that edit took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
+        # The ticks after the recreate edit the new message. Waiting for that edit, not reading
+        # the status of the recreate itself, keeps the test independent of how many ticks a
+        # runner fits in before the checks (a fast runner had already edited 102).
+        await _until(lambda: runtime.record.get("last_status") == "edited", timeout=SLOT_WAIT)
 
         assert bot.send_message.await_count == 2  # recreated once
         assert runtime.record["lost_at"] and runtime.record["recreated_at"]
-        assert runtime.record["last_status"] == "created"
         manager.unload()
 
     asyncio.run(scenario())
