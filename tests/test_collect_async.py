@@ -1086,7 +1086,11 @@ def test_a_slow_facade_never_holds_the_tick_and_the_screen_keeps_its_lines(
     assert asked == ["anthropic", "openai-codex", "anthropic"], "no second worker"
     assert lines(fourth) == [("Claude", NOW.isoformat(), 3.0), ("Codex", NOW.isoformat(), 4.0)]
     assert len(calls) == 4, "the next tick takes the late answers from the record"
-    assert caches["codex"]["attempted_at"] == NOW.isoformat()
+    # Each attempt is stamped when its provider was asked: Codex after Claude's 0.6 s call.
+    claude = datetime.fromisoformat(caches["claude"]["attempted_at"])
+    codex = datetime.fromisoformat(caches["codex"]["attempted_at"])
+    assert NOW <= claude < NOW + timedelta(seconds=0.5)
+    assert timedelta(seconds=0.5) <= codex - claude < timedelta(seconds=5)
 
 
 def test_a_facade_line_older_than_two_ticks_is_no_data_on_a_miss(

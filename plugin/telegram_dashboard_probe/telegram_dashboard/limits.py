@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import importlib
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -76,6 +77,7 @@ _LABEL_LIMIT = 24
 
 Fetcher = Callable[[str], Any]
 Resolver = Callable[[], "Fetcher | None"]
+Clock = Callable[[], datetime]
 
 LimitsPayload = dict[str, Any]
 
@@ -85,12 +87,28 @@ class Cadence:
     """How the plugin's tick asks the facade: ``caches`` is the record's dict of per-provider
     caches (``claude``, ``codex``), ``now`` the tick's moment; each provider is asked at most
     once per ``interval_seconds``, and a last answer stands in for a missed one (a deadline, a
-    worker still running) while it is younger than ``show_seconds``."""
+    worker still running) while it is younger than ``show_seconds``. ``clock`` tells the moment
+    each provider's attempt starts (``elapsed_clock`` on the tick's path): the providers are
+    asked one after the other, so one asked after a slow call is stamped when it was really
+    asked, not at the tick's moment, or it would be due again that much early. Without it every
+    provider's moment is ``now``."""
 
     caches: dict[str, Any]
     now: datetime
     interval_seconds: float
     show_seconds: float
+    clock: Clock | None = None
+
+    def started(self) -> datetime:
+        """The moment the provider asked now starts its attempt."""
+        return self.clock() if self.clock is not None else self.now
+
+
+def elapsed_clock(now: datetime, monotonic: Callable[[], float] = time.monotonic) -> Clock:
+    """``now`` moved on by the time elapsed since this call, measured on ``monotonic``: the
+    tick's moment for its first provider, later for the next by as long as the first took."""
+    start = monotonic()
+    return lambda: now + timedelta(seconds=monotonic() - start)
 
 
 def import_fetcher() -> Fetcher | None:
@@ -300,13 +318,15 @@ def none_attempts(cache: dict[str, Any]) -> int:
 
 def _provider_tick(key: str, provider: str, fetch: Fetcher, cadence: Cadence) -> dict[str, Any]:
     """One provider on the tick's cadence: the cached item while its attempt is younger than
-    the interval, else one call recorded in the provider's cache. Runs in the worker, so a
-    worker abandoned by its deadline still records its attempt when it returns."""
+    the interval, else one call recorded in the provider's cache, stamped with the moment this
+    provider was asked (``Cadence.started``). Runs in the worker, so a worker abandoned by its
+    deadline still records its attempt when it returns."""
     cache = cache_for(cadence.caches, key)
+    started = cadence.started()
     try:
         item = quota_tick(
             cache,
-            now=cadence.now,
+            now=started,
             interval_seconds=cadence.interval_seconds,
             fetch=partial(_attempt, cache, key, provider, fetch),
         )
@@ -314,14 +334,14 @@ def _provider_tick(key: str, provider: str, fetch: Fetcher, cadence: Cadence) ->
         # Our own code failed around the call (reading the answer or the record): an attempt
         # too, kept for the interval, or a bug in reading would call the facade on every tick.
         logger.exception("usage facade answer for %s not read; attempt recorded", key)
-        item = _crashed(cache, key, exc, cadence.now)
+        item = _crashed(cache, key, exc, started)
     except KeyboardInterrupt:
         raise
     except BaseException as exc:
         # ``SystemExit`` and the like out of the facade: an attempt as well, or the facade is
         # asked again on every tick; then on to the worker boundary, which turns it into an
         # ordinary miss of this tick (``workers.py``).
-        _crashed(cache, key, exc, cadence.now)
+        _crashed(cache, key, exc, started)
         raise
     plan = item.get("plan")
     if isinstance(plan, str) and plan:

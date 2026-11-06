@@ -1484,6 +1484,64 @@ def test_one_provider_s_hang_leaves_the_other_s_failure_row_alone(tmp_path: Path
     ]
 
 
+def test_each_facade_provider_s_attempt_is_stamped_when_it_was_asked() -> None:
+    """The providers are asked one after the other in one worker. Claude's call holds it for
+    290 s of a 300 s interval, so Codex is asked only then, and its attempt is stamped at that
+    moment (the cadence's clock), not at the tick's start. The next tick, a period later, asks
+    Claude again and not Codex, which is due a full interval after it was really asked."""
+    from telegram_dashboard.limits import Cadence, build_limits_payload
+
+    clock = [NOW]
+    calls: list[tuple[str, datetime]] = []
+
+    def fetch(provider: str):
+        calls.append((provider, clock[0]))
+        if len(calls) == 1:
+            clock[0] += timedelta(seconds=290)  # Claude's call takes 290 s
+        return _snapshot(fetched_at=clock[0])
+
+    caches: dict = {}
+
+    def tick(seconds: float) -> None:
+        clock[0] = NOW + timedelta(seconds=seconds)
+        cadence = Cadence(caches, clock[0], 300.0, 600.0, clock=lambda: clock[0])
+        build_limits_payload(lambda: fetch, cadence)
+
+    tick(0)
+    assert caches["codex"]["attempted_at"] == (NOW + timedelta(seconds=290)).isoformat()
+    for seconds in (300, 580, 590):
+        tick(seconds)
+
+    assert [(provider, (at - NOW).total_seconds()) for provider, at in calls] == [
+        ("anthropic", 0),
+        ("openai-codex", 290),
+        ("anthropic", 300),
+        ("openai-codex", 590),
+    ]
+
+
+def test_the_tick_s_cadence_clock_moves_on_with_the_providers_before_it(tmp_path: Path) -> None:
+    """On the tick's own path the clock is the tick's moment moved on by the time elapsed since
+    (``limits.elapsed_clock``): Claude's slow call shows in Codex's stamp."""
+    from telegram_dashboard.limits import elapsed_clock
+
+    def fetch(provider: str):
+        if provider == "anthropic":
+            time.sleep(0.3)
+        return _snapshot(fetched_at=NOW)
+
+    caches: dict = {}
+    collect_limits(Environment(hermes_home=tmp_path), now=NOW, resolve=lambda: fetch, caches=caches)
+
+    claude = datetime.fromisoformat(caches["claude"]["attempted_at"])
+    codex = datetime.fromisoformat(caches["codex"]["attempted_at"])
+    assert NOW <= claude < NOW + timedelta(seconds=0.25)
+    assert codex - claude >= timedelta(seconds=0.25)  # a 0.3 s sleep, at the timer's resolution
+    ticks = iter((100.0, 100.0, 112.5))
+    moving = elapsed_clock(NOW, monotonic=lambda: next(ticks))
+    assert (moving(), moving()) == (NOW, NOW + timedelta(seconds=12.5))
+
+
 def test_a_day_at_a_60_second_period_asks_each_provider_288_times(tmp_path: Path) -> None:
     """The request count of issue #16 on the tick's own path (the worker, the record): a day of
     ticks at the default 60 s period, each waking up to a second early, at the default

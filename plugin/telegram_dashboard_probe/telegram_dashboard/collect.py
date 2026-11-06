@@ -59,6 +59,7 @@ from .limits import (
     Cadence,
     Resolver,
     build_limits_payload,
+    elapsed_clock,
     fetch_limits_payload_off_loop,
     import_fetcher,
 )
@@ -455,7 +456,9 @@ def collect_limits(
     if disabled is not None:
         return disabled
     show = _show_seconds(interval_seconds, None)
-    cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
+    cadence = (
+        None if caches is None else Cadence(caches, now, interval_seconds, show, elapsed_clock(now))
+    )
     listed = _listing(env)
     payload = build_limits_payload(resolve, cadence, listed)
     capacity, source, probe = parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
@@ -477,7 +480,9 @@ async def collect_limits_async(
     if disabled is not None:
         return disabled
     show = _show_seconds(interval_seconds, period_seconds)
-    cadence = None if caches is None else Cadence(caches, now, interval_seconds, show)
+    cadence = (
+        None if caches is None else Cadence(caches, now, interval_seconds, show, elapsed_clock(now))
+    )
     listed = _listing(env)
     payload = await fetch_limits_payload_off_loop(
         resolve, timeout_seconds=timeout_seconds, flights=flights, cadence=cadence, listed=listed
