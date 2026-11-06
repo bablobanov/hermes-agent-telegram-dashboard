@@ -68,13 +68,26 @@ def pytest_configure(config: pytest.Config) -> None:
 # the value before it may be the real profile (in the shell these tests were written in it is),
 # and the engine's atexit hooks or a late thread could resolve it after the session.
 _SESSION_HOME: list[str] = []
+# The OS temp root the home was made in. ``gateway.run`` imports the engine's bootstrap, which
+# points TMPDIR, TMP and TEMP at ``<HERMES_HOME>/cache/scratch`` when none of them is set and
+# drops tempfile's cached root (``export_scratch_tmp_env``, 0.22.2 to 0.23.0). On the Linux
+# runners none is set, so from the collection of such a test module on ``tempfile.gettempdir()``
+# names a directory inside the session home: the home is proved temporary against this root.
+_SESSION_TEMP_ROOT: list[str] = []
 
 
 def _use_a_temporary_hermes_home() -> None:
     if _SESSION_HOME:
         return
+    _SESSION_TEMP_ROOT.append(tempfile.gettempdir())
     _SESSION_HOME.append(tempfile.mkdtemp(prefix="hermes-test-home-"))
     os.environ["HERMES_HOME"] = _SESSION_HOME[0]
+
+
+@pytest.fixture
+def session_temp_root() -> str:
+    """The OS temp root the session's HERMES_HOME was made in (``_SESSION_TEMP_ROOT``)."""
+    return _SESSION_TEMP_ROOT[0]
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
