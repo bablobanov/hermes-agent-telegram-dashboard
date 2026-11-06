@@ -357,7 +357,13 @@ def test_lost_message_is_recreated_once_and_recorded(
         assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
         assert runtime.html is True  # the first edit went out as HTML
 
-        bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
+        async def gone_until_recreated(**kwargs: object) -> bool:
+            # Only the lost message is gone: the one sent in its place can be edited.
+            if kwargs.get("message_id") == 101:
+                raise BadRequest("Message to edit not found")
+            return True
+
+        bot.edit_message_text.side_effect = gone_until_recreated
         bot.send_message.return_value = MagicMock(message_id=102)
         # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
         # to is held back by the engine's chat slot while the first send still holds it, and
@@ -367,10 +373,13 @@ def test_lost_message_is_recreated_once_and_recorded(
         # the slot that edit took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
+        # The ticks after the recreate edit the new message. Waiting for that edit, not reading
+        # the status of the recreate itself, keeps the test independent of how many ticks a
+        # runner fits in before the checks (on the CI runners a later tick had already run).
+        await _until(lambda: runtime.record.get("last_status") == "edited", timeout=SLOT_WAIT)
 
         assert bot.send_message.await_count == 2  # recreated once
         assert runtime.record["lost_at"] and runtime.record["recreated_at"]
-        assert runtime.record["last_status"] == "created"
         # No false verdict on the form: a failed HTML edit and a plain one that never fired (or
         # failed) say nothing about HTML.
         assert runtime.html is True and runtime.record.get("html_error") is None
