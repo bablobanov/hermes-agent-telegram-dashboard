@@ -20,7 +20,7 @@ import shutil
 import sys
 import time
 from dataclasses import replace
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1577,6 +1577,47 @@ def test_a_held_back_plain_edit_of_a_rich_message_is_deferred_not_a_failure(
     assert (record["last_status"], record["last_error"]) == ("deferred", None)
     assert (record["screen_format"], record["message_id"]) == ("rich", "4242")
     assert runtime.rich is None
+
+
+def test_a_run_of_held_back_edits_past_the_lagging_threshold_says_one_warning(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """While the last confirmation is within the screen's own threshold (one period plus the
+    slack, 90 s at a 60 s period), a run of held-back edits is one INFO line. Once it is past it,
+    one WARNING says the edits are held back and when the screen was last confirmed; the
+    held-back ticks after it say nothing more. A new run, after any other tick, may say it
+    again (B5 review M1)."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    now = datetime.now(UTC)
+    runtime.record = {"message_id": "4242", "chat_id": CHAT, "last_status": "edited"}
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime.record["last_confirmed_at"] = (now - timedelta(seconds=30)).isoformat()
+        runtime._defer(1)
+        runtime._defer(1)
+        assert warnings() == []  # 30 s old: the screen still says confirmed
+        old = now - timedelta(seconds=200)
+        runtime.record["last_confirmed_at"] = old.isoformat()
+        for _ in range(3):
+            runtime._defer(1)
+        said = warnings()
+        assert len(said) == 1, said
+        assert "edits held back" in said[0] and "past the lagging threshold" in said[0]
+        assert f"{old:%Y-%m-%d %H:%M} UTC" in said[0] and "-100" not in said[0]
+        runtime.record["last_status"] = "edit_failed"  # the run ended; a later one starts afresh
+        runtime._defer(1)
+        assert len(warnings()) == 2
+
+    infos = [r for r in caplog.records if r.levelname == "INFO" and "deferred" in r.getMessage()]
+    assert len(infos) == 2  # one per run
+    assert ctx.state.data["probe"]["last_status"] == "deferred"
+    assert ctx.state.data["probe"]["last_confirmed_at"] == old.isoformat()
 
 
 def test_external_sources_reach_the_collector_with_their_own_cache_and_the_period(

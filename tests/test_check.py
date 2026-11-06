@@ -70,12 +70,36 @@ def test_check_takes_a_deferred_tick_as_no_failure_and_judges_by_the_last_confir
     fresh = _plugin_state(tmp_path, **_record(2, last_status="deferred"))
     assert main(["--config", _config(tmp_path, fresh), "--check"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("confirmed") and "error=None" in out
+    assert out.startswith("confirmed") and "error=None status=deferred" in out
 
+    # Stale with no error: the line says it is the engine holding the edits back (B5 review M1).
     for minutes, code, word in ((7, 1, "lagging"), (11, 2, "stale")):
         held = _plugin_state(tmp_path, **_record(minutes, last_status="deferred"))
         assert main(["--config", _config(tmp_path, held), "--check"]) == code
-        assert capsys.readouterr().out.startswith(word)
+        out = capsys.readouterr().out
+        assert out.startswith(word) and out.rstrip().endswith("error=None status=deferred")
+
+
+def test_check_names_the_plugin_s_status_and_only_as_a_plain_word(tmp_path, capsys) -> None:
+    """The line ends with the plugin's ``last_status``: ``status=edited`` for a healthy record,
+    ``status=None`` for the cron path's record, which has none, and for a value that is not one
+    plain word (a foreign file's text is not printed into an alert)."""
+    edited = _plugin_state(tmp_path, **_record(2))
+    assert main(["--config", _config(tmp_path, edited), "--check"]) == 0
+    assert capsys.readouterr().out.rstrip().endswith("status=edited")
+
+    odd = _plugin_state(tmp_path, **_record(2, last_status="edited\nDASHBOARD OK"))
+    assert main(["--config", _config(tmp_path, odd), "--check"]) == 0
+    out = capsys.readouterr().out
+    assert out.rstrip().endswith("status=None") and "DASHBOARD OK" not in out
+
+    delivery = tmp_path / "dashboard-delivery.json"
+    stamp = (NOW - timedelta(minutes=1)).isoformat()
+    delivery.write_text(json.dumps({"message_id": 4242, "last_confirmed_at": stamp}), "utf-8")
+    cfg = tmp_path / "cron.json"
+    cfg.write_text(json.dumps({"state_path": str(delivery), "period_seconds": 300}), "utf-8")
+    assert main(["--config", str(cfg), "--check"]) == 0
+    assert capsys.readouterr().out.rstrip().endswith("status=None")
 
 
 def test_check_on_plugin_state_sees_a_lost_message_that_was_not_recreated(tmp_path, capsys) -> None:

@@ -58,7 +58,7 @@ try:
         MessageFreshness,
         classify_message_freshness,
         confirmation_threshold_seconds,
-        load_plugin_record,
+        load_plugin_state,
         message_age_seconds,
         message_banner,
     )
@@ -127,11 +127,14 @@ def should_speak(
     return index % ticks_per_repeat == 0
 
 
-def state_line(freshness: MessageFreshness, record: DeliveryRecord, *, source: str) -> str:
-    """Same shape as ``python -m telegram_dashboard --check`` prints."""
+def state_line(
+    freshness: MessageFreshness, record: DeliveryRecord, *, source: str, status: str | None = None
+) -> str:
+    """Same shape as ``python -m telegram_dashboard --check`` prints, the plugin's
+    ``last_status`` last: ``status=deferred`` says why a message with no error went stale."""
     return (
         f"{freshness} source={source} message_id={record.message_id} "
-        f"confirmed={record.last_confirmed_at} error={record.last_error}"
+        f"confirmed={record.last_confirmed_at} error={record.last_error} status={status}"
     )
 
 
@@ -142,10 +145,11 @@ def alert(
     now: datetime,
     period_seconds: int,
     source: str,
+    status: str | None = None,
 ) -> str:
     banner = message_banner(freshness, record, now=now, period_seconds=period_seconds) or freshness
     return f"DASHBOARD PROBE ALERT: {freshness}\n{banner}\n" + state_line(
-        freshness, record, source=source
+        freshness, record, source=source, status=status
     )
 
 
@@ -165,7 +169,7 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
         return EXIT_BROKEN
 
     moment = now or datetime.now(UTC)
-    record = load_plugin_record(settings.plugin_state_path)
+    record, status = load_plugin_state(settings.plugin_state_path)
     freshness = classify_message_freshness(
         record, now=moment, period_seconds=settings.period_seconds
     )
@@ -175,11 +179,16 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
     if should_speak(freshness, over, interval_seconds=settings.interval_seconds):
         print(
             alert(
-                freshness, record, now=moment, period_seconds=settings.period_seconds, source=source
+                freshness,
+                record,
+                now=moment,
+                period_seconds=settings.period_seconds,
+                source=source,
+                status=status,
             )
         )
     elif args.verbose:
-        print(state_line(freshness, record, source=source))
+        print(state_line(freshness, record, source=source, status=status))
     return 0
 
 

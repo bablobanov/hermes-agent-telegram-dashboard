@@ -164,6 +164,11 @@ def test_a_deferred_tick_is_silence_while_its_last_confirmation_is_fresh(
 
     code, out = _run(cfg, capsys, now=NOW + timedelta(seconds=THRESHOLD))
     assert code == 0 and out.startswith("DASHBOARD PROBE ALERT: lagging\n🟡 Update lagging")
+    # The alert says why a message with no error lags (B5 review M1).
+    assert out.rstrip().endswith("error=None status=deferred")
+
+    code, out = _run(cfg, capsys, "--verbose")
+    assert out.rstrip().endswith("error=None status=deferred")
 
 
 @pytest.mark.parametrize(

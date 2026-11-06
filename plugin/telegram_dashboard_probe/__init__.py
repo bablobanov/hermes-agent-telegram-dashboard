@@ -53,9 +53,10 @@ An edit the engine held back is no edit. The engine paces each chat's sends and 
 one shared slot (telegram adapter, #116312, read on 0.22.2 and 0.22.7): while a reply in the
 same chat holds it, ``edit_message`` without ``finalize`` edits nothing and answers success with
 ``raw_response={"skipped": True}`` (``_skipped``). The tick records ``deferred``: no
-confirmation, no verdict on a form, and the next tick edits again. The plugin never asks for
-``finalize``, which the slot does not hold back, so the agent's replies and the dashboard keep
-within Telegram's flood limits together; ``_edit_text`` and the rich call are not gated by it.
+confirmation, no verdict on a form, and the next tick edits again; a run of them that outlasts
+the lagging threshold is one WARNING. The plugin never asks for ``finalize``, which the slot
+does not hold back, so the agent's replies and the dashboard keep within Telegram's flood limits
+together; ``_edit_text`` and the rich call are not gated by it.
 
 Before HTML comes the rich form (0.12.0, Bot API 10.1+ Rich Messages, ``rich.py``): the same
 first lines and a collapsed section per source. No verb of the adapter carries it; the call is the
@@ -199,7 +200,9 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "LIMITS_PROVIDERS",
         "parse_limits_providers",
     ),
-    "freshness": ("record_from_plugin_state",),
+    # classify_message_freshness: the screen's own lagging rule, which a run of edits the engine
+    # holds back is measured against (``_defer``); in the module since 0.3.0, the first release.
+    "freshness": ("record_from_plugin_state", "classify_message_freshness"),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
     # The rich form came with 0.12.0, the module with it.
     "rich": ("to_telegram_rich",),
@@ -852,6 +855,8 @@ class ProbeRuntime:
         self._rich_render_error: str | None = None
         # The last reason a full form was refused on a rich message, said once in the journal.
         self._rich_form_refused: str | None = None
+        # Whether the current run of edits the engine held back said its one WARNING (``_defer``).
+        self._defer_warned = False
         # The adapter's own counters, read as attributes before each screen is composed.
         self.traffic_probe: Any = None
 
@@ -1137,13 +1142,45 @@ class ProbeRuntime:
 
     def _defer(self, generation: int) -> None:
         """The engine held this tick's edit back: the screen did not change, so no confirmation
-        and no error; the next tick edits again. One journal line for a run of them."""
+        and no error; the next tick edits again. One INFO line when a run of them starts, and
+        one WARNING once, while the run lasts, the last confirmation is past the screen's own
+        lagging threshold: from then on the screen and ``--check`` say lagging, and the journal
+        says why."""
         if self.record.get("last_status") != DEFERRED_STATUS:
+            self._defer_warned = False
             logger.info(
                 "probe: edit deferred: the engine held it back while the chat's outbound slot "
                 "was busy; the next tick edits again"
             )
+        if not self._defer_warned and self._lagging(datetime.now(UTC)):
+            self._defer_warned = True
+            logger.warning(
+                "probe: edits held back while the chat's outbound slot stays busy; the screen "
+                "still shows the text confirmed at %s, past the lagging threshold",
+                self._confirmed_at(),
+            )
         self._note(status=DEFERRED_STATUS, error=None, generation=generation)
+
+    def _lagging(self, now: datetime) -> bool:
+        """Whether the screen's own rule (``classify_message_freshness`` at the render period)
+        calls the message lagging or worse now; never without the package, whose screen is the
+        loud notice anyway."""
+        dashboard = self.dashboard
+        if dashboard is None:
+            return False
+        record = dashboard.freshness.record_from_plugin_state({STATE_KEY: self.record})
+        verdict = dashboard.freshness.classify_message_freshness(
+            record, now=now, period_seconds=self._render_period()
+        )
+        return bool(verdict != "confirmed")
+
+    def _confirmed_at(self) -> str:
+        """The last confirmation in the display zone, for the journal."""
+        try:
+            moment = datetime.fromisoformat(str(self.record.get("last_confirmed_at")))
+        except ValueError:
+            return "an unknown time"
+        return f"{moment.astimezone(self.zone):%Y-%m-%d %H:%M %Z}"
 
     # ------------------------------------------------------------------ the edit
 

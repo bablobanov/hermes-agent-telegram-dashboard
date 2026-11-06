@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -109,6 +110,9 @@ def confirmation_slack_seconds(period_seconds: int) -> float:
 
 PLUGIN_STATE_KEY = "probe"
 _PLUGIN_FAILED_SUFFIX = "_failed"
+# A status the state line shows as it is: one lower-case word with underscores, as the plugin
+# writes them; anything else in a foreign file is not printed into an alert.
+_STATUS_WORD = re.compile(r"[a-z_]{1,40}")
 
 
 def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) -> DeliveryRecord:
@@ -146,19 +150,35 @@ def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) ->
     )
 
 
-def load_plugin_record(path: Path) -> DeliveryRecord:
-    """The probe plugin's record from its PluginState file; an empty record (``never``) when the
-    file is missing or unreadable: a watchdog pointed at a wrong path must fail, not pass."""
+def plugin_last_status(payload: object, *, key: str = PLUGIN_STATE_KEY) -> str | None:
+    """The probe plugin's ``last_status`` as it wrote it (``edited``, ``deferred``,
+    ``edit_failed``, ...), for the state line of ``--check`` and the watchdog: a message that went
+    stale with no error says why there (``deferred``: the engine kept holding the edits back).
+    ``None`` for a missing key, a foreign file or a value that is not one plain word."""
+    raw = payload.get(key) if isinstance(payload, dict) else None
+    status = _plugin_str(raw.get("last_status")) if isinstance(raw, dict) else None
+    return status if status is not None and _STATUS_WORD.fullmatch(status) else None
+
+
+def load_plugin_state(path: Path) -> tuple[DeliveryRecord, str | None]:
+    """The probe plugin's record and its last status from its PluginState file; an empty record
+    (``never``) and no status when the file is missing or unreadable: a watchdog pointed at a
+    wrong path must fail, not pass."""
     logger = logging.getLogger(__name__)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.error("plugin state file missing: %s", path.name)
-        return DeliveryRecord()
+        return DeliveryRecord(), None
     except (OSError, ValueError, UnicodeDecodeError) as exc:
         logger.error("plugin state unreadable (%s): %s", type(exc).__name__, path.name)
-        return DeliveryRecord()
-    return record_from_plugin_state(payload)
+        return DeliveryRecord(), None
+    return record_from_plugin_state(payload), plugin_last_status(payload)
+
+
+def load_plugin_record(path: Path) -> DeliveryRecord:
+    """``load_plugin_state`` without the status."""
+    return load_plugin_state(path)[0]
 
 
 def _plugin_message_id(value: object) -> int | None:

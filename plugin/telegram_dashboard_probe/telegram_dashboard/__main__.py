@@ -24,7 +24,7 @@ from .compat import (
     parse_limits_providers,
 )
 from .delivery import DeliveryStore, deliver
-from .freshness import check_exit_code, classify_message_freshness, load_plugin_record
+from .freshness import check_exit_code, classify_message_freshness, load_plugin_state
 from .render import render_dashboard, to_telegram_html, to_telegram_plain
 from .states import PERIOD_SECONDS, all_states
 
@@ -141,12 +141,15 @@ def run_check(config: dict[str, object]) -> int:
 
     ``plugin_state_path`` points at the engine's PluginState file of the probe plugin
     (``<HERMES_HOME>/plugin-data/<namespace>/state.json``); without it the cron path's own
-    delivery record (``state_path``) is read. The two paths never write the same file.
+    delivery record (``state_path``) is read. The two paths never write the same file. The line
+    ends with the plugin's ``last_status`` (``None`` for the cron record): ``stale ... error=None
+    status=deferred`` is a message whose edits the engine kept holding back for a busy chat.
     """
     plugin_state = config.get("plugin_state_path")
+    status: str | None = None  # the plugin's last_status; the cron record has none
     if isinstance(plugin_state, str) and plugin_state:
         path = Path(plugin_state).expanduser()
-        record = load_plugin_record(path)
+        record, status = load_plugin_state(path)
         source = f"plugin-state:{path.name}"
     else:
         store = DeliveryStore(
@@ -159,7 +162,7 @@ def run_check(config: dict[str, object]) -> int:
     )
     print(
         f"{freshness} source={source} message_id={record.message_id} "
-        f"confirmed={record.last_confirmed_at} error={record.last_error}"
+        f"confirmed={record.last_confirmed_at} error={record.last_error} status={status}"
     )
     return check_exit_code(freshness)
 
