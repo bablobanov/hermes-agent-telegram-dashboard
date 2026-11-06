@@ -282,24 +282,57 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     manager.unload()
 
 
-def test_the_engine_s_own_gate_reads_the_manifest_s_floor() -> None:
+# The engine's version parser passes re.split's maxsplit positionally: a DeprecationWarning on
+# every comparison this test makes (plugins_manifest.py, 0.22.2 and 0.22.7), the engine's own.
+@pytest.mark.filterwarnings("ignore:'maxsplit' is passed as positional argument:DeprecationWarning")
+@pytest.mark.parametrize("shape", ["as installed", "as the CI job sees it"])
+def test_the_engine_s_own_gate_reads_the_manifest_s_floor(monkeypatch, shape: str) -> None:
     """``requires_hermes`` is what the engine checks before it imports the plugin (from 0.21.3
-    on, hermes_cli/plugins_manifest.py): this engine lets the manifest through, and its own
-    comparison refuses a release below the floor. A version it cannot tell (a checkout with no
-    tag or stamp, as in the CI job) passes the gate by the engine's design."""
+    on, hermes_cli/plugins_manifest.py ``requires_hermes_error``). The gate is put to the
+    manifest at the release under test: ``HERMES_ENGINE_TAG`` when set (the CI engine job sets
+    it from its matrix, because its checkout is a commit with no tags and the engine tells its
+    own version as ``unknown``, which passes any spec), else the version the engine reports (an
+    install from a tag, as locally). When the engine knows its version, it must be that release.
+    The engine's own comparison also refuses a release below the floor. The second case runs the
+    CI job's shape wherever the engine knows its version: it reports ``unknown``, and the tag
+    names the release."""
     import re
 
+    from hermes_cli import plugins_manifest
     from hermes_cli.plugins_manifest import requires_hermes_error, version_satisfies
+
+    if shape == "as the CI job sees it":
+        installed = plugins_manifest.running_hermes_version()
+        tag = os.environ.get("HERMES_ENGINE_TAG") or f"v{installed}"
+        monkeypatch.setenv("HERMES_ENGINE_TAG", tag)
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "unknown")
 
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
     declared = re.search(r'^requires_hermes: "([^"]+)"$', manifest, re.MULTILINE)
     assert declared is not None
     spec = declared.group(1)
-
     assert spec == ">=0.22.2"
-    assert requires_hermes_error({"requires_hermes": spec}) is None
     assert version_satisfies(spec, "0.22.2") and version_satisfies(spec, "0.22.7")
     assert not version_satisfies(spec, "0.22.1") and not version_satisfies(spec, "0.21.6")
+
+    reported = plugins_manifest.running_hermes_version()
+    tag = os.environ.get("HERMES_ENGINE_TAG", "").strip().removeprefix("v")
+    release = tag or reported
+    if tag and reported != "unknown":
+        assert reported == tag, f"the engine reports {reported}, the job tests {tag}"
+    if not re.fullmatch(r"\d+\.\d+\.\d+", release):
+        pytest.skip(
+            "the engine tells its version as unknown and HERMES_ENGINE_TAG names none: "
+            "its gate would let any manifest through"
+        )
+
+    # The engine's own gate function, with the running version it reads set to the release.
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: release)
+    assert requires_hermes_error({"requires_hermes": spec}) is None
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "0.22.1")
+    assert requires_hermes_error({"requires_hermes": spec}) == (
+        "requires hermes >=0.22.2, running 0.22.1"
+    )
 
 
 def test_lost_message_is_recreated_once_and_recorded(
