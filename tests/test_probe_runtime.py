@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -270,6 +271,12 @@ def _served(launch: FakeAdapter, *adapters: FakeAdapter) -> None:
         adapter.gateway_runner = launch.gateway_runner
 
 
+def _started_ago(runtime: Any, seconds: float) -> None:
+    """The registration as if it had started ``seconds`` ago, on the clock the wait for a
+    message's sender is counted on."""
+    runtime.started_monotonic = time.monotonic() - seconds
+
+
 def test_the_bot_s_id_is_read_off_the_adapter_s_bot_and_nothing_else() -> None:
     """The id of the bot behind an adapter is PTB's ``Bot.id``: the number getMe answered when the
     bot started, kept on the object (no request). A bot that has not started raises there, as
@@ -324,17 +331,21 @@ def test_a_message_another_bot_sent_is_never_edited_and_a_new_one_is_sent(
     assert str(LAUNCH_BOT) not in caplog.text and str(ALPHA_BOT) not in caplog.text
 
 
+@pytest.mark.parametrize("past_the_wait", [False, True])
 def test_the_launch_profile_keeps_editing_a_message_from_before_the_sender_was_kept(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, past_the_wait: bool
 ) -> None:
     """A record from 1.0.0 keeps no sender. The launch profile sent its message through its own
-    bot then as now: the message is edited as before and the record gets the bot's id."""
+    bot then as now: the message is edited as before and the record gets the bot's id. The wait
+    for a sender (``SENDER_WAIT_SECONDS``) does not touch it: its runner publishes its adapter."""
     plugin = _load_plugin()
     ctx = FakeContext(_settings(monkeypatch, tmp_path))
     _record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
     adapter = FakeAdapter(bot_id=LAUNCH_BOT)  # its runner publishes it: the launch profile's
+    if past_the_wait:
+        _started_ago(runtime, plugin.SENDER_WAIT_SECONDS + 1)
 
     async def scenario() -> None:
         runtime.wire(object(), adapter)
@@ -439,3 +450,47 @@ def test_a_message_from_before_the_sender_was_kept_waits_for_the_runner_s_adapte
 
     assert adapter.sent == [] and set(adapter.targets) == {"4242"}
     assert ctx.state.data["probe"]["bot_id"] == LAUNCH_BOT
+
+
+def test_a_message_from_before_the_sender_was_kept_is_replaced_once_the_wait_runs_out(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A served profile on a gateway whose launch profile installs no adapter at all (under the
+    multiplex a platform whose token is only in a secondary profile's ``.env`` is skipped for it,
+    or its only platform failed at start): the runner's map stays empty and never tells whose bot
+    sent a record without a sender. Within ``SENDER_WAIT_SECONDS`` of the registration's start
+    the tick waits, editing and sending nothing. Past it the message is taken as another bot's:
+    the tick says why, sends a new one from the profile's own bot and keeps that bot's id. The
+    old message is never edited."""
+    plugin = _load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, tmp_path))
+    _record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    own = FakeAdapter(bot_id=ALPHA_BOT, message_id="202")
+    own.gateway_runner = SimpleNamespace(adapters={})  # the launch profile installs nothing
+
+    async def scenario() -> None:
+        _started_ago(runtime, plugin.SENDER_WAIT_SECONDS - 60)
+        runtime.wire(object(), own)
+        await _until(lambda: runtime.ticks >= 3)
+        assert runtime.record["last_status"] == "waiting"
+        assert runtime.record["last_error"] == plugin.SENDER_UNKNOWN
+        assert own.targets == [] and own.sent == []
+
+        _started_ago(runtime, plugin.SENDER_WAIT_SECONDS + 1)
+        waited = runtime.ticks
+        await _until(lambda: runtime.ticks >= waited + 3)
+        runtime.task.cancel()
+
+    with caplog.at_level("INFO", logger=PROBE_LOGGER):
+        asyncio.run(scenario())
+
+    assert len(own.sent) == 1 and own.texts[0] == own.sent[0]
+    assert "4242" not in own.targets and set(own.targets) == {"202"}
+    stored = ctx.state.data["probe"]
+    assert (stored["message_id"], stored["bot_id"]) == ("202", ALPHA_BOT)
+    assert stored["last_status"] == "edited" and stored["lost_at"] and stored["recreated_at"]
+    said = [r.getMessage() for r in caplog.records if "4242" in r.getMessage()]
+    assert len(said) == 1 and "no sender" in said[0] and "sending a new one" in said[0], said
+    assert str(ALPHA_BOT) not in caplog.text

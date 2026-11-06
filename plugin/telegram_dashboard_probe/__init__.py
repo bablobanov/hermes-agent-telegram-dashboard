@@ -37,7 +37,10 @@ Only the bot that sent the message edits it. The record keeps the sender's numer
 ``message_id`` (``BOT_ID_KEY``); a message another bot sent is taken as lost and a new one is sent
 (``_sender``): a served profile's message from 1.0.0 (that release sent the screen through the
 launch profile's bot), or one the profile's earlier bot sent. In a private chat the same number
-names one of this bot's own messages, which an edit would overwrite and report as the screen.
+names one of this bot's own messages, which an edit would overwrite and report as the screen. A
+message from 1.0.0 whose profile the runner cannot tell yet waits, at most
+``SENDER_WAIT_SECONDS`` from the start, and is then taken the same way: never edited while its
+sender is unknown.
 
 The screen goes out as HTML when the adapter has a verb for it, plain otherwise. Which verb is
 read off the adapter object, never off a version number (``_html_verb``): the public
@@ -93,6 +96,7 @@ import math
 import os
 import sys
 import threading
+import time
 import types
 import weakref
 from collections.abc import Awaitable, Callable
@@ -260,6 +264,25 @@ LAUNCH_BOT = (
     "through the launch profile's bot"
 )
 SENDER_UNKNOWN = "the runner has installed no adapter yet: the message's sender cannot be told"
+# How long a record without a sender waits for the runner to tell the profile, counted from this
+# registration's start on the monotonic clock (a wall clock set right after a boot would end the
+# wait at once). The runner installs the launch profile's adapters once every platform of that
+# profile has answered its first connect; the engine runs those connects together and bounds them
+# at 45 s for Telegram and 30 s for the others (``gateway/run.py``, v0.22.2 to v0.23.0), and a
+# served profile's adapters connect after that. Five minutes is several times that bound, so a
+# slow start still ends inside the wait, and short enough that a served profile whose launch
+# profile installs no adapter at all gets a moving screen back within minutes: under the multiplex
+# a platform whose token is only in a secondary profile's ``.env`` is skipped for the launch
+# profile (#64674), or the launch profile's only platform failed at start. Past the wait the
+# message is taken as another bot's (``SENDER_UNPLACED``): never edited while its sender is
+# unknown. A connect bound raised past the wait (the engine's
+# ``HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT``) may run the launch profile's own wait out: its
+# message is then replaced, not edited.
+SENDER_WAIT_SECONDS = 300.0
+SENDER_UNPLACED = (
+    "names no sender (written before 1.1.0), and the runner installed no adapter in the "
+    f"{SENDER_WAIT_SECONDS:.0f} s since the start: whose bot sent it cannot be told"
+)
 # What says the request was refused and nothing was sent, as the engine tells it from a failure that
 # may have reached Telegram (``_is_rich_fallback_error``, ``_is_rich_capability_error``, v0.22.2):
 # Telegram's no, a method this Bot API server or library lacks, a call that could not be made.
@@ -882,6 +905,9 @@ class ProbeRuntime:
         # register() runs as the gateway starts: what the engine says once per process is said
         # after this moment (``Environment.process_started_at``).
         self.started_at = datetime.now(UTC)
+        # The same moment on the monotonic clock, which the wait for a message's sender is counted
+        # from (``SENDER_WAIT_SECONDS``).
+        self.started_monotonic = time.monotonic()
         self.collector: Collector = self._collect
         # One worker per source across ticks: a source abandoned by its deadline is not
         # started again until it returns (collect.Flights).
@@ -1203,7 +1229,8 @@ class ProbeRuntime:
     ) -> bool:
         """The record's message edited: ``True`` when the tick is done with it (edited, held
         back, failed, or its sender cannot be told yet), ``False`` when a new message goes out
-        (none in this chat, lost, or sent by another bot, ``_sender``)."""
+        (none in this chat, lost, sent by another bot, or its sender still unknown once the wait
+        ran out, ``_sender``)."""
         message_id = self.record.get("message_id")
         if not message_id or self.record.get("chat_id") != chat:
             return False
@@ -1240,8 +1267,10 @@ class ProbeRuntime:
         (``BOT_ID_KEY``): another id is another bot (the profile's bot was replaced). A record
         without one was written before 1.1.0: the launch profile's message went through its own
         bot then as now, so it is edited and the id kept; a served profile's went through the
-        launch profile's bot. A bot that tells no id leaves nothing to compare: edited as
-        before."""
+        launch profile's bot. While the runner tells neither (``_served``), the tick waits, for
+        ``SENDER_WAIT_SECONDS`` from this registration's start; then the message is taken as
+        another bot's (``SENDER_UNPLACED``), as a message whose sender is unknown is never
+        edited. A bot that tells no id leaves nothing to compare: edited as before."""
         current = _bot_id(live)
         if current is None:
             return None
@@ -1250,7 +1279,7 @@ class ProbeRuntime:
             return None if stored == current else OTHER_BOT
         served = self._served()
         if served is None:
-            return SENDER_UNKNOWN
+            return SENDER_UNKNOWN if self._sender_wait_left() else SENDER_UNPLACED
         if served:
             return LAUNCH_BOT
         self.record[BOT_ID_KEY] = current
@@ -1262,7 +1291,8 @@ class ProbeRuntime:
         true when it publishes a Telegram adapter never handed here; false for the launch
         profile, for an adapter without a runner, and for a map with no Telegram adapter (1.0.0
         then sent through this profile's own); ``None`` while the map is empty (a start: the
-        runner installs the adapters that connected once every platform has answered)."""
+        runner installs the adapters that connected once every platform has answered; or a
+        launch profile that installs none, which ``_sender`` waits for only so long)."""
         if self.primary:
             return False
         adapters = getattr(_deref(self._runner), "adapters", None)
@@ -1271,6 +1301,11 @@ class ProbeRuntime:
         if not adapters:
             return None
         return adapters.get(self._platform) is not None
+
+    def _sender_wait_left(self) -> bool:
+        """Whether a record without a sender still waits for the runner to tell the profile:
+        less than ``SENDER_WAIT_SECONDS`` since this registration started."""
+        return time.monotonic() - self.started_monotonic < SENDER_WAIT_SECONDS
 
     def _sent_by(self, live: Any) -> None:
         """The new message's sender into the record, or no sender when the bot tells none."""
