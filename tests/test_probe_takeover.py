@@ -381,43 +381,71 @@ def test_the_launch_profile_takes_over_when_the_earlier_adapter_is_gone(tmp_path
     asyncio.run(scenario())
 
 
-def test_an_entry_of_a_later_release_is_read_by_the_keys_this_one_knows(tmp_path: Path) -> None:
-    """A later release may write ``version`` 2 and keys this one does not know: the takeover uses
-    the adapter, loop, task and generation, and the entry it writes says ``version`` 1."""
+def _later_registry(
+    ctx: FakeContext, *, module_version: int, entry: dict[str, Any]
+) -> types.ModuleType:
+    """The registry module as a later release might leave it, with one entry for the profile."""
+    registry = types.ModuleType(LIVE_MODULE)
+    registry.version = module_version  # type: ignore[attr-defined]
+    registry.lock = threading.Lock()  # type: ignore[attr-defined]
+    registry.profiles = {_key(ctx.state.path): entry}  # type: ignore[attr-defined]
+    sys.modules[LIVE_MODULE] = registry
+    return registry
+
+
+@pytest.mark.parametrize(
+    ("module_version", "entry_version"), [(1, 2), (2, 1)], ids=["entry", "module"]
+)
+def test_a_registry_a_later_release_wrote_is_neither_taken_over_nor_written(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, module_version: int, entry_version: int
+) -> None:
+    """A later release may write ``version`` 2 and keys this one does not know, into an entry
+    or as the whole module. This release does not take that release's loop over and writes
+    nothing into the registry, which keeps every key, and says so once. While that loop runs, a
+    factory call of this registration does nothing (one loop per profile); once it has ended,
+    this registration serves the profile as before the registry, still writing nothing."""
     plugin = load_plugin()
     ctx = _context(tmp_path / "home")
-    adapter = FakeAdapter()
+    adapter, later_owner = FakeAdapter(), object()
+    sentinel = object()
 
     async def scenario() -> None:
         earlier = asyncio.get_running_loop().create_task(asyncio.sleep(60), name=TASK_NAME)
-        registry = types.ModuleType(LIVE_MODULE)
-        key = os.path.normcase(str(ctx.state.path.resolve()))
-        registry.version = 2  # type: ignore[attr-defined]
-        registry.lock = threading.Lock()  # type: ignore[attr-defined]
-        registry.profiles = {  # type: ignore[attr-defined]
-            key: {
-                "version": 2,
-                "owner": lambda: None,
-                "adapter": lambda: adapter,
-                "loop": asyncio.get_running_loop(),
-                "task": earlier,
-                "generation": 7,
-                "something_new": object(),
-            }
+        entry = {
+            "version": entry_version,
+            "owner": lambda: later_owner,
+            "adapter": lambda: adapter,
+            "loop": asyncio.get_running_loop(),
+            "task": earlier,
+            "generation": 7,
+            "primary": True,
+            "something_new": sentinel,
         }
-        sys.modules[LIVE_MODULE] = registry
+        kept = dict(entry)
+        registry = _later_registry(ctx, module_version=module_version, entry=entry)
 
         runtime = plugin.register(ctx)
-        await until(lambda: runtime.task is not None and adapter.html_edits)
+        await asyncio.sleep(0.05)
+        assert runtime is not None and runtime.task is None and not earlier.done()
+        runtime.wire(object(), FakeAdapter())  # a reconnect while the later loop runs
+        assert runtime.task is None
 
-        assert earlier.cancelled() and runtime.generation == 7 and runtime.latest is adapter
-        entry = registry.profiles[key]  # type: ignore[attr-defined]
-        assert entry["version"] == 1 and "something_new" not in entry
-        assert entry["owner"]() is runtime and entry["adapter"]() is adapter
-        assert entry["task"] is runtime.task and entry["generation"] == 7
+        earlier.cancel()  # that release's loop ends (its unload)
+        await until(lambda: earlier.done())
+        own = FakeAdapter()
+        runtime.wire(object(), own)
+        await until(lambda: len(own.html_edits) >= 2)
+
+        assert _loops() == [runtime.task] and adapter.texts == []
+        assert registry.profiles == {_key(ctx.state.path): kept}  # type: ignore[attr-defined]
+        assert registry.profiles[_key(ctx.state.path)] is entry  # type: ignore[attr-defined]
+        assert registry.version == module_version  # type: ignore[attr-defined]
         runtime.task.cancel()
 
-    asyncio.run(scenario())
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        asyncio.run(scenario())
+    said = [r.getMessage() for r in caplog.records if "later release" in r.getMessage()]
+    assert len(said) == 1, said
 
 
 @pytest.mark.parametrize(

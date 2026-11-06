@@ -272,8 +272,11 @@ Collector = Callable[[datetime], Awaitable[Any]]
 # Issue #12: the registry of live tick loops, one entry per profile, in a module of its own name in
 # ``sys.modules``. A forced re-discovery evicts ``hermes_plugins.<slug>`` and its submodules with
 # every global of this file; this name is outside that namespace, so it survives. A later release
-# reads what this one wrote, and this one what a later one writes: an entry carries ``version``,
-# and a reader takes only the keys it knows (``LIVE_KEYS``), whatever else is there. The module
+# reads what this one wrote: an entry carries ``version``, and a reader takes only the keys it
+# knows (``LIVE_KEYS``), whatever else is there. A module or an entry whose ``version`` is higher
+# than this release's (``_later``) was written by a later release: this one never takes its loop
+# over and never writes into it, and serves its profile only while that release's loop does
+# not run (``_owns_profile``). The module
 # has ``version``, ``lock`` (a ``threading.Lock``) and ``profiles`` (key -> entry); an entry has
 # ``version``, ``owner``, ``adapter`` and ``runner`` (references: call one for the object, ``None``
 # once it is gone; ``runner`` is the adapter's ``gateway_runner``), ``platform`` (the adapter's
@@ -743,10 +746,12 @@ def _rich_plain(text: str) -> str:
 
 @dataclass(frozen=True)
 class _Live:
-    """The registry module's lock and entries, as this release reads them."""
+    """The registry module's lock and entries, as this release reads them; ``later`` when the
+    module says a later release made it (read only, never written)."""
 
     lock: Any
     profiles: dict[Any, Any]
+    later: bool = False
 
 
 @dataclass(frozen=True)
@@ -776,7 +781,21 @@ def _live() -> _Live | None:
     lock, profiles = getattr(module, "lock", None), getattr(module, "profiles", None)
     if not isinstance(profiles, dict) or not callable(getattr(lock, "__enter__", None)):
         return None
-    return _Live(lock, profiles)
+    return _Live(lock, profiles, _later(getattr(module, "version", None)))
+
+
+def _later(version: object) -> bool:
+    """Whether a registry module's or entry's ``version`` is a later release's than this one's
+    (``LIVE_VERSION``): a whole number above it."""
+    if isinstance(version, bool) or not isinstance(version, int):
+        return False
+    return version > LIVE_VERSION
+
+
+def _written_later(live: _Live, entry: object) -> bool:
+    """Whether a later release wrote the registry module or this entry: neither taken over nor
+    written by this one."""
+    return live.later or (isinstance(entry, dict) and _later(entry.get("version")))
 
 
 def profile_key(ctx: Any, settings: Settings) -> str:
@@ -940,13 +959,22 @@ class ProbeRuntime:
         """At ``register()``, on the engine's load worker thread: this registration serves its
         profile from now on. When an earlier one in this process was handed an adapter, its loop
         is taken over on the gateway loop (``_adopt``): the engine never calls this
-        registration's factory on a client it wired already."""
+        registration's factory on a client it wired already. An entry a later release wrote is
+        left as it is (``_written_later``), said once."""
         live = _live()
         if live is None:
             return
         with live.lock:
-            previous = _known(live.profiles.get(self.key))
-            live.profiles[self.key] = {**previous, "version": LIVE_VERSION, "owner": _ref(self)}
+            current = live.profiles.get(self.key)
+            previous, later = _known(current), _written_later(live, current)
+            if not later:
+                live.profiles[self.key] = {**previous, "version": LIVE_VERSION, "owner": _ref(self)}
+        if later:
+            logger.warning(
+                "probe: this profile's registry entry was written by a later release; left as "
+                "it is, its loop not taken over"
+            )
+            return
         # The profile's count of adapters goes on, and so does the marker: the record's
         # adapter_generation never drops when a reconnect wires this one before _adopt runs.
         self.generation, self.primary = _generation(previous), previous.get("primary") is True
@@ -988,12 +1016,16 @@ class ProbeRuntime:
 
     def _owns_profile(self) -> bool:
         """Whether this registration serves its profile: the newest one claimed it. With no
-        registry, or no entry for the profile, every registration does, as before #12."""
+        registry, or no entry for the profile, every registration does, as before #12. An entry
+        a later release wrote is never claimed: this registration serves while that release's
+        loop does not run, so there is one loop per profile all the same."""
         live = _live()
         if live is None:
             return True
         with live.lock:
             entry = live.profiles.get(self.key)
+        if _written_later(live, entry):
+            return not _alive(_known(entry).get("task"))
         return not isinstance(entry, dict) or _owner(entry) is self
 
     def _publish(self) -> None:
@@ -1021,6 +1053,8 @@ class ProbeRuntime:
         }
         with live.lock:
             current = live.profiles.get(self.key)
+            if _written_later(live, current):
+                return
             if not isinstance(current, dict) or _owner(current) is self:
                 live.profiles[self.key] = entry
 
