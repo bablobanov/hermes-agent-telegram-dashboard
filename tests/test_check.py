@@ -102,6 +102,51 @@ def test_check_names_the_plugin_s_status_and_only_as_a_plain_word(tmp_path, caps
     assert capsys.readouterr().out.rstrip().endswith("status=None")
 
 
+def test_check_names_only_a_status_the_plugin_writes(tmp_path, capsys) -> None:
+    """``status=`` names one of the plugin's own statuses (1.0.0's six and ``deferred``); any
+    other value, one plain word or not, is printed as ``None``: a foreign or hand-edited file
+    does not put its words into an alert."""
+    from telegram_dashboard.freshness import PLUGIN_STATUSES
+
+    for status in sorted(PLUGIN_STATUSES):
+        state = _plugin_state(tmp_path, **_record(2, last_status=status))
+        main(["--config", _config(tmp_path, state), "--check"])
+        assert capsys.readouterr().out.rstrip().endswith(f"status={status}"), status
+    for status in ("foreign", "restart_now", "Edited"):
+        state = _plugin_state(tmp_path, **_record(2, last_status=status))
+        main(["--config", _config(tmp_path, state), "--check"])
+        out = capsys.readouterr().out
+        assert out.rstrip().endswith("status=None") and status not in out, status
+
+
+def test_every_status_the_plugin_writes_is_one_the_check_names() -> None:
+    """The entry's statuses, read off its source (every ``_note(status=...)`` and the deferred
+    one), are the check's list: a new status cannot be left out of the state line unseen."""
+    import ast
+
+    from probe_fakes import PLUGIN_DIR
+
+    from telegram_dashboard.freshness import PLUGIN_STATUSES
+
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    names = {
+        node.targets[0].id: node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+    }
+    written: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "status":
+            value = node.value
+            if isinstance(value, ast.Constant):
+                written.add(value.value)
+            elif isinstance(value, ast.Name):
+                written.add(names[value.id])
+    assert written == PLUGIN_STATUSES
+
+
 def test_check_on_plugin_state_sees_a_lost_message_that_was_not_recreated(tmp_path, capsys) -> None:
     lost = _record(
         1,

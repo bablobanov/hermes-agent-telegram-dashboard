@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -110,9 +109,12 @@ def confirmation_slack_seconds(period_seconds: int) -> float:
 
 PLUGIN_STATE_KEY = "probe"
 _PLUGIN_FAILED_SUFFIX = "_failed"
-# A status the state line shows as it is: one lower-case word with underscores, as the plugin
-# writes them; anything else in a foreign file is not printed into an alert.
-_STATUS_WORD = re.compile(r"[a-z_]{1,40}")
+# The statuses the probe plugin writes as ``last_status``: 1.0.0's six and ``deferred`` (1.1.0).
+# The state line of ``--check`` and the watchdog names one of these and prints anything else as
+# ``None``, so the words of a foreign or hand-edited file never reach an alert.
+PLUGIN_STATUSES = frozenset(
+    {"created", "edited", "waiting", "deferred", "edit_failed", "send_failed", "tick_failed"}
+)
 
 
 def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) -> DeliveryRecord:
@@ -154,10 +156,11 @@ def plugin_last_status(payload: object, *, key: str = PLUGIN_STATE_KEY) -> str |
     """The probe plugin's ``last_status`` as it wrote it (``edited``, ``deferred``,
     ``edit_failed``, ...), for the state line of ``--check`` and the watchdog: a message that went
     stale with no error says why there (``deferred``: the engine kept holding the edits back).
-    ``None`` for a missing key, a foreign file or a value that is not one plain word."""
+    ``None`` for a missing key, a foreign file or a value that is not one of the plugin's own
+    statuses (``PLUGIN_STATUSES``)."""
     raw = payload.get(key) if isinstance(payload, dict) else None
     status = _plugin_str(raw.get("last_status")) if isinstance(raw, dict) else None
-    return status if status is not None and _STATUS_WORD.fullmatch(status) else None
+    return status if status in PLUGIN_STATUSES else None
 
 
 def load_plugin_state(path: Path) -> tuple[DeliveryRecord, str | None]:
