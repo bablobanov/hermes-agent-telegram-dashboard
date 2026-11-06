@@ -65,9 +65,11 @@ def test_the_html_verb_is_read_off_the_signature_never_off_a_version() -> None:
 
 def _settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides: Any) -> dict[str, Any]:
     """A home that is a temp dir and no limits: the tick must never read a real profile or
-    call the usage facade from a test, whichever interpreter runs it."""
-    for name in ("HERMES_DASHBOARD_PROBE_CHAT", "HERMES_DASHBOARD_PROBE_PERIOD", "HERMES_HOME"):
+    call the usage facade from a test, whichever interpreter runs it. HERMES_HOME names the same
+    temp dir: deleted, engine code the tick reaches would resolve the real profile."""
+    for name in ("HERMES_DASHBOARD_PROBE_CHAT", "HERMES_DASHBOARD_PROBE_PERIOD"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return {
         "chat_id": CHAT,
         "period_seconds": 0.01,

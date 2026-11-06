@@ -9,6 +9,7 @@ or a log line ever leaves: not the screen, not the HTML, not the snapshot, not t
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -541,10 +542,12 @@ def test_a_notebook_s_switch_reads_like_the_engine_s(
     _config(monkeypatch, home, section)
 
     assert _read(home)[0].notebooks[0].enabled is enabled
-    try:
-        from tools.memory_tool import get_builtin_memory_store_flags
-    except ImportError:
-        return
+    if importlib.util.find_spec("hermes_cli") is None:
+        return  # no engine in this interpreter: the plugin's half above is the whole test
+    # The engine is here, so its own reader must be: an ImportError fails the test instead of
+    # passing it without the engine's half.
+    from tools.memory_tool import get_builtin_memory_store_flags
+
     assert get_builtin_memory_store_flags({"memory": section})[0] is enabled
 
 

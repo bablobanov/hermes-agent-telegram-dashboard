@@ -3,12 +3,14 @@
 Real: ``PluginManager``, ``PluginContext.register_platform_handler``, ``PluginContext.spawn_task``,
 ``TelegramAdapter`` (python-telegram-bot installed), ``BasePlatformAdapter._wire_plugin_handlers``
 (what ``connect()`` calls), ``TelegramAdapter.send`` / ``edit_message``, ``PluginState`` on disk.
-Replaced: the PTB ``Bot`` object on the adapter, so no request leaves the machine. The network and
-a real reconnect of a live gateway are the only links not exercised here.
+Replaced: the PTB ``Bot`` object on the adapter and the upstream release check, so no request
+leaves the machine; conftest's network guard refuses any that would. The network and a real
+reconnect of a live gateway are the only links not exercised here.
 
 Needs the engine importable (its venv or PYTHONPATH to the clone); otherwise the module is skipped
-so the ordinary suite keeps running without Hermes. HERMES_HOME is pointed at a temp dir BEFORE any
-engine import so nothing touches a real profile.
+so the ordinary suite keeps running without Hermes. conftest points HERMES_HOME at a temporary dir
+for the whole session before collection, so before any engine import, and probe_env gives each
+test a profile of its own: nothing touches a real profile.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ import asyncio
 import importlib.util
 import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -25,17 +26,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-_HOME = Path(tempfile.mkdtemp(prefix="hermes-probe-home-"))
-os.environ["HERMES_HOME"] = str(_HOME)
 os.environ.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)
 
 pytest.importorskip("hermes_cli.plugins", reason="Hermes engine not importable in this interpreter")
 pytest.importorskip("telegram", reason="python-telegram-bot not installed")
 
-from gateway.config import Platform, PlatformConfig  # noqa: E402
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from telegram.error import BadRequest  # noqa: E402
+from gateway.config import Platform, PlatformConfig
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from telegram.error import BadRequest
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugin" / "telegram_dashboard_probe"
 TASK_NAME = "telegram_dashboard_probe:tick"
@@ -84,17 +83,54 @@ async def _until(predicate, *, timeout: float = 3.0) -> None:
         await asyncio.sleep(0.01)
 
 
+# The engine paces one chat's sends and edits through a shared per-chat slot
+# (plugins/platforms/telegram/adapter.py, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0, from 0.21.6
+# on): a send waits for the slot, an interim edit_message is skipped while it is busy. A wait
+# that spans an edit_message AND a send after it takes two slots: 1.96-2.07 s measured on 0.22.2
+# and 0.22.7, alone and in this file's run (each test in a profile of its own). The 3 s default
+# of ``_until`` predates the slot and stays for the waits that cross no slot (HTML edits go
+# through _edit_text, which the slot does not gate; measured at 0.1 s and under).
+SLOT_WAIT = 10.0
+
+
 # The status line with its data stamp, or a banner above it.
 SCREEN_FIRST_LINES = ("🟢", "🟡", "🔴", "⚪", "⚠️")
 
 
+def _opens_with_status(text: str) -> bool:
+    """Since 1.0.0 the HTML status line is bold: an optional ``<b>`` and nothing else before the
+    status emoji or the banner."""
+    return text.removeprefix("<b>").startswith(SCREEN_FIRST_LINES)
+
+
 @pytest.fixture
-def probe_env(monkeypatch):
+def probe_env(monkeypatch, tmp_path: Path):
+    # A profile of its own: the engine's PluginState keeps the delivery record under
+    # <HERMES_HOME>/plugin-data/, and a message id an earlier test left there would change the
+    # next test's path (an edit of "its" message where a first send was meant).
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_CHAT", CHAT)
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_THREAD", THREAD)
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_PERIOD", "0.03")
     # The facade IS importable in this interpreter and would call provider APIs: never from a test.
     monkeypatch.setenv("HERMES_DASHBOARD_PROBE_LIMITS", "0")
+    # The plugin imports the package beside it, here as probe_under_test.telegram_dashboard: a
+    # copy that conftest's stub of telegram_dashboard.collect does not reach. Unstubbed, the
+    # tick's upstream release check asked api.github.com from a worker thread.
+    _load_plugin()
+    vendored = importlib.import_module("probe_under_test.telegram_dashboard.collect")
+    monkeypatch.setattr(vendored, "version_fetch_item", _no_release_check)
+
+
+def _no_release_check(*, now, previous=None):
+    return {
+        "status": "unavailable",
+        "reason": "test stub",
+        "source": "github_releases",
+        "checked_at": now.isoformat(),
+    }
 
 
 def test_register_queues_one_telegram_factory(probe_env) -> None:
@@ -141,7 +177,7 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         assert sent["chat_id"] == int(CHAT) and sent["message_thread_id"] == int(THREAD)
         edited = bot1.edit_message_text.await_args.kwargs
         assert edited["chat_id"] == int(CHAT) and edited["message_id"] == 101
-        assert edited["text"].startswith(SCREEN_FIRST_LINES), edited["text"]
+        assert _opens_with_status(edited["text"]), edited["text"]
         assert "⚪ Unknown" in edited["text"]  # an empty home: nothing is green
         assert "#" not in edited["text"]
         # The engine's public edit_message takes no parse mode (read by signature, not by
@@ -175,7 +211,7 @@ def test_chain_send_edit_and_survive_adapter_replacement(probe_env) -> None:
         await _until(lambda: bot2.edit_message_text.await_count >= 2)
         bot2.send_message.assert_not_awaited()  # same message, not a new one
         edited = bot2.edit_message_text.await_args.kwargs
-        assert edited["message_id"] == 101 and edited["text"].startswith(SCREEN_FIRST_LINES)
+        assert edited["message_id"] == 101 and _opens_with_status(edited["text"])
         assert bot1.edit_message_text.await_count == edits_on_old, "old adapter must not be used"
         assert runtime.record["adapter_generation"] == 2
 
@@ -199,28 +235,27 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     plugins.entries.<id>.settings, and the ``telegram_dashboard`` package INSIDE the plugin
     folder, as the repository keeps it. This is the deployment shape, not a hand-built context."""
     import shutil
-
-    import yaml
+    import textwrap
 
     home = tmp_path / "home"
     plugin_home = home / "plugins" / "telegram_dashboard_probe"
     shutil.copytree(PLUGIN_DIR, plugin_home, ignore=shutil.ignore_patterns("__pycache__"))
+    # Written as text, as an operator writes it: the engine's core has no PyYAML from 0.21.6 (it
+    # reads config.yaml with its own parser), so the test brings no parser of its own. The ids
+    # are quoted: unquoted, YAML reads them as numbers.
     (home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "plugins": {
-                    "enabled": ["telegram_dashboard_probe"],
-                    "entries": {
-                        "telegram_dashboard_probe": {
-                            "settings": {
-                                "chat_id": CHAT,
-                                "thread_id": THREAD,
-                                "period_seconds": 0.03,
-                            }
-                        }
-                    },
-                }
-            }
+        textwrap.dedent(
+            f"""\
+            plugins:
+              enabled:
+                - telegram_dashboard_probe
+              entries:
+                telegram_dashboard_probe:
+                  settings:
+                    chat_id: '{CHAT}'
+                    thread_id: '{THREAD}'
+                    period_seconds: 0.03
+            """
         ),
         encoding="utf-8",
     )
@@ -259,14 +294,32 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         adapter._mark_connected()
         runner.adapters[Platform.TELEGRAM] = adapter
         await _until(lambda: bot.edit_message_text.await_count >= 1)
+        assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
 
-        bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
+        async def gone_until_recreated(**kwargs: object) -> bool:
+            # Only the lost message is gone: the one sent in its place can be edited.
+            if kwargs.get("message_id") == 101:
+                raise BadRequest("Message to edit not found")
+            return True
+
+        bot.edit_message_text.side_effect = gone_until_recreated
         bot.send_message.return_value = MagicMock(message_id=102)
-        await _until(lambda: bot.send_message.await_count >= 2)
-        await _until(lambda: runtime.record.get("message_id") == "102")
+        # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
+        # to is skipped by the engine's chat slot, which the first send still holds, and comes
+        # back as a success (raw_response {"skipped": True}). The plugin today misreads that: a
+        # false "HTML refused" verdict, and no loss seen until a later tick. That is a plugin
+        # defect, fixed in the next pull request. This test pins only that the message is
+        # recreated once: when the slot frees, an edit fires and confirms the loss, and the new
+        # send waits for the slot that edit took (SLOT_WAIT).
+        await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
+        await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
+        # The ticks after the recreate edit the new message. Waiting for that edit, not reading
+        # the status of the recreate itself, keeps the test independent of how many ticks a
+        # runner fits in before the checks (a fast runner had already edited 102).
+        await _until(lambda: runtime.record.get("last_status") == "edited", timeout=SLOT_WAIT)
 
-        assert runtime.record["lost_at"]
-        assert runtime.record["last_status"] == "created"
+        assert bot.send_message.await_count == 2  # recreated once
+        assert runtime.record["lost_at"] and runtime.record["recreated_at"]
         manager.unload()
 
     asyncio.run(scenario())
