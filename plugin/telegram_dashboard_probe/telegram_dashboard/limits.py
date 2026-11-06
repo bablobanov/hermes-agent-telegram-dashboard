@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -107,10 +108,13 @@ class Cadence:
 
 
 def elapsed_clock(now: datetime, monotonic: Callable[[], float] = time.monotonic) -> Clock:
-    """``now`` moved on by the time elapsed since this call, measured on ``monotonic``: the
-    tick's moment for its first provider, later for the next by as long as the first took."""
+    """``now`` moved on by the whole seconds elapsed since this call, measured on
+    ``monotonic``: the tick's moment for a provider asked within its first second, later for
+    the next by as long as the one before took. Whole seconds: the cadence counts in tens of
+    seconds (an interval of at least 60, a due tolerance of 5), so the time a quick call takes
+    does not move a stamp off the tick's moment."""
     start = monotonic()
-    return lambda: now + timedelta(seconds=monotonic() - start)
+    return lambda: now + timedelta(seconds=math.floor(monotonic() - start))
 
 
 def import_fetcher() -> Fetcher | None:

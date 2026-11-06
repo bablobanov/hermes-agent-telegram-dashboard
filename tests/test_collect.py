@@ -1521,25 +1521,24 @@ def test_each_facade_provider_s_attempt_is_stamped_when_it_was_asked() -> None:
 
 
 def test_the_tick_s_cadence_clock_moves_on_with_the_providers_before_it(tmp_path: Path) -> None:
-    """On the tick's own path the clock is the tick's moment moved on by the time elapsed since
-    (``limits.elapsed_clock``): Claude's slow call shows in Codex's stamp."""
+    """On the tick's own path the clock is the tick's moment moved on by the whole seconds
+    elapsed since (``limits.elapsed_clock``): Claude, asked at once, keeps the tick's moment,
+    and its call of over a second shows in Codex's stamp."""
     from telegram_dashboard.limits import elapsed_clock
 
     def fetch(provider: str):
         if provider == "anthropic":
-            time.sleep(0.3)
+            time.sleep(1.2)
         return _snapshot(fetched_at=NOW)
 
     caches: dict = {}
     collect_limits(Environment(hermes_home=tmp_path), now=NOW, resolve=lambda: fetch, caches=caches)
 
-    claude = datetime.fromisoformat(caches["claude"]["attempted_at"])
-    codex = datetime.fromisoformat(caches["codex"]["attempted_at"])
-    assert NOW <= claude < NOW + timedelta(seconds=0.25)
-    assert codex - claude >= timedelta(seconds=0.25)  # a 0.3 s sleep, at the timer's resolution
-    ticks = iter((100.0, 100.0, 112.5))
+    assert caches["claude"]["attempted_at"] == NOW.isoformat()
+    assert caches["codex"]["attempted_at"] == (NOW + timedelta(seconds=1)).isoformat()
+    ticks = iter((100.0, 100.000_07, 100.9, 112.5))
     moving = elapsed_clock(NOW, monotonic=lambda: next(ticks))
-    assert (moving(), moving()) == (NOW, NOW + timedelta(seconds=12.5))
+    assert [moving(), moving(), moving()] == [NOW, NOW, NOW + timedelta(seconds=12)]
 
 
 def test_a_day_at_a_60_second_period_asks_each_provider_288_times(tmp_path: Path) -> None:
