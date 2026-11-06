@@ -193,7 +193,7 @@ these are the two releases the CI `engine` job runs the whole suite against:
 
 | Hermes | How |
 |---|---|
-| 0.22.2 (`v0.22.2`, `d923a5eb48`) | the production engine and the floor: the whole suite against the engine installed from its own lock (Python 3.14, the `telegram` extra) with `REQUIRE_ENGINE_TESTS=1`, so a test that skips there fails the job unless `tests/conftest.py` allows it; the plugin path against the real engine objects (`tests/test_probe_plugin.py`, `tests/test_probe_reload.py`: send, the HTML edit through `_edit_text`, an edit the engine holds back for a busy chat, a lost message, a reconnect, a forced re-discovery, served profiles, the engine's own plugin discovery and its `requires_hermes` gate), the version line, the key of an external source through the engine's `get_secret`, the rules line and the memory section against the engine's own functions (`compat_matrix.json`, the `0.22.2` entries) |
+| 0.22.2 (`v0.22.2`, `d923a5eb48`) | the production engine and the floor: the whole suite against the engine installed from its own lock (Python 3.14, the `telegram` extra) with `REQUIRE_ENGINE_TESTS=1`, so a test that skips there fails the job unless `tests/conftest.py` allows it; the plugin path against the real engine objects (`tests/test_probe_plugin.py`, `tests/test_probe_reload.py`: send, the HTML edit through `_edit_text`, an edit the engine holds back for a busy chat, a lost message, a reconnect, a forced re-discovery, served profiles, the engine's own plugin discovery), the engine's own `requires_hermes` gate put to the manifest at the job's release (the checkout is a commit with no tags, so the engine itself reports `unknown`, which passes any `requires_hermes`; the job hands the test the release from its matrix as `HERMES_ENGINE_TAG`), the version line, the key of an external source through the engine's `get_secret` (not yet on a live gateway), the rules line and the memory section against the engine's own functions (`compat_matrix.json`, the `0.22.2` entries) |
 | 0.22.7 (`v0.22.7`, `b200f5bc60`) | the current release: the same suite in the same job (the `0.22.7` entries) |
 
 Sources that run does not reach (the usage facade, which would call the providers' APIs, the
@@ -204,7 +204,7 @@ support:
 
 | Hermes | How |
 |---|---|
-| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11; the pilot runs 1.0.0, and the 1.1.0 `get_secret` path for a source's key has not run on a gateway yet (read-by-code only) |
+| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 (1.0.0 on it) |
 | 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
 source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
@@ -1038,7 +1038,10 @@ plugin editing every 60 s, 300 means five missed ticks before the first alert (`
 one period plus slack, `lagging` up to two, `stale` past that). The record also carries
 `tick_failed` when a tick raised, so a loop that dies every tick does not keep an old `edited`
 on disk, and `deferred` when the engine held the edit back for a busy chat, which the check
-judges like any tick that is not a failure: by the age of the last confirmation.
+judges like any tick that is not a failure: by the age of the last confirmation. The check's
+line (and the watchdog's) ends with the plugin's `last_status`, so a `stale ... error=None
+status=deferred` says the edits are being held back, and the plugin's journal has one WARNING
+once such a run outlasts the screen's lagging threshold.
 
 ### External limit sources
 
