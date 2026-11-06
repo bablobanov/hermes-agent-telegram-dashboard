@@ -56,14 +56,16 @@ jobs:
       fail-fast: false
       matrix:
         # By commit, not by tag: a tag can be moved. v0.22.2 is the production engine and the
-        # compatibility floor; v0.22.7 the current release.
+        # compatibility floor; v0.22.7 the last 0.22 release; v0.23.0 the current release.
         include:
           - hermes: "v0.22.2"
             commit: d923a5eb487a17c0a68801bba9ef0f56c81040a8 # tag v0.22.2
           - hermes: "v0.22.7"
             commit: b200f5bc60e31588ba2cb60e288029c4a54ba5fa # tag v0.22.7
+          - hermes: "v0.23.0"
+            commit: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 # tag v0.23.0
     steps:
-      # Pinned by commit, as the engine's own workflows at both tags pin them.
+      # Pinned by commit, as the engine's own workflows at all three tags pin them.
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           persist-credentials: false
@@ -76,7 +78,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          # The uv the engine's own CI runs at both tags. Unpinned, setup-uv resolves "latest"
+          # The uv the engine's own CI runs at all three tags. Unpinned, setup-uv resolves "latest"
           # through a manifest fetch on every run.
           version: "0.12.13"
       # The engine's lock, its supported Python (3.14) and the one extra the adapter needs.
