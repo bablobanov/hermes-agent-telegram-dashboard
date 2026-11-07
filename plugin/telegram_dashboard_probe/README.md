@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml)
 
-![Hermes Agent Telegram Dashboard](../../docs/social-preview.jpg)
+![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](../../docs/hero-1.1.0.jpg)
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call.
@@ -125,10 +125,10 @@ Hermes version the gateway runs next to the latest upstream release, and a colla
 block with the reasons and the timestamps. Nothing to open, nothing to install
 on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
 
-<img src="../../docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
+<img src="../../docs/screenshots/110-01-healthy.jpg" width="360" alt="The healthy screen on Telegram for Android: status line, the row of what works, the limits table, the Hermes version, the cron jobs and the details folded">
 
-The picture is an illustration of what the message carries, drawn before 1.0.0; the message
-itself is the screen above.
+The rich view on Telegram for Android, as 1.1.0 renders a demo state; more screens are in the
+[repository's README](../../README.md#screenshots).
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
 Account limits: Claude and Codex from the Hermes usage facade (see "Limits" below), and any
