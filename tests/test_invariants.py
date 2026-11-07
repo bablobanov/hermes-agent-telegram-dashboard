@@ -10,7 +10,10 @@ a later change cannot undo one of them quietly:
 Four more since 0.9.0 (the cron sources and the traffic probe), numbered 6 to 9 below
 their tests; 6 widened and 10 and 11 added in 0.10.0 (the rules line reads ``state.db``; no
 invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a command), 13 in
-0.11.0 (the memory section reads the notebooks, the queue and the log, and writes nothing).
+0.11.0 (the memory section reads the notebooks, the queue and the log, and writes nothing), 14
+in 1.1.0 (issue #16: the usage facade's answers kept in the record are read field by field) and
+15 (the plain edits keep to the engine's pacing of the chat: no ``finalize``, nothing of its
+slot touched).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -113,7 +116,11 @@ def test_state_goes_through_the_engine_s_plugin_state_only() -> None:
 def test_the_one_task_is_spawned_through_the_context_and_nothing_else() -> None:
     entry = _code_only(ENTRY.read_text(encoding="utf-8"))
     assert entry.count("spawn_task(") == 1
-    assert not re.search(r"create_task\(|ensure_future\(|threading|Thread\(|atexit|signal\.", entry)
+    assert not re.search(r"create_task\(|ensure_future\(|Thread\(|Timer\(|atexit|signal\.", entry)
+    # threading for one lock only, the registry's (issue #12): register() runs on the engine's
+    # load worker thread, wire() on the gateway loop. No thread is started.
+    assert re.findall(r"threading\.\w+", entry) == ["threading.Lock"]
+    assert not re.search(r"from threading import|import threading as", entry)
     assert not re.search(r"subprocess|Popen", entry)
 
 
@@ -382,3 +389,72 @@ def test_no_word_of_the_rich_screen_becomes_a_link_a_command_a_mention_or_a_hash
     # Every name; the schedules of the active jobs, all in ``Other`` (1.0.0: the paused and the
     # done rows show none, a named frequency's header says how often instead).
     assert markups[-1].count("<code>") == len(forms) + 6
+
+
+# ----------------------------------------------------------------------------- 1.1.0, issue #16
+
+
+def test_the_facade_s_answer_is_read_by_field_and_its_secrets_stay_out_of_the_record() -> None:
+    """14. The usage facade's providers keep their last answer in the plugin's record
+    (``facade_cache``, issue #16). Of a snapshot ``limits.py`` reads only the fields the screen
+    uses, each by name: never the account's principal (``identity``), the whole answer (``raw``)
+    or the details (a credit balance and the like), and of an exception only its class, never
+    its text. A snapshot carrying all of them, an exception and a token-looking string leave
+    none of it in the record, not even a token planted in a field that IS read (the reason,
+    the plan): those are cleaned before they are kept (B1 review M2)."""
+    import json
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from telegram_dashboard.limits import Cadence, build_limits_payload
+
+    code = _code_only((PACKAGE / "limits.py").read_text(encoding="utf-8"))
+    read = set(re.findall(r'getattr\(\w+, "(\w+)"', code))
+    snapshot_fields = {"available", "unavailable_reason", "source", "fetched_at", "plan", "windows"}
+    assert read == snapshot_fields | {"label", "used_percent", "reset_at"}, read
+    assert not re.search(r"\.(identity|raw|details)\b|\bvars\(|__dict__|asdict\(", code)
+    assert not re.search(r"str\(exc\)|\{exc\}|exc\.args|repr\(exc\)", code)
+
+    planted = "sk-ant-oat01-PLANTEDfakeTOKENforThisInvariant00"
+    now = datetime(2026, 11, 6, 9, 0, tzinfo=UTC)
+
+    def fetch(provider: str) -> object:
+        if provider == "openai-codex":
+            raise RuntimeError(f"refresh failed with {planted}")
+        return SimpleNamespace(
+            available=True,
+            unavailable_reason=f"refused for {planted}",
+            source="oauth_usage_api",
+            fetched_at=now,
+            plan=f"Max {planted}",
+            windows=(SimpleNamespace(label="5h", used_percent=12.0, reset_at=None),),
+            identity="principal@example.invalid",
+            raw={"access_token": planted},
+            details={"credits": "99.10"},
+            access_token=planted,
+        )
+
+    caches: dict[str, object] = {}
+    build_limits_payload(lambda: fetch, Cadence(caches, now, 300.0, 600.0))
+
+    stored = json.dumps(caches)
+    assert '"used_percent": 12.0' in stored and '"reason": "RuntimeError"' in stored
+    for text in ("sk-ant-oat01", "PLANTED", "principal@", "99.10", "credits", "access_token"):
+        assert text not in stored, text
+
+
+# ------------------------------------------------------------------------- 1.1.0, the chat's slot
+
+
+def test_the_plugin_keeps_to_the_engine_s_pacing_of_the_chat() -> None:
+    """15. The engine paces each chat's sends and edits through one shared slot (telegram
+    adapter, #116312) and holds back an interim ``edit_message`` while a reply in the same chat
+    has it; the plugin takes that as a deferred edit and tries again on its next tick. Its plain
+    edits never get past the slot: no ``finalize`` (the engine never holds back a final edit)
+    and nothing of the slot itself, read or written. ``_edit_text`` and the rich call are not
+    gated by the slot: they neither wait for it nor arm it."""
+    entry = ENTRY.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(entry)):
+        if isinstance(node, ast.Call):
+            assert all(kw.arg != "finalize" for kw in node.keywords), ast.unparse(node)
+    assert not re.search(r"outbound_slot|_slot_secs|_slot_until", _code_only(entry))

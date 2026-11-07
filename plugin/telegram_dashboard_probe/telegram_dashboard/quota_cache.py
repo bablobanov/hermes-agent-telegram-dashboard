@@ -1,11 +1,12 @@
 """One attempt per interval at a provider's quota surface, cached in the caller's durable dict.
 
 Shared by every source the dashboard reads on its own cadence (the external limit sources,
-``collect.external_tick``). The policy is the same for all of them: one attempt per
-``interval_seconds``, success or failure; a failed attempt is "no data" with its reason until the
-next attempt; a number is never shown when it is older than the interval allows. The cache
-belongs to the caller (the plugin keeps one per source in its record), so the interval survives a
-restart and the state file shows when the source was last asked.
+``collect.external_tick``; the usage facade's providers, ``limits.build_limits_payload``). The
+policy is the same for all of them: one attempt per ``interval_seconds``, success or failure; a
+failed attempt is "no data" with its reason until the next attempt; a number is never shown when
+it is older than the interval allows. The cache belongs to the caller (the plugin keeps one per
+source in its record), so the interval survives a restart and the state file shows when the
+source was last asked.
 """
 
 from __future__ import annotations
@@ -14,38 +15,85 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .timeparse import age_seconds, parse_timestamp
+from .timeparse import age_seconds, is_from_the_future, parse_timestamp
 
 Fetch = Callable[..., dict[str, Any]]
+# A tick can wake a little before the period's end (the loop's clock against the wall clock): an
+# attempt this close to its interval is due, or it slips to the next tick and a 300 s interval at
+# a 60 s period becomes 360 s. The same tolerance as the release check's
+# (``hermes_version.DUE_TOLERANCE_SECONDS``).
+DUE_TOLERANCE_SECONDS = 5.0
 
 
 def tick(
     cache: dict[str, Any], *, now: datetime, interval_seconds: float, fetch: Fetch
 ) -> dict[str, Any]:
     """The item for this tick: from ``cache`` while the last attempt is younger than the
-    interval, else one new attempt recorded into ``cache`` (mutated in place; the caller owns
-    the durable copy). A cached number older than the interval is not a number."""
-    attempted = parse_timestamp(cache.get("attempted_at"))
-    cached = cache.get("item")
-    if attempted is not None and isinstance(cached, dict):
-        age = age_seconds(attempted, now)
-        if age is not None and 0 <= age < interval_seconds:
-            return not_older_than(cached, now=now, limit_seconds=interval_seconds)
+    interval (less ``DUE_TOLERANCE_SECONDS``), else one new attempt recorded into ``cache``
+    (mutated in place; the caller owns the durable copy). A cached number older than the
+    interval is not a number."""
+    standing = current(cache, now=now, interval_seconds=interval_seconds)
+    if standing is not None:
+        return standing
     item = fetch(now=now)
     cache["attempted_at"] = now.isoformat()
     cache["item"] = item
     return item
 
 
+def current(
+    cache: dict[str, Any], *, now: datetime, interval_seconds: float
+) -> dict[str, Any] | None:
+    """The cached item while its attempt still stands (younger than the interval, less
+    ``DUE_TOLERANCE_SECONDS``), failure or answer, through ``not_older_than``; ``None`` when
+    the attempt is due or there is none. An attempt dated ahead of ``now`` within the clock-skew
+    tolerance stands (the clock set back a little, or an attempt stamped after the moment of the
+    check that reads it); one further ahead is a corrupt stamp, due at once."""
+    attempted = parse_timestamp(cache.get("attempted_at"))
+    cached = cache.get("item")
+    if attempted is not None and isinstance(cached, dict):
+        age = age_seconds(attempted, now)
+        due = interval_seconds - DUE_TOLERANCE_SECONDS
+        if age is not None and not is_from_the_future(age) and age < due:
+            return not_older_than(cached, now=now, limit_seconds=interval_seconds)
+    return None
+
+
+def cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
+    """The cache under ``key`` in the caller's dict of caches, made empty there when absent or
+    not a dict (a hand-edited state file)."""
+    cache = store.get(key)
+    if not isinstance(cache, dict):
+        cache = {}
+        store[key] = cache
+    return cache
+
+
+def last_answer(
+    cache: dict[str, Any], *, now: datetime, show_seconds: float
+) -> dict[str, Any] | None:
+    """The cached answer while it is young enough to stand in for a missed one (a deadline, a
+    worker still running), else ``None``. Measured by the answer's own ``fetched_at``."""
+    cached = cache.get("item")
+    if isinstance(cached, dict) and cached.get("status") in ("available", "expired"):
+        fetched = parse_timestamp(cached.get("fetched_at"))
+        age = age_seconds(fetched, now) if fetched is not None else None
+        if age is not None and not is_from_the_future(age) and age <= show_seconds:
+            return cached
+    return None
+
+
 def not_older_than(item: dict[str, Any], *, now: datetime, limit_seconds: float) -> dict[str, Any]:
     """``item`` as is while its number is young enough; otherwise "no data" with the reason.
 
     The guard behind the policy: whatever put an old number into the cache (a clock jump, a
-    hand-edited state file), the screen does not show it under a fresh stamp."""
+    hand-edited state file), the screen does not show it under a fresh stamp. A number stamped
+    a little after ``now`` is no old number: a worker that returns late stamps its answer after
+    the tick's moment, so the same skew ``last_answer`` allows is allowed here."""
     if item.get("status") != "available":
         return item
     fetched = parse_timestamp(item.get("fetched_at"))
     age = age_seconds(fetched, now) if fetched is not None else None
-    if age is None or age < 0 or age > limit_seconds:
+    if age is None or is_from_the_future(age) or age > limit_seconds:
         return {**item, "status": "unavailable", "reason": "cached number too old", "windows": []}
     return item

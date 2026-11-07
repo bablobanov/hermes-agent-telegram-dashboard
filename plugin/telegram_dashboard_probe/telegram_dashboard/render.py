@@ -24,7 +24,7 @@ import html
 import math
 import re
 import unicodedata
-from collections.abc import Set
+from collections.abc import Sequence, Set
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from typing import Literal
@@ -443,18 +443,55 @@ def _top_line(snapshot: DashboardSnapshot, zone: tzinfo) -> str:
 def _limits_block(
     snapshot: DashboardSnapshot, reference: datetime | None, details: _Details, zone: tzinfo
 ) -> tuple[str, ...]:
-    """``🧠 Limits used`` and a line per provider; the plans, the logins and the refusals in the
-    details, their first group."""
+    """``🧠 Limits used`` and a line per provider that has one (``drawn_quotas``), the heading
+    only above at least one; the plans, the logins, the providers without a line and the
+    refusals in the details, their first group, whatever is drawn."""
     quotas = snapshot.capacity.quotas
     if not quotas:
         return ()
-    lines = [f"## {LIMITS_HEADING}"]
-    for quota in quotas:
+    drawn = drawn_quotas(quotas, reference)
+    lines = [f"## {LIMITS_HEADING}"] if drawn else []
+    for quota in drawn:
         lines.extend(_quota_lines(quota, reference, details, zone))
     details.data = _data_stamps(snapshot, zone)
     details.state.extend(_account_words(quotas, reference, zone))
+    details.state.extend(_hidden_words(quotas))
     details.state.extend(_refusal_words(quotas, zone))
     return tuple(lines)
+
+
+def drawn_quotas(
+    quotas: Sequence[QuotaMetric], reference: datetime | None
+) -> tuple[QuotaMetric, ...]:
+    """The limits that get a line (issue #14): the one predicate behind the text lines, the
+    rich table's rows and the reasons under ``## No data``. A ``not_configured`` provider never
+    has one. A line without a number whose provider's log is read (Gemini: ``unsupported`` with
+    a refusal, the "none" one included) has one only while that refusal is active, when it has
+    something to say beyond "no data". The owner's pinned provider always has its line, and one
+    whose log nobody reads (``refusal`` ``None``) keeps it, as before."""
+    return tuple(quota for quota in quotas if _drawn(quota, reference))
+
+
+def _drawn(quota: QuotaMetric, reference: datetime | None) -> bool:
+    if quota.kind == "not_configured":
+        return False
+    if quota.pinned or quota.kind != "unsupported" or quota.refusal is None:
+        return True
+    return reference is not None and is_active(quota.refusal, reference)
+
+
+def _hidden_words(quotas: tuple[QuotaMetric, ...]) -> list[str]:
+    """``Not configured: Claude`` and ``Off in the dashboard settings: Gemini``: the providers
+    without a line, one details line per reason, the names comma-joined (issue #14), so an
+    absence by configuration stays in sight and is never read as a zero."""
+    names: dict[str, list[str]] = {}
+    for quota in quotas:
+        if quota.kind == "not_configured":
+            reason = sanitize_public_text(quota.detail or "not configured", limit=60)
+            names.setdefault(reason, []).append(sanitize_public_text(quota.provider, limit=40))
+    return [
+        f"{reason[:1].upper()}{reason[1:]}: {', '.join(group)}" for reason, group in names.items()
+    ]
 
 
 def _agent_in_details(snapshot: DashboardSnapshot, zone: tzinfo, details: _Details) -> None:
@@ -540,9 +577,9 @@ def _freshness(
 
 
 def _unchecked_line(snapshot: DashboardSnapshot, details: _Details) -> str | None:
-    """``❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3``:
-    every exception of the coverage in one line on the screen (1.0.0), the full count in the
-    details."""
+    """Every exception of the coverage in one line on the screen (1.0.0), the full count in the
+    details: ``❔ Not checked: Gemini log (not on this installation), Mistral limits (stale),
+    profiles 2/3`` (the README's example)."""
     coverage = snapshot.coverage
     missing = [source for source in snapshot.sources if source.state not in ("fresh", "stale")]
     stale = [source for source in snapshot.sources if source.state == "stale"]

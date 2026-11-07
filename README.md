@@ -65,7 +65,9 @@ limit is never rounded for the width:
 Provider  Used · resets in              reset of every window, in the provider's own
 Claude    42% · 2h10m    67% · 3d       order; ⚠️ from 90% spent; a provider without
 Codex     ⚠️ 93% · 1h20m 58% · 5d       a number never shows a zero, the reason is in
-Gemini    no data                       Details
+                                        Details; one not set up here has no row, and
+                                        Gemini has one only while Google's last
+                                        refusal is recent
 🤖 Hermes 0.21.3 → 0.21.5                the version the gateway runs → the latest
                                         upstream release; 🆕 and its age for a day
                                         after a release came out
@@ -73,7 +75,8 @@ Gemini    no data                       Details
                                         collapsed: every job in one table, by how
                                         often it runs (see "The cron line")
 ▸ Details                               collapsed, a section per source: the plans,
-                                        logins and Gemini refusals; the agent's rules;
+                                        logins, providers not configured and Gemini
+                                        refusals; the agent's rules;
                                         its memory; the Telegram channel; backup and
                                         drift; the Hermes version; every "no data"
                                         with its reason; then the screen's time, the
@@ -99,11 +102,12 @@ Cron ⚠️ 1 of 27 failing                 is not well, even one an event alrea
 ```
 
 The classic view (`rich: false`, the default) is the same blocks as text, a blank line between
-two: the limits a line per provider (`⚠️ Codex 93% (1h20m) · 58% (5d)`, `Gemini · no data`),
-no fold for the cron jobs (their lines sit in the details with backup and drift, the job table
-is the one part this view does not carry), and the details one collapsed quote. In HTML the top
-line and the headings are bold; in plain text the headings are upper case (`🧠 LIMITS USED`) and
-the details are shown in full. Both views come from the same snapshot.
+two: the limits a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
+`Claude · no data` with its reason in the details), no fold for the cron jobs (their lines sit
+in the details with backup and drift, the job table is the one part this view does not carry),
+and the details one collapsed quote. In HTML the top line and the headings are bold; in plain
+text the headings are upper case (`🧠 LIMITS USED`) and the details are shown in full. Both views
+come from the same snapshot.
 
 The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
@@ -125,9 +129,12 @@ itself is the screen above.
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
 Account limits: Claude and Codex from the Hermes usage facade (see "Limits" below), and any
-other provider from a local process of your own (see "External limit sources"). Gemini has no number without billing, never a zero: the last
-time Google refused the engine a call is on its line while it is recent and always in the
-details (see "Gemini refusals from the engine log"). The one-screen layout moved lines to the
+other provider from a local process of your own (see "External limit sources"). Gemini has no
+number without billing, never a zero: it has a line only while the last time Google refused the
+engine a call is recent, and the details always say that last refusal (see "Gemini refusals from
+the engine log"). A provider this installation shows no sign of having (Claude or Codex without
+an account here) has no line at all, and the details name it once: `Not configured: Claude` (see
+"Limits: three kinds that never mix"). The one-screen layout moved lines to the
 details rather than dropping them: a line without a number still names its reason there. 1.1.0
 does drop two limit lines, the ones the dashboard used to read from vendor CLIs' private
 endpoints; an operator's `limits_sources` can bring such lines back (see
@@ -138,11 +145,14 @@ installation says `unsupported`. Both lower coverage; neither turns green (one e
 cron run history: it only adds to a line that stands on its own file, see "The cron line").
 Coverage itself (`Profiles 1/1 · sources 8/8`) lives in the details and comes up to the screen
 only when it is incomplete, as one line:
-`❔ Not checked: Gemini log (not on this installation), limits (stale), profiles 2/3` (and
+`❔ Not checked: Gemini log (not on this installation), Mistral limits (stale), profiles 2/3` (and
 `2 sources unavailable` for failed sources the line does not name). An item of the ✓ row with no
 source on this installation, or no data from a source that line names, is left out of the row
-and said by that line once. The details close with the dashboard's own version
-(`Dashboard 1.1.0`), so the installed copy can be told from the pinned message at a glance.
+and said by that line once. A provider that is not configured here is not counted at all: no
+line, no place on the ❔ line or in the coverage; when neither Claude nor Codex has a line, the
+`limits` source itself is gone, so an installation without either does not stay grey. The
+details close with the dashboard's own version (`Dashboard 1.1.0`), so the installed copy can be
+told from the pinned message at a glance.
 
 **Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
 API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
@@ -178,11 +188,24 @@ decides nothing by it (see "The Hermes version line"). `telegram_dashboard/compa
 records per source how it is probed and on which versions it was verified. A new release lowers
 coverage and names what is missing instead of breaking.
 
-What "verified" means here, honestly:
+What "verified" means here, honestly. Supported is Hermes 0.22.2 or newer (the floor below), and
+these are the three releases the CI `engine` job runs the whole suite against:
 
 | Hermes | How |
 |---|---|
-| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11; the pilot runs 1.0.0, and the 1.1.0 `get_secret` path for a source's key has not run on a gateway yet (read-by-code only) |
+| 0.22.2 (`v0.22.2`, `d923a5eb48`) | the production engine and the floor: the whole suite against the engine installed from its own lock (Python 3.14, the `telegram` extra) with `REQUIRE_ENGINE_TESTS=1`, so a test that skips there fails the job unless `tests/conftest.py` allows it; the plugin path against the real engine objects (`tests/test_probe_plugin.py`, `tests/test_probe_reload.py`: send, the HTML edit through `_edit_text`, an edit the engine holds back for a busy chat, a lost message, a reconnect, a forced re-discovery, served profiles, the engine's own plugin discovery), the engine's own `requires_hermes` gate put to the manifest at the job's release (the checkout is a commit with no tags, so the engine itself reports `unknown`, which passes any `requires_hermes`; the job hands the test the release from its matrix as `HERMES_ENGINE_TAG`), the version line, the key of an external source through the engine's `get_secret` (not yet on a live gateway), the rules line and the memory section against the engine's own functions (`compat_matrix.json`, the `0.22.2` entries) |
+| 0.22.7 (`v0.22.7`, `b200f5bc60`) | the last 0.22 release: the same suite in the same job (the `0.22.7` entries) |
+| 0.23.0 (`v0.23.0`, `2bd378ed1b`) | the current release: the same suite in the same job (the `0.23.0` entries) |
+
+Sources that run does not reach (the usage facade, which would call the providers' APIs, the
+gateway state, the cron files, the Telegram counters, Gemini's log) keep the verification their
+rows in the matrix name. Up to 1.0.0 the plugin was verified on the engines below, all older than
+today's floor; the rows stay as the record of what was checked and how, not as a claim of
+support:
+
+| Hermes | How |
+|---|---|
+| 0.21.1 (`2237be3559`) | the plugin path executed against the real engine objects (`tests/test_probe_plugin.py`) and a continuous pilot on a live gateway since 2026-09-11 (1.0.0 on it) |
 | 0.21.3 (`v2026.9.14`) | the pilot gateway after its update; the adapter's `_edit_text` read in the engine source; the plugin edits the pinned message as HTML through `_edit_text` on that gateway since 2026-09-25 (`screen_format: html` in its record, no fallback to plain taken); the public `edit_message` read in the source takes no parse mode, so the signature check picks `_edit_text` (`html_verb: _edit_text`); for 0.9.0 the cron files, the
 ticker stamps, the run history's schema and the adapter's traffic counters read in the engine
 source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for 0.10.0 the saved prompt in `state.db`, its context block and the runtime line naming the agent's directory read in the source, built by the engine's own functions and read back in `tests/test_context_files_engine.py` (row `context_files`) |
@@ -192,17 +215,22 @@ source (`compat_matrix.json`, rows `cron`, `cron_runs`, `telegram_traffic`); for
 | main (`6ec05205a9`, 2026-09-30) | the cron files (the heartbeat now carries the pid; the first token is read), the run history's schema and the adapter's traffic counters read in the engine source: the same fields and attributes as 0.21.3 |
 | 0.20.5 | read in the source of a desktop install: the sources degrade, the plugin API is absent (see the floor below) |
 
-Anything else is not verified. Above these versions the sources are probed at runtime and
+Anything else is not verified. On a release after 0.23.0 the sources are probed at runtime and
 degrade to `unsupported`; nothing here promises "works on all versions".
 
-**Delivery has a floor: Hermes 0.21.1.** The plugin path needs
-`PluginContext.register_platform_handler` and the adapters' `_wire_plugin_handlers`, and both
-are absent in 0.20.x (checked on a 0.20.5 install: not present anywhere in the tree; `spawn_task`
-and `PluginState` exist there but nothing would ever call the factory). On 0.20.x the plugin
-does not load a handler and nothing is delivered; the only path there is the fallback cron tick
-with its own bot token. The compatibility principle still holds for the *sources* (gateway
-state, limits, drift degrade per version); it does not extend to delivery, and this README
-does not promise otherwise.
+**Delivery has a floor: Hermes 0.22.2.** It is the production engine and the oldest one the
+plugin is tested against; the manifest says `requires_hermes: ">=0.22.2"`. From 0.21.3 on the
+engine skips a plugin whose `requires_hermes` rejects the running version before it imports it
+(`Plugin '…' skipped: requires hermes >=0.22.2, running 0.21.6` in the gateway's log), so on an
+older engine nothing is delivered and the only path is the fallback cron tick with its own bot
+token. An engine that cannot tell its own version (a checkout with no tag and no install stamp)
+lets the plugin through that gate; below 0.22.2 it is not supported all the same. 0.21.x has the
+plugin API and ran the plugin up to 1.0.0 (the record above), but is no longer tested. 0.20.x
+lacks the API itself: `PluginContext.register_platform_handler` and the adapters'
+`_wire_plugin_handlers` are absent there (checked on a 0.20.5 install: not present anywhere in
+the tree; `spawn_task` and `PluginState` exist but nothing would ever call the factory). The
+compatibility principle still holds for the *sources* (gateway state, limits, drift degrade per
+version); it does not extend to delivery, and this README does not promise otherwise.
 
 **In process only.** Hermes 0.21.6 added `plugins.isolation`. Its default, `in_process`, loads
 the plugin into the gateway as before. With `plugins.isolation: host` the engine runs
@@ -218,8 +246,10 @@ Three prohibitions, learned from a predecessor that died of them: no imports of 
 
 Two named exceptions. Account limits come from `agent.account_usage.fetch_account_usage`, a public
 function with the same signature on every verified version, called exactly the way the gateway's
-own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`). An import
-failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
+own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`), but
+once per `facade_refresh_seconds` for each provider (5 minutes by default; an attempt due within
+5 s goes out on the tick at hand, so a tick that wakes a moment early does not push it a whole
+period). An import failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
 `agent.secret_scope.get_secret`, so that the active profile's value is the one used
 (`external.py`). Each exception is a row in the matrix, not a habit.
 
@@ -231,11 +261,14 @@ and edits the same message; the counter text of the vertical slice is gone.
 ```
 register(ctx) → ctx.register_platform_handler("telegram", wire)
              → adapter.connect() calls wire(app, adapter)
-             → ctx.spawn_task(tick loop)            (exactly once; reconnects do not add loops)
+             → ctx.spawn_task(tick loop)            (one per profile; reconnects and reloads
+                                                     do not add loops)
              → each tick: the traffic counters read off the adapter as attributes, then
                collect_all_async → render_dashboard → to_telegram_html,
                to_telegram_plain and to_telegram_rich, then adapter =
-               runner.adapters["telegram"] if connected, the message created once
+               runner.adapters["telegram"] if connected and handed to wire (the launch
+               profile also takes up one it was not handed), else the adapter wire was
+               handed last, the message created once
                (with rich: true sendRichMessage through the engine's bot, else
                adapter.send(plain)), then every tick, with rich: true, the rich form
                (_bot.do_api_request("editMessageText", ...)), and without it or on a
@@ -250,6 +283,60 @@ again on every reconnect with a new adapter instance, and `TelegramAdapter.edit_
 forward to the replacement adapter (`send` does). A loop that keeps its first adapter would report
 "Not connected" forever while looking alive. `tests/test_probe_plugin.py` executes the chain
 against the real engine objects with the Telegram `Bot` mocked and simulates the reconnect.
+
+**Restarts, reloads and profiles.** A gateway restart edits the same message (the record below).
+A reload of plugins in a running gateway (`hermes plugins install/enable/update` asks for one, so
+may a tool's forced provider lookup) unloads the plugin, which stops its loop, and registers it
+again; the new registration takes the loop over on the adapter the old one had, so the screen
+keeps moving without a restart, one loop per profile (issue #12). In a gateway that serves
+several profiles, each profile that enables the plugin has its own loop and its own message,
+sent through that profile's bot. The limits:
+
+- the registry that hands the loop over first ships in the 1.1.0 release: the first reload onto
+  it from 1.0.0 or earlier, or from a copy of `main` taken before it (that copy already says
+  1.1.0), has nothing to take over, and the screen stands still until the adapter reconnects or
+  the gateway restarts; restart the gateway once after such an update. On Hermes 0.23.0 the
+  opt-in `plugins.auto_apply` (off by default) also updates catalog installs unattended, but it
+  only replaces the plugin's folder: the new code loads at the next gateway start or at the
+  next forced re-discovery (any `reload-plugins`: a Desktop or dashboard Update, an install or
+  enable of another plugin), and from a version without the registry that re-discovery leaves
+  no loop until a reconnect or a restart (measured on 0.23.0)
+- a stop that lands in the middle of a send may leave one extra message, as a gateway stop at
+  that moment would
+- when Telegram reconnects while the plugin is being loaded again (after the unload and before
+  the new registration, when no factory of the plugin is registered), the launch profile's loop
+  takes the new connection up, unless the reload comes before the first tick that sees the
+  runner publish Telegram's adapter. The runner publishes the launch profile's adapters once
+  every platform of that profile has answered its connect: that tick comes within 30 s of
+  Telegram connecting when Telegram is the last of them to connect, and otherwise up to one
+  period (`period_seconds`) after the slowest one. A secondary profile's loop never takes up a
+  connection it was not handed. Both then wait for the next reconnect or a restart
+
+**Updating from 1.0.0.** Restart the gateway once after the update (the first limit above). The
+record now keeps, next to the message's id, the id of the bot that sent it, and only that bot
+edits the message: one another bot sent is taken as lost, and a new one is sent and announced.
+On a gateway that serves one profile (the engine does not multiplex: a single-profile home, or
+a standalone profile) the dashboard keeps its message: the first tick edits it and keeps the
+bot's id, with no wait. On a gateway that serves several profiles, 1.0.0 sent a secondary
+profile's screen through the launch profile's bot, and 1.1.0 sends it through the profile's own
+bot: that profile's dashboard starts a new message, from its own bot (in a private chat, in the
+conversation with that bot). The gateway plugin pins and unpins nothing: pin the new one and
+unpin the old one, which the launch profile's bot sent; the profile's own bot cannot edit it,
+and nothing edits it any more. The launch profile's dashboard keeps its message. There, while
+the gateway starts, until it has installed the adapters that connected, a record from 1.0.0
+waits (`waiting`, with the
+reason) rather than guess which profile it belongs to, for at most five minutes from the
+plugin's start. When the gateway installs no adapter of the launch profile at all (a platform
+whose token is only in a secondary profile's `.env` is skipped for the launch profile, or the
+launch profile's only platform failed at start), the wait runs out: a served profile's
+dashboard then takes its message as another bot's and starts a new one from its own bot,
+announced the same way. A message whose sender is unknown is never edited. Once the record
+names the sender (1.1.0 on), a profile whose bot is replaced by another bot starts a new message
+the same way. A launch profile whose bot was replaced while it still ran 1.0.0 cannot be told:
+its record names no sender, so the new bot is kept as the sender and edits that message id as
+1.0.0 did. Where Telegram refuses the edit, the message is taken as lost and a new one is sent;
+in a private chat the number may name one of the new bot's own messages, which the edit
+overwrites.
 
 **Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
 snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
@@ -273,8 +360,8 @@ read off the adapter object on every tick, never off a version number, in this o
    (positional-or-keyword or keyword-only; `**kwargs` does not count, a verb that swallowed the
    keyword would send the markup as plain text and answer success). Called with
    `parse_mode="HTML"`; a `SendResult` with `success=False` is a refusal of the form
-2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on 0.21.1,
-   0.21.3, 0.21.5 and main, which takes a parse mode and raises on refusal
+2. otherwise the adapter's own `_edit_text(chat, id, text, parse_mode)`, the same on every
+   engine read (0.21.1 to 0.23.0, and main), which takes a parse mode and raises on refusal
 3. otherwise plain, with `html_error: no HTML verb (edit_message without parse_mode, no
    _edit_text)`
 
@@ -290,7 +377,12 @@ without a release. The HTML form is bold headings and the details in one
 right after a failed HTML one means the form was refused: the screen stays plain (upper-case
 headings, the details shown in full), the record says `screen_format: plain` with the reason in
 `html_error` (the exception class, or `edit_message: <its error>`), one warning goes to the
-journal, and HTML is tried again twelve ticks later. The record also names the verb that carries
+journal, and HTML is tried again twelve ticks later. A plain edit the engine holds back is no
+edit: while a reply in the same chat holds that chat's outbound slot (the engine paces a chat's
+sends and edits through it to keep clear of Telegram's flood control), `edit_message` edits
+nothing and still answers success, so the tick records `deferred`, keeps the last confirmation,
+draws no verdict on the form and edits again on the next tick, never asking for `finalize` to
+get past the slot. The record also names the verb that carries
 the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
 private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`).
 Without the rich form (below: off by default), the one `send` that creates the message (and a
@@ -342,9 +434,11 @@ the exception class and the time, and the record carries `last_render_error`. Ye
 on a pinned dashboard looks exactly like a calm system, which is the failure this project exists
 to prevent. Inside the gateway the drift command, the usage facade and the read of the engine's
 error log run in worker threads with deadlines (`collect_all_async`), so a slow provider or a
-hung disk never stalls the Telegram event loop.
+hung disk never stalls the Telegram event loop. The facade has one worker for Claude and Codex
+and calls each of them once per `facade_refresh_seconds` (an attempt due within 5 s goes out on
+the tick at hand), not on every tick.
 
-Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
+Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
 
 1. `hermes plugins install telegram_dashboard_probe` (the catalog pin), or copy
    `plugin/telegram_dashboard_probe/` to `$HERMES_HOME/plugins/telegram_dashboard_probe/`,
@@ -367,7 +461,9 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
    | `display_timezone` | `HERMES_DASHBOARD_PROBE_TZ` | IANA name; unknown degrades to UTC |
    | `limits_refresh_seconds` | `HERMES_DASHBOARD_PROBE_LIMITS_REFRESH` | default 900, floor 60; how often your `limits_sources` are asked (not every tick) |
+   | `facade_refresh_seconds` | `HERMES_DASHBOARD_PROBE_FACADE_REFRESH` | default 300, floor 60, no ceiling; how often Claude and Codex are each asked through the usage facade (not every tick: the default gives 288 calls a day per provider at a 60 s period; an attempt due within 5 s goes out on the current tick); see "Limits: three kinds that never mix" |
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
+   | `limits_providers` | (config only, a list) | optional: the built-in limit providers to ask, `claude`, `codex`, `gemini` in any case. Unset, every one is asked and one with no sign of an account here has no line. Set, exactly the listed ones are asked and each always keeps its line (`Claude · no data` with the reason, Gemini's line with no refusal too); one left out is never asked (the facade is not called for it, the Gemini log is not read: no source, no event) and the details say `Off in the dashboard settings: Gemini`. An empty list, written as `[]`, asks none of them. An unknown name is skipped with a warning in the log that names its place in the list; a list in which no name is known (a typo such as `[codx]`) is ignored as if unset, so the automatic rule holds, with that warning; anything but a list is ignored with a warning. `limits_sources` are not subject to it. The fallback tick reads the same list from its JSON config; see "Limits: three kinds that never mix" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is the classic view, HTML or plain, and a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
@@ -393,24 +489,36 @@ Deploying on a gateway (0.21.x; 0.20.x has no `register_platform_handler`):
    ❔ line, `Drift: drift present, output not parsed` in the details), and exit 0 without them
    still reads as clean (`✓ Drift`, `0 keys` in the details).
    A source that hangs is not started again until its worker returns (one worker per
-   source across ticks), so a stuck facade or command cannot fill the gateway's executor.
+   source across ticks), so a stuck facade or command cannot fill the gateway's executor. The
+   facade's late worker writes its answer to the record, and the next tick shows it.
 3. restart the gateway; the message appears in the configured chat and its screen moves
 
 Use a chat you can sacrifice. The plugin writes its delivery record to the plugin state
 (`$HERMES_HOME/plugin-data/<namespace>/state.json`, one key `probe`) so a gateway restart edits
-the same message. The directory name carries a digest of the plugin id
-(`agent-plugin-telegram_dashboard_probe-<8 hex>`); the plugin logs the exact path at start
-(`probe: delivery record for --check plugin_state_path: ...`) at INFO, which a gateway that
-journals WARNING and above never shows: take the path from disk
+the same message. Next to the message's id it keeps `bot_id`, the numeric id Telegram gives the
+bot that sent it, as the engine's bot holds it from getMe at its start (nothing of the bot's
+token): only that bot edits the message (see "Updating from 1.0.0"). The directory name carries
+a digest of the plugin id (`agent-plugin-telegram_dashboard_probe-<8 hex>`); the plugin logs the
+exact path at start (`probe: delivery record for --check plugin_state_path: ...`) at INFO, which
+a gateway that journals WARNING and above never shows: take the path from disk
 (`ls $HERMES_HOME/plugin-data/ | grep probe`). The plugin's observability rests on that state
 file, not on the journal; an empty `grep probe:` in the journal means nothing.
 
 A record written by 1.0.0 may still carry `limits_cache` (the old per-provider cache of two
 built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads the record.
-`release_cache` holds the once-a-day check of the latest Hermes release the same way
+`release_cache` holds the check of the latest Hermes release (at most one per 15 minutes, see
+"The Hermes version line") the same way
 (`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
 source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
-with the provider, the plan and the login date it last named. `gemini_log_cache` keeps the last
+with the provider, the plan and the login date it last named. `facade_cache` keeps the usage
+facade's providers the same way, one entry each (`claude`, `codex`): the last attempt
+(`attempted_at`, the moment that provider was asked), its item (the provider, the status, the reason, the source's name,
+`fetched_at`, the plan, and the windows, each with its label, share and reset; every text
+cleaned and cut to the length the screen shows), the last time the facade answered with a
+snapshot at all (`answered_at`), how many attempts in a row since then got the facade's empty
+answer (`none_attempts`, gone again with the next answer) and the plan it last named. Never the
+account's identity, the raw answer, the details the facade reports beside the windows (a credit
+balance), or an exception's text, only its class. `gemini_log_cache` keeps the last
 Gemini 429 the engine's log showed (`last_429`: its time, limit, retry and model, never the
 message; the limit and the retry are kept, not shown) and when the log was last read
 (`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
@@ -706,7 +814,8 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   vanished
 
 `tests/test_context_files_engine.py` builds the context and runtime blocks with the installed
-engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6: every kind of file, a
+engine's own functions and reads them back (0.21.3, 0.21.5 and 0.21.6 before 1.1.0, 0.22.2,
+0.22.7 and 0.23.0 in the CI engine job: every kind of file, a
 BOM-only file and a BOM before blank lines, a chain in
 a repository, a chain with a cut file, a chain cut twice, a cut cursor bundle, an override file,
 a directory reached through a link); it skips where Hermes is not importable.
@@ -747,7 +856,8 @@ The numbers are in the details, always:
 
 - **counted the engine's way**: the entries split on the line holding `§`, stripped, empty and
   repeated ones dropped, joined with the delimiter; the engine's own `MemoryStore` gives the same
-  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6). The share of one entry shows when it
+  count (`tests/test_memory.py`, on 0.21.3 and 0.21.6, and on 0.22.2, 0.22.7 and 0.23.0 in the
+  CI engine job). The share of one entry shows when it
   holds half the limit or more
 - **the last write** is the notebooks' modification time: the engine keeps no journal of applied
   writes, so a hand edit moves it too; for skills, the curator's ledger. A waiting write's time
@@ -877,7 +987,7 @@ is the HTTP 429 the engine logs when Google turns a call down, and it is said as
 plain words: a per-minute refusal is `⚠️ Gemini hit limit 5 min ago` on the line, which moves
 no status, like the mark from 90%; a daily one is `⚠️ Gemini paused till 23:00` and an event
 until the reset; the last one is always in the details (see "Gemini refusals from the engine
-log").
+log"). Between refusals there is nothing to say on the screen, and Gemini has no line.
 
 An official line is one line: `⚠️ Codex 98% (1h21m)`. Every window the provider reports is on
 it, in the provider's own order, as `N% (time to reset)`: the spent share (every percent on the
@@ -905,23 +1015,56 @@ across the row (`no data`), and a model's own limit in a row of its own with its
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
-updating is the freshness banner's business, not the countdown's. An external source's number
-is read on its own cadence and must not borrow the screen's stamp: the details line
-`Data 12:21 · Mistral 12:16` names every number read at another minute than the screen.
-`quota_cache.tick` decides when the source is asked again (once per `limits_refresh_seconds`);
-the record's `external_cache` keeps its last answer, which stands in for a missed one, with its
-own stamp, while it is younger than two ticks or two `limits_refresh_seconds`, whichever is
-longer. No number older than that passes for fresh: the ❔ line names the source
-(`Mistral limits (stale)`). A stale number under a fresh stamp looks like knowledge, which is
-the one thing a limits block must never do.
+updating is the freshness banner's business, not the countdown's. A number from the facade
+and an external source's number are each read on their own cadence and must not borrow the
+screen's stamp: the details line `Data 12:21 · Codex 12:18 · Mistral 12:16` names every number
+read at another minute than the screen. `quota_cache.tick` decides when a provider is asked
+again: Claude and Codex once per `facade_refresh_seconds` (5 minutes by default), an external
+source once per `limits_refresh_seconds`, and for both an attempt due within 5 s goes out on the
+tick at hand; one attempt per interval, success or failure, so a
+failed attempt is `no data` with its reason until the next one, and a failing provider is not
+asked on every tick. The record keeps the last answer (`facade_cache`, `external_cache`), which
+stands in for a missed one (the deadline, a worker still running) with its own stamp while it
+is younger than two ticks or two intervals, whichever is longer; a facade provider whose own
+attempt is still inside its interval keeps that attempt's line, a failure as much as an answer,
+since one worker asks both. No number older than that passes for fresh: a number older than its
+interval is `cached number too old`, and an external source that hands over a number read
+longer ago than that is named on the ❔ line as stale (`Mistral limits (stale)`). The facade's `limits`
+source stands on its freshest number with a ttl of at least two cadences, so it stays fresh
+between attempts; with no number at all it is `limits (unavailable)`. A stale number under a
+fresh stamp looks like knowledge, which is the one thing a limits block must never do.
 
-**Codex** comes from the facade like Claude, and so does its plan (`plan_type`, title-cased:
-`Prolite`), in the details beside the others. The engine names Codex's first window `Session`
-whatever its length, so the line shows the share and the reset only.
+**Codex** comes from the facade like Claude, on the same cadence, and so does its plan
+(`plan_type`, title-cased: `Prolite`), in the details beside the others; the plan stays there
+through a failed attempt. The engine names Codex's first window `Session` whatever its length,
+so the line shows the share and the reset only.
 
-**Claude on an installation without an Anthropic credential**: the line says `no data` and the
-details say `no account token`, a reason, never a zero. A local source that answers for Claude
-takes the line's place (see "External limit sources").
+**A provider this installation does not have has no line.** The facade answers with the same
+empty value whether there is no credential or the call failed (it swallows every error of the
+provider's API, on every engine version read), so one answer cannot tell the two apart, and the
+record decides (`facade_cache`):
+
+- a provider that has never answered since the record began is `no data` with
+  `no answer: no credential or the call failed` in the details for its first two attempts; from
+  the third empty answer in a row (10 to 15 minutes after the install at the default cadence) it
+  has no line, no place on the ❔ line or in the coverage, and the details name it once:
+  `Not configured: Claude`
+- a provider that answered before and then went quiet stays a `no data` line while its last
+  answer is at most 7 days old (the longest window these providers report), then is treated the
+  same way. A last answer stamped ahead of the clock (the clock was set back) counts as none:
+  the empty answers in a row decide, as above
+- any answer brings the line back at once and starts the count again. Claude on an API key
+  answers (the engine's reason, `Anthropic account limits are only available for OAuth-backed…`)
+  and keeps its line. A missed deadline or a worker still running is no answer and no empty one:
+  it changes nothing, and a provider without a line stays without one
+- when neither Claude nor Codex has a line there is no `limits` source at all, so an
+  installation with neither (OpenRouter, Nous) does not stay grey on `limits (unavailable)`
+
+`limits_providers` makes it explicit: a listed provider keeps its line whatever it answers (a
+login broken from day one stays in sight), one left out is never asked. A local source that
+answers for Claude takes the line's place, shown or not (see "External limit sources").
+`python -m telegram_dashboard --demo 29` shows an installation with Codex alone: one limits line,
+and `Not configured: Claude` in the details.
 
 The check for the plugin path is the same `--check`, pointed at that file:
 
@@ -933,7 +1076,12 @@ The check for the plugin path is the same `--check`, pointed at that file:
 plugin editing every 60 s, 300 means five missed ticks before the first alert (`confirmed` up to
 one period plus slack, `lagging` up to two, `stale` past that). The record also carries
 `tick_failed` when a tick raised, so a loop that dies every tick does not keep an old `edited`
-on disk.
+on disk, and `deferred` when the engine held the edit back for a busy chat, which the check
+judges like any tick that is not a failure: by the age of the last confirmation. The check's
+line (and the watchdog's) ends with the plugin's `last_status`, one of the statuses the plugin
+writes (any other value is printed as `None`), so a `stale ... error=None status=deferred` says
+the edits are being held back, and the plugin's journal has one WARNING once such a run
+outlasts the screen's lagging threshold.
 
 ### External limit sources
 
@@ -971,7 +1119,9 @@ The answer is `200` with a JSON object of at most 64 KB:
 - `contract` is `1`; another number is `no data` with `unsupported contract`, anything else
   with `answer shape: contract` (a reason never quotes the value it refuses)
 - `provider`, up to 24 characters, names the line. A name the screen already has (Claude, Codex)
-  takes that line's place; any other gets a line of its own before Gemini
+  takes that line's place, a line the screen does not draw (not configured, off in
+  `limits_providers`, Gemini without a recent refusal) included; any other gets a line of its own
+  before Gemini. `limits_providers` does not apply to these sources
 - `state`: `ok` puts the windows on the screen; `login_expired` reads `Claude · login expired`
   and raises the event `Claude login expired`; `unavailable` is `no data` with `reason` (up to 60
   characters) in the details
@@ -1058,10 +1208,19 @@ log when Google refuses a call, and that refusal is what the Gemini line shows, 
   refusal is the event `Gemini daily limit used up` and `⚠️ Gemini paused till 23:00` on the
   line until the reset Google named, in the screen's zone; any other refusal, one without a
   retry among them, is the mark only, for an hour: `⚠️ Gemini hit limit 5 min ago`. After that
-  the line says `Gemini · no data` again, and the details keep `last Sep 29 14:03, per-minute
-  limit, model gemini-2.5-flash-preview-tts` (a daily one says `daily limit till …`, one
-  without a retry names no kind). A daily quota spent just before Google's reset asks for a
-  short retry and looks per-minute
+  the Gemini line is gone until the next refusal (a `Gemini · no data` line would say nothing),
+  and the details keep `last Sep 29 14:03, per-minute limit, model
+  gemini-2.5-flash-preview-tts` (a daily one says `daily limit till …`, one without a retry
+  names no kind). A daily quota spent just before Google's reset asks for a short retry and
+  looks per-minute
+- **the line**: drawn only while a refusal is active, as above. With `limits_providers` naming
+  `gemini` it stays on every screen (`Gemini · no data` between refusals); a list without it
+  leaves the log unread: no line, no source, no event, and the details say
+  `Off in the dashboard settings: Gemini`. A tick that cannot read the log (no `logs/`, a file
+  that cannot be read, a read past its deadline) goes by the record: once the log was read, the
+  line is drawn only while the refusal the record remembers is active. Where the log has never
+  been read (limits off, or no successful read in the record yet) the line stays
+  `Gemini · no data` with the reason, as before
 - **memory**: the record keeps the last 429 (`gemini_log_cache`), so one that rotated out of the
   tail is still the last one. The fallback cron tick keeps no record, so each of its runs reads
   the whole file, up to 4 MB
@@ -1151,10 +1310,13 @@ lives there, not in code:
 ```
 
 Limits are only available when the tick runs in an interpreter that can import the engine (the
-gateway's own); elsewhere they degrade to `unsupported`. The cron tick runs in a directory of its
-own, so the rules line looks for rules left beside the gateway only in the `gateway_dir` it is
-given (the service's `WorkingDirectory`); `context_files: false` (or `"off"`) turns the line off,
-`memory: false` the memory section.
+gateway's own); elsewhere they degrade to `unsupported`. Where it can, each run asks the facade
+once per provider: the fallback tick keeps no record of it, so it has no memory of an earlier
+answer either, and a provider the facade answers with nothing for is not configured at once (no
+line, out of the coverage) unless `limits_providers` in the JSON config names it. The cron tick
+runs in a directory of its own, so the rules line looks for rules left beside the gateway only
+in the `gateway_dir` it is given (the service's `WorkingDirectory`); `context_files: false` (or
+`"off"`) turns the line off, `memory: false` the memory section.
 
 ## Tests
 
@@ -1175,7 +1337,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins thirteen properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins fifteen properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -1184,7 +1346,10 @@ query-only through one connection function (the only SQLite the plugin opens), n
 the entry registers no hook, tool, middleware or command, the traffic probe reads the adapter's
 counters without calling anything on it, and the rules line writes nothing, imports no network
 client and logs no text, the memory section opens files to read bytes only, opens no database,
-imports no network client and logs nothing, no file of the plugin folder carries an invisible character (the
+imports no network client and logs nothing, the usage facade's answer is read field by field (its
+identity, its raw answer, its details and an exception's text never reach the record), the entry
+never asks for `finalize` and touches nothing of the engine's per-chat outbound slot, no file of
+the plugin folder carries an invisible character (the
 catalog validator warns on one), and no word of any demo screen, sent as HTML or rich, becomes a
 link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a

@@ -92,9 +92,13 @@ jobs:
         run: uv pip install --python hermes-agent/.venv/bin/python "pytest>=8,<10" tzdata
       # -rfEs: the reasons of the skips conftest.py allows, and failures and errors named on the
       # summary too (a bare -rs drops them from it).
+      # The checkout above is a commit with no tags, so the engine tells its own version as
+      # "unknown", which passes any requires_hermes. The gate test takes the release from here
+      # instead and puts the manifest through the engine's own gate with it.
       - name: Test suite against the engine
         env:
           REQUIRE_ENGINE_TESTS: "1"
+          HERMES_ENGINE_TAG: ${{ matrix.hermes }}
         run: hermes-agent/.venv/bin/python -m pytest tests -rfEs
 
   manifest:

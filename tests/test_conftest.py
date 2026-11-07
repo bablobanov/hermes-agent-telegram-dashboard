@@ -321,11 +321,17 @@ def test_the_guard_leaves_ipv6_loopback_open_where_the_host_has_it(
     assert no_network == []
 
 
-def test_the_session_runs_with_a_temporary_hermes_home() -> None:
-    home = Path(os.environ["HERMES_HOME"])
+def test_the_session_runs_with_a_temporary_hermes_home(session_temp_root: str) -> None:
+    """The home is a directory of its own, made in the OS temp root. The engine's bootstrap may
+    move the process's temp root afterwards (see ``_SESSION_TEMP_ROOT`` in conftest), and then
+    only into that home: never back to a directory outside it."""
+    home = Path(os.environ["HERMES_HOME"]).resolve()
+    root = Path(session_temp_root).resolve()
 
     assert home.name.startswith("hermes-test-home-") and home.is_dir()
-    assert home.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
+    assert home.parent == root
+    now = Path(tempfile.gettempdir()).resolve()
+    assert now == root or now.is_relative_to(home), now
 
 
 def test_the_engine_resolves_its_home_to_the_temporary_one() -> None:

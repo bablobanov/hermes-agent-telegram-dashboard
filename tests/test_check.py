@@ -61,6 +61,92 @@ def test_check_on_plugin_state_reports_lagging_and_stale(tmp_path) -> None:
     )
 
 
+def test_check_takes_a_deferred_tick_as_no_failure_and_judges_by_the_last_confirmation(
+    tmp_path, capsys
+) -> None:
+    """``deferred``: the engine held the plugin's edit back while the chat's outbound slot was
+    busy. Not a failure by itself, and no confirmation either: the age of the last confirmation
+    decides, as for any other tick."""
+    fresh = _plugin_state(tmp_path, **_record(2, last_status="deferred"))
+    assert main(["--config", _config(tmp_path, fresh), "--check"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("confirmed") and "error=None status=deferred" in out
+
+    # Stale with no error: the line says it is the engine holding the edits back (B5 review M1).
+    for minutes, code, word in ((7, 1, "lagging"), (11, 2, "stale")):
+        held = _plugin_state(tmp_path, **_record(minutes, last_status="deferred"))
+        assert main(["--config", _config(tmp_path, held), "--check"]) == code
+        out = capsys.readouterr().out
+        assert out.startswith(word) and out.rstrip().endswith("error=None status=deferred")
+
+
+def test_check_names_the_plugin_s_status_and_only_as_a_plain_word(tmp_path, capsys) -> None:
+    """The line ends with the plugin's ``last_status``: ``status=edited`` for a healthy record,
+    ``status=None`` for the cron path's record, which has none, and for a value that is not one
+    plain word (a foreign file's text is not printed into an alert)."""
+    edited = _plugin_state(tmp_path, **_record(2))
+    assert main(["--config", _config(tmp_path, edited), "--check"]) == 0
+    assert capsys.readouterr().out.rstrip().endswith("status=edited")
+
+    odd = _plugin_state(tmp_path, **_record(2, last_status="edited\nDASHBOARD OK"))
+    assert main(["--config", _config(tmp_path, odd), "--check"]) == 0
+    out = capsys.readouterr().out
+    assert out.rstrip().endswith("status=None") and "DASHBOARD OK" not in out
+
+    delivery = tmp_path / "dashboard-delivery.json"
+    stamp = (NOW - timedelta(minutes=1)).isoformat()
+    delivery.write_text(json.dumps({"message_id": 4242, "last_confirmed_at": stamp}), "utf-8")
+    cfg = tmp_path / "cron.json"
+    cfg.write_text(json.dumps({"state_path": str(delivery), "period_seconds": 300}), "utf-8")
+    assert main(["--config", str(cfg), "--check"]) == 0
+    assert capsys.readouterr().out.rstrip().endswith("status=None")
+
+
+def test_check_names_only_a_status_the_plugin_writes(tmp_path, capsys) -> None:
+    """``status=`` names one of the plugin's own statuses (1.0.0's six and ``deferred``); any
+    other value, one plain word or not, is printed as ``None``: a foreign or hand-edited file
+    does not put its words into an alert."""
+    from telegram_dashboard.freshness import PLUGIN_STATUSES
+
+    for status in sorted(PLUGIN_STATUSES):
+        state = _plugin_state(tmp_path, **_record(2, last_status=status))
+        main(["--config", _config(tmp_path, state), "--check"])
+        assert capsys.readouterr().out.rstrip().endswith(f"status={status}"), status
+    for status in ("foreign", "restart_now", "Edited"):
+        state = _plugin_state(tmp_path, **_record(2, last_status=status))
+        main(["--config", _config(tmp_path, state), "--check"])
+        out = capsys.readouterr().out
+        assert out.rstrip().endswith("status=None") and status not in out, status
+
+
+def test_every_status_the_plugin_writes_is_one_the_check_names() -> None:
+    """The entry's statuses, read off its source (every ``_note(status=...)`` and the deferred
+    one), are the check's list: a new status cannot be left out of the state line unseen."""
+    import ast
+
+    from probe_fakes import PLUGIN_DIR
+
+    from telegram_dashboard.freshness import PLUGIN_STATUSES
+
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    names = {
+        node.targets[0].id: node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+    }
+    written: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "status":
+            value = node.value
+            if isinstance(value, ast.Constant):
+                written.add(value.value)
+            elif isinstance(value, ast.Name):
+                written.add(names[value.id])
+    assert written == PLUGIN_STATUSES
+
+
 def test_check_on_plugin_state_sees_a_lost_message_that_was_not_recreated(tmp_path, capsys) -> None:
     lost = _record(
         1,

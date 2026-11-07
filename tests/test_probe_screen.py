@@ -20,7 +20,7 @@ import shutil
 import sys
 import time
 from dataclasses import replace
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,7 @@ def _settings(monkeypatch: pytest.MonkeyPatch, home: Path, **overrides: Any) -> 
         "HERMES_DASHBOARD_PROBE_DRIFT_REPORT",
         "HERMES_DASHBOARD_PROBE_LIMITS",
         "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH",
+        "HERMES_DASHBOARD_PROBE_FACADE_REFRESH",
         "HERMES_DASHBOARD_PROBE_TZ",
         "HERMES_DASHBOARD_PROBE_RICH",
     ):
@@ -520,6 +521,51 @@ def test_cron_notes_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
     assert seen[0].cron_notes == (("a1b2c3", "Sends Threads topics to SMM"),)
 
 
+def test_limits_providers_are_read_from_the_config_entry_only(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Issue #14: ``limits_providers`` lists the built-in limit providers to ask, by label in any
+    case; absent, the automatic rule holds; an unknown name is skipped with a warning that does
+    not quote it; no environment fallback."""
+    plugin = load_plugin()
+    base = _settings(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_LIMITS_PROVIDERS", "claude")
+
+    def providers(**overrides: Any) -> Any:
+        settings = plugin.read_settings(FakeContext({**base, **overrides}))
+        assert settings is not None
+        return settings.limits_providers
+
+    assert providers() is None
+    assert providers(limits_providers=["Codex", "GEMINI"]) == ("codex", "gemini")
+    assert providers(limits_providers=[]) == ()
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        assert providers(limits_providers=["codex", "Grok-secret"]) == ("codex",)
+        assert providers(limits_providers=["Grok-secret"]) is None  # not set, never "ask none"
+    assert "probe: limits_providers: entry 2 skipped" in caplog.text
+    assert "probe: limits_providers: entry 1 skipped" in caplog.text
+    assert "Grok-secret" not in caplog.text
+
+
+def test_limits_providers_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), limits_providers=["codex"]))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[Any] = []
+
+    async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(env)
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    asyncio.run(runtime._collect(datetime(2026, 10, 24, 7, 0, tzinfo=UTC)))
+
+    assert seen[0].limits_providers == ("codex",)
+
+
 def test_a_package_copy_from_before_the_version_line_is_refused_at_load(tmp_path: Path) -> None:
     """The plugin hands ``version_cache`` to the collector. A copy of the package from before
     0.6.0 would reject that argument on every tick and cost the whole screen; it is refused once,
@@ -587,6 +633,50 @@ def test_a_package_copy_from_before_1_1_0_is_refused_at_load(tmp_path: Path) -> 
     collect_py.write_text(text.replace(name, "_OLDER_DEFAULT_INTERVAL_SECONDS"), "utf-8")
 
     plugin = load_plugin("hermes_plugins.pre_1_1_0_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
+def test_a_package_copy_without_the_facade_cadence_is_refused_at_load(tmp_path: Path) -> None:
+    """Issue #16: the tick hands the record's ``facade_caches`` to the collector so each provider
+    is asked once per ``facade_refresh_seconds``; a copy from before it would refuse the argument
+    or ask the facade on every tick. A copy without ``FACADE_DEFAULT_INTERVAL_SECONDS`` is refused
+    at load and the next candidate is taken."""
+    assert "FACADE_DEFAULT_INTERVAL_SECONDS" in load_plugin().REQUIRED_API["collect"]
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    collect_py = plugin_dir / "telegram_dashboard" / "collect.py"
+    text = collect_py.read_text(encoding="utf-8")
+    name = "FACADE_DEFAULT_INTERVAL_SECONDS"
+    assert f"{name} = 300.0\n" in text
+    # Renamed, not removed: the copy still imports, only the name the plugin requires is gone.
+    collect_py.write_text(text.replace(name, "_OLDER_FACADE_INTERVAL_SECONDS"), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_facade_cadence_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
+def test_a_package_copy_from_before_limits_providers_is_refused_at_load(tmp_path: Path) -> None:
+    """Issue #14: the plugin hands ``limits_providers`` to ``Environment``; a copy from before it
+    would reject the argument on every tick. It is refused at load and the next candidate is
+    taken."""
+    assert {"LIMITS_PROVIDERS", "parse_limits_providers"} <= set(
+        load_plugin().REQUIRED_API["compat"]
+    )
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    compat_py = plugin_dir / "telegram_dashboard" / "compat.py"
+    text = compat_py.read_text(encoding="utf-8")
+    line = 'LIMITS_PROVIDERS = "limits_providers"\n'
+    assert line in text
+    compat_py.write_text(text.replace(line, ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_providers_probe", plugin_dir, vendored=True)
     dashboard = plugin.import_dashboard()
 
     assert dashboard is not None
@@ -829,6 +919,35 @@ def test_the_limits_refresh_interval_is_a_setting_with_a_floor(monkeypatch, tmp_
     assert refresh() == 1200.0
 
 
+def test_the_facade_refresh_interval_is_a_setting_with_a_floor_and_no_ceiling(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Issue #16: Claude and Codex are asked through the usage facade once per this interval,
+    300 s unless set; a value below a minute is not an interval, a long one is the owner's call,
+    and ``limits_refresh_seconds`` (the external sources') does not move it."""
+    plugin = load_plugin()
+    base = _settings(monkeypatch, tmp_path)
+
+    def refresh(**overrides: Any) -> float:
+        settings = plugin.read_settings(FakeContext({**base, **overrides}))
+        assert settings is not None
+        return settings.facade_refresh_seconds
+
+    assert refresh() == 300.0
+    assert refresh(facade_refresh_seconds="900") == 900.0
+    assert refresh(facade_refresh_seconds=86_400 * 7) == 604_800.0
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        assert refresh(facade_refresh_seconds="5") == 60.0
+        assert refresh(facade_refresh_seconds="soon") == 300.0
+        assert refresh(facade_refresh_seconds="inf") == 300.0
+    assert "facade_refresh_seconds '5' clamped to 60s" in caplog.text
+    assert "facade_refresh_seconds 'soon' unusable; using 300s" in caplog.text
+    assert refresh(limits_refresh_seconds="1800") == 300.0
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_FACADE_REFRESH", "600")
+    assert refresh() == 600.0
+    assert refresh(facade_refresh_seconds="120") == 120.0  # the config entry first
+
+
 def test_every_keyword_the_tick_passes_is_one_the_collector_takes(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -860,9 +979,9 @@ def test_every_keyword_the_tick_passes_is_one_the_collector_takes(
 def test_the_release_check_keeps_its_cache_in_the_record_across_a_restart(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The once-a-day upstream check keeps its attempt in the record under its own key:
-    the same dict on every tick, written to the state file, and read back after a restart, so a
-    restart does not ask GitHub again."""
+    """The upstream release check (at most one per 15 minutes) keeps its attempt in the record
+    under its own key: the same dict on every tick, written to the state file, and read back
+    after a restart, so a restart does not ask GitHub again."""
     from datetime import datetime
 
     plugin = load_plugin()
@@ -931,16 +1050,67 @@ def test_the_gemini_log_keeps_its_record_across_a_restart(monkeypatch, tmp_path:
     assert restarted.gemini_cache() is restarted.record["gemini_log_cache"]
 
 
+def test_the_facade_keeps_its_cache_in_the_record_across_a_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Issue #16: the usage facade's providers keep their last attempt in the record under
+    ``facade_cache``: the same dict on every tick (a worker that returns after its deadline
+    writes into the record), passed with ``facade_refresh_seconds`` and the period, written to
+    the state file and read back after a restart, so a restart does not ask the providers
+    again."""
+    from datetime import datetime
+
+    plugin = load_plugin()
+    settings = _settings(monkeypatch, _home(tmp_path), limits_enabled=True)
+    ctx = FakeContext({**settings, "facade_refresh_seconds": "600"})
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    seen: list[dict[str, Any]] = []
+    now = datetime(2026, 11, 6, 9, 0, tzinfo=UTC)
+    attempt = {
+        "attempted_at": now.isoformat(),
+        "answered_at": now.isoformat(),
+        "plan": "Prolite",
+        "item": {"provider": "codex", "status": "available", "fetched_at": now.isoformat()},
+    }
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        kwargs["facade_caches"]["codex"] = attempt
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+
+    asyncio.run(runtime._collect(now))
+    asyncio.run(runtime._collect(now))
+    runtime._note(status="edited", error=None)
+
+    record = runtime.record["facade_cache"]
+    assert seen[0]["facade_caches"] is seen[1]["facade_caches"] is record
+    assert seen[0]["facade_interval_seconds"] == 600.0
+    assert seen[0]["period_seconds"] == runtime.settings.period_seconds
+    assert ctx.state.data["probe"]["facade_cache"] == {"codex": attempt}
+    assert "limits_cache" not in ctx.state.data["probe"]
+
+    restarted = plugin.register(ctx)
+    assert restarted is not None
+    restarted._load_record()
+    assert restarted.facade_cache() == {"codex": attempt}
+    assert restarted.facade_cache() is restarted.record["facade_cache"]
+
+
 def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Before 1.1.0 the record kept the caches of the providers the dashboard read by itself
     under ``limits_cache`` (a plan, windows, the time of an attempt; no token). Loading drops
-    the key and the next save leaves it out of the state file; every other key stays."""
+    the key and the next save leaves it out of the state file; every other key stays, the usage
+    facade's own ``facade_cache`` (issue #16) among them."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     attempt = {"attempted_at": "2026-10-20T08:00:00+00:00", "item": {"plan": "Pro", "windows": []}}
     release = {"attempted_at": "2026-10-20T08:00:00+00:00"}
+    facade = {"claude": {"attempted_at": "2026-10-20T08:00:00+00:00", "item": {"windows": []}}}
     ctx.state.set(
         "probe",
         {
@@ -948,6 +1118,7 @@ def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
             "chat_id": CHAT,
             "limits_cache": {"provider_a": attempt, "provider_b": {}},
             "release_cache": release,
+            "facade_cache": facade,
         },
     )
     runtime = plugin.register(ctx)
@@ -957,12 +1128,14 @@ def test_the_limits_cache_of_a_record_from_before_1_1_0_is_dropped_on_load(
 
     assert "limits_cache" not in runtime.record
     assert runtime.record["message_id"] == "4242" and runtime.record["release_cache"] == release
+    assert runtime.facade_cache() == facade
 
     runtime._note(status="edited", error=None)
 
     stored = ctx.state.data["probe"]
     assert "limits_cache" not in stored
     assert stored["message_id"] == "4242" and stored["release_cache"] == release
+    assert stored["facade_cache"] == facade
 
 
 # ----------------------------------------------------------------------- the HTML probe
@@ -1229,6 +1402,257 @@ def test_when_plain_fails_too_there_is_no_verdict_and_html_is_tried_next_tick(
     assert ctx.state.data["probe"]["last_status"] == "edit_failed"
     assert "screen_format" not in ctx.state.data["probe"]
     assert not adapter.sent  # a network failure is not a lost message
+
+
+# The engine paces each chat's sends and edits through one shared slot (telegram adapter,
+# #116312): while a reply in the same chat holds it, ``edit_message`` without ``finalize`` edits
+# nothing and answers success with ``raw_response={"skipped": True}``. That is no edit: the tick
+# is ``deferred``, keeps its last confirmation, draws no verdict on a form, and the next tick
+# edits again.
+
+HELD_SINCE = "2026-09-09T20:59:00+00:00"
+
+
+def _remembered_confirmed(ctx: FakeContext) -> None:
+    _remembered(ctx)
+    ctx.state.data["probe"]["last_confirmed_at"] = HELD_SINCE
+
+
+def test_a_plain_edit_the_engine_held_back_is_deferred_and_draws_no_html_verdict(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The HTML edit is refused and the plain edit after it is held back: no plain edit landed,
+    so nothing says the form was refused. No ``edited``, no confirmation, HTML asked again on
+    every tick; the first tick the slot is free, the plain edit lands and the verdict follows the
+    usual rule. One line in the journal for a run of held-back ticks, not one per tick."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = FakeAdapter(
+        reject_html="Bad Request: can't parse entities: unsupported start tag", busy=True
+    )
+    held: dict[str, Any] = {}
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+        held.update(record=dict(ctx.state.data["probe"]), html=runtime.html)
+        held.update(html_edits=len(adapter.html_edits), skipped=len(adapter.skipped))
+        held.update(texts=list(adapter.texts))
+        adapter.busy = False  # the agent's reply is out; the slot is free again
+        await until(lambda: len(adapter.edits) >= 2)
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        _run(runtime, adapter, scenario)
+
+    record = held["record"]
+    assert record["last_status"] == "deferred" and record["last_error"] is None
+    assert record["last_confirmed_at"] == HELD_SINCE  # the screen did not change
+    assert "screen_format" not in record and "html_error" not in record
+    assert held["html"] is None  # no verdict: HTML is asked again on the next tick
+    assert held["html_edits"] >= held["skipped"] >= 3
+    assert held["texts"] == [] and adapter.sent == []  # nothing reached Telegram while held
+    deferred = [r for r in caplog.records if "deferred" in r.getMessage()]
+    assert len(deferred) == 1, "one line for a run of held-back ticks"
+    assert "-100" not in deferred[0].getMessage()
+
+    # Then the plain edit landed right after a refused HTML one: now the form was refused.
+    final = ctx.state.data["probe"]
+    assert final["last_status"] == "edited" and final["last_confirmed_at"] != HELD_SINCE
+    assert (final["screen_format"], final["html_error"]) == ("plain", "RuntimeError")
+    refused = [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
+    assert len(refused) == 1
+
+
+def test_with_no_html_verb_a_held_back_plain_edit_is_deferred_too(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Plain is the only form here, so every edit goes through the gated verb: held back, the
+    record says ``deferred`` and nothing about the form; free, the plain edit lands."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PlainOnlyAdapter(busy=True)
+    held: dict[str, Any] = {}
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 2)
+        held.update(dict(ctx.state.data["probe"]))
+        adapter.busy = False
+        await until(lambda: len(adapter.edits) >= 1)
+
+    _run(runtime, adapter, scenario)
+
+    assert (held["last_status"], held["last_confirmed_at"]) == ("deferred", HELD_SINCE)
+    assert "screen_format" not in held and "html_error" not in held
+    assert ctx.state.data["probe"]["last_status"] == "edited"
+    assert ctx.state.data["probe"]["html_error"] == plugin.NO_HTML_VERB
+
+
+def test_an_html_edit_the_public_verb_held_back_is_deferred_without_a_plain_one(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A public verb that takes a parse mode is gated by the same slot. Held back, it is no
+    confirmation of the HTML form, and the plain edit after it would be held back as well: the
+    tick ends there, deferred."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = PublicHtmlAdapter(busy=True)
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert set(adapter.skipped) == {"html"}  # never a plain attempt in a held-back tick
+    assert adapter.public_html_edits == [] and adapter.html_edits == [] and adapter.texts == []
+    assert runtime.html is None
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_confirmed_at"]) == ("deferred", HELD_SINCE)
+    assert "screen_format" not in record and "html_verb" not in record
+
+
+def test_a_held_back_plain_edit_after_a_refused_rich_one_draws_no_rich_verdict(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The rich verdict follows the HTML rule: only when the edit right after it landed. A
+    held-back plain edit did not land: rich is asked again on the next tick."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    _remembered_confirmed(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(
+        refuse={"editMessageText": BadRequest("Bad Request: unsupported")},
+        reject_html="Bad Request: can't parse entities",
+        busy=True,
+    )
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert runtime.rich is None and runtime.html is None
+    assert len(adapter.rich_calls) >= len(adapter.skipped)  # rich asked on every tick
+    record = ctx.state.data["probe"]
+    assert record["last_status"] == "deferred" and "rich_error" not in record
+
+
+def test_a_held_back_plain_edit_of_a_rich_message_is_deferred_not_a_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """On a message that is rich, a refused rich edit and a refused HTML one end in the plain
+    edit, which a failure there would answer as ``edit_failed``. Held back, it answered nothing:
+    deferred, and no message is sent."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(
+        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
+        reject_html="Bad Request: message can't be edited",
+        busy=True,
+    )
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.sent == [] and [m for m, _ in adapter.rich_calls].count("sendRichMessage") == 0
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_error"]) == ("deferred", None)
+    assert (record["screen_format"], record["message_id"]) == ("rich", "4242")
+    assert runtime.rich is None
+
+
+def test_a_run_of_held_back_edits_past_the_lagging_threshold_says_one_warning(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """While the last confirmation is within the screen's own threshold (one period plus the
+    slack, 90 s at a 60 s period), a run of held-back edits is one INFO line. Once it is past it,
+    one WARNING says the edits are held back and when the screen was last confirmed; the
+    held-back ticks after it say nothing more. A new run, after any other tick, may say it
+    again (B5 review M1)."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    now = datetime.now(UTC)
+    runtime.record = {"message_id": "4242", "chat_id": CHAT, "last_status": "edited"}
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime.record["last_confirmed_at"] = (now - timedelta(seconds=30)).isoformat()
+        runtime._defer(1)
+        runtime._defer(1)
+        assert warnings() == []  # 30 s old: the screen still says confirmed
+        old = now - timedelta(seconds=200)
+        runtime.record["last_confirmed_at"] = old.isoformat()
+        for _ in range(3):
+            runtime._defer(1)
+        said = warnings()
+        assert len(said) == 1, said
+        assert "edits held back" in said[0] and "past the lagging threshold" in said[0]
+        assert f"{old:%Y-%m-%d %H:%M} UTC" in said[0] and "-100" not in said[0]
+        runtime.record["last_status"] = "edit_failed"  # the run ended; a later one starts afresh
+        runtime._defer(1)
+        assert len(warnings()) == 2
+
+    infos = [r for r in caplog.records if r.levelname == "INFO" and "deferred" in r.getMessage()]
+    assert len(infos) == 2  # one per run
+    assert ctx.state.data["probe"]["last_status"] == "deferred"
+    assert ctx.state.data["probe"]["last_confirmed_at"] == old.isoformat()
+
+
+def test_a_held_back_run_after_a_failed_edit_warns_once_when_it_really_lags(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The run's one WARNING is decided on the record as the tick leaves it (``deferred``, the
+    previous error gone), not on the failed edit before it: right after an ``edit_failed`` tick
+    with a fresh confirmation the run says nothing, and once the confirmation is past the
+    lagging threshold it says exactly one WARNING."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    now = datetime.now(UTC)
+    runtime.record = {
+        "message_id": "4242",
+        "chat_id": CHAT,
+        "last_status": "edit_failed",
+        "last_error": "Timed out",
+        "last_confirmed_at": (now - timedelta(seconds=30)).isoformat(),
+    }
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime._defer(1)
+        assert warnings() == []
+        assert (runtime.record["last_status"], runtime.record["last_error"]) == ("deferred", None)
+        runtime.record["last_confirmed_at"] = (now - timedelta(seconds=200)).isoformat()
+        for _ in range(3):
+            runtime._defer(1)
+
+    said = warnings()
+    assert len(said) == 1 and "past the lagging threshold" in said[0], said
 
 
 def test_external_sources_reach_the_collector_with_their_own_cache_and_the_period(

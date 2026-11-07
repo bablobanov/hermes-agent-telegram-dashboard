@@ -5,7 +5,8 @@ calls ``wire(native, adapter)`` from its ``connect()`` → ``wire`` spawns ONE s
 ``ctx.spawn_task`` → every tick composes the first screen (collect → render → plain text) and
 edits the same message through ``adapter.edit_message``.
 
-Two traps this plugin is built around (found by reading 0.21.1, see the report):
+Three traps this plugin is built around (the first two found by reading 0.21.1, see the report;
+the third is issue #12, read on 0.22.2 to 0.22.7):
 
 * ``connect()`` runs the factory again on every reconnect with a NEW adapter instance, so a naive
   plugin would spawn a second loop each time. The guard keeps the first task and only records the
@@ -13,10 +14,34 @@ Two traps this plugin is built around (found by reading 0.21.1, see the report):
 * ``TelegramAdapter.edit_message`` does not forward to the replacement adapter after a reconnect
   (``send`` does). A loop holding the adapter it was born with would answer "Not connected"
   forever while looking alive. Each tick therefore asks ``runner.adapters`` for the current one
-  and only uses an adapter that reports ``is_connected``.
+  and only uses an adapter that reports ``is_connected`` and was handed to this registration: the
+  runner's map holds the launch profile's adapters, also for a served secondary profile's adapter.
+* Registered again after a forced re-discovery (``discover_and_load(force=True)``: the gateway's
+  ``reload-plugins`` verb that ``hermes plugins install/enable/update`` sends, a tool's forced
+  provider lookup). The unload cancels the loop and evicts this module with its globals, then
+  ``register()`` runs again with a new runtime, and the adapter never calls the new factory on a
+  client it wired already: no loop at all, the record frozen at ``waiting``. What a registration
+  hands to the next one therefore lives outside the evicted namespace, in a registry module of its
+  own name keyed by the profile's state file (``_live``): ``wire()`` publishes the adapter, the
+  gateway loop, the task and the generation; ``register()`` claims the profile and, when an
+  earlier registration was handed an adapter, takes its loop over on the gateway loop
+  (``ProbeRuntime.claim_profile``). One loop per profile, run by the newest registration; the
+  factory of an earlier one does nothing. The launch profile's registration (marked once an
+  adapter handed to it is the one the runner publishes) also takes up an adapter the runner
+  published while no factory of the plugin was registered: a reconnect inside the reload.
 
 Also: the factory fires BEFORE the adapter finishes ``initialize()``/``start()``, so the first
 tick waits for ``is_connected`` instead of sending into a bot that is not initialised yet.
+
+Only the bot that sent the message edits it. The record keeps the sender's numeric id next to
+``message_id`` (``BOT_ID_KEY``); a message another bot sent is taken as lost and a new one is sent
+(``_sender``): a served profile's message from 1.0.0 (that release sent the screen through the
+launch profile's bot), or one the profile's earlier bot sent. In a private chat the same number
+names one of this bot's own messages, which an edit would overwrite and report as the screen. On
+a gateway that serves one profile a message from 1.0.0 is that profile's own, edited from the
+first tick. On a multiplexing gateway, one whose profile the runner cannot tell yet waits, at
+most ``SENDER_WAIT_SECONDS`` from the start, and is then taken the same way: never edited while
+its sender is unknown.
 
 The screen goes out as HTML when the adapter has a verb for it, plain otherwise. Which verb is
 read off the adapter object, never off a version number (``_html_verb``): the public
@@ -33,6 +58,15 @@ verb carries the HTML when one does (``html_verb``), and HTML is tried again aft
 ``HTML_RETRY_TICKS``. Whatever happens while composing, the message is edited: a screen that
 could not be built is replaced by a loud one-screen plain notice with the time, never left as
 yesterday's text.
+
+An edit the engine held back is no edit. The engine paces each chat's sends and edits through
+one shared slot (telegram adapter, #116312, read on 0.22.2 and 0.22.7): while a reply in the
+same chat holds it, ``edit_message`` without ``finalize`` edits nothing and answers success with
+``raw_response={"skipped": True}`` (``_skipped``). The tick records ``deferred``: no
+confirmation, no verdict on a form, and the next tick edits again; a run of them that outlasts
+the lagging threshold is one WARNING. The plain edits never get past the slot: the plugin never
+asks for ``finalize``, which the slot does not hold back. ``_edit_text`` and the rich call are
+not gated by the slot: they neither wait for it nor arm it.
 
 Before HTML comes the rich form (0.12.0, Bot API 10.1+ Rich Messages, ``rich.py``): the same
 first lines and a collapsed section per source. No verb of the adapter carries it; the call is the
@@ -56,10 +90,16 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.machinery
 import inspect
 import logging
 import math
 import os
+import sys
+import threading
+import time
+import types
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
@@ -89,6 +129,7 @@ ENV_HOME = "HERMES_HOME"  # the engine's own variable; the cron path reads the s
 ENV_DRIFT_REPORT = "HERMES_DASHBOARD_PROBE_DRIFT_REPORT"
 ENV_LIMITS = "HERMES_DASHBOARD_PROBE_LIMITS"
 ENV_LIMITS_REFRESH = "HERMES_DASHBOARD_PROBE_LIMITS_REFRESH"
+ENV_FACADE_REFRESH = "HERMES_DASHBOARD_PROBE_FACADE_REFRESH"
 ENV_TZ = "HERMES_DASHBOARD_PROBE_TZ"
 ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
 ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
@@ -99,10 +140,19 @@ ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rul
 # tick: a weekly number does not move faster.
 DEFAULT_LIMITS_REFRESH_SECONDS = 900.0
 MIN_LIMITS_REFRESH_SECONDS = 60.0
+# Claude and Codex through the engine's usage facade are asked at most once per this many seconds
+# each, success or failure, not every tick: the facade calls the providers' account APIs, and a
+# 5-hour window does not need a number every minute (288 calls a day per provider at the default
+# and a 60 s period).
+DEFAULT_FACADE_REFRESH_SECONDS = 300.0
+MIN_FACADE_REFRESH_SECONDS = 60.0
 # The record's key for the caches of the providers read by the dashboard itself before 1.1.0
 # (a plan, windows, the time of an attempt; no token): dropped on load, so the next save leaves
 # it out of the state file.
 RETIRED_LIMITS_CACHE_KEY = "limits_cache"
+# The usage facade's providers (``claude``, ``codex``) keep their last attempt each under a key of
+# their own, never the retired one: a record from 1.0.0 may still carry that one in another shape.
+FACADE_CACHE_KEY = "facade_cache"
 # The check of the latest Hermes release upstream (at most one per 15 minutes) keeps its last
 # answer and attempt in the record, so a restart neither asks GitHub again nor forgets the answer.
 RELEASE_CACHE_KEY = "release_cache"
@@ -133,10 +183,13 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # with the external limit sources (0.8.0), GEMINI_LOG with ``gemini_cache`` (0.8.1),
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
     # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
-    # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0): a copy without them would
-    # reject the tick's arguments every time. EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0,
-    # whose tick hands no cache to providers an older copy read by itself: that copy would ask
-    # them on every tick.
+    # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0), compat's LIMITS_PROVIDERS
+    # and parse_limits_providers with ``Environment.limits_providers`` (issue #14): a copy
+    # without them would reject the tick's arguments every time.
+    # EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0, whose tick hands no cache to providers
+    # an older copy read by itself: that copy would ask them on every tick.
+    # FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue #16): a copy without it
+    # would reject that argument, or call the facade on every tick.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -149,9 +202,18 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "TRAFFIC",
         "RULES",
         "EXTERNAL_DEFAULT_INTERVAL_SECONDS",
+        "FACADE_DEFAULT_INTERVAL_SECONDS",
     ),
-    "compat": ("Environment", "CRON_NOTES", "parse_cron_notes"),
-    "freshness": ("record_from_plugin_state",),
+    "compat": (
+        "Environment",
+        "CRON_NOTES",
+        "parse_cron_notes",
+        "LIMITS_PROVIDERS",
+        "parse_limits_providers",
+    ),
+    # classify_message_freshness: the screen's own lagging rule, which a run of edits the engine
+    # holds back is measured against (``_defer``); in the module since 0.3.0, the first release.
+    "freshness": ("record_from_plugin_state", "classify_message_freshness"),
     "render": ("render_dashboard", "to_telegram_plain", "to_telegram_html"),
     # The rich form came with 0.12.0, the module with it.
     "rich": ("to_telegram_rich",),
@@ -172,6 +234,10 @@ NO_HTML_VERB = "no HTML verb (edit_message without parse_mode, no _edit_text)"
 # After a refused HTML edit the screen is plain for this many ticks, then HTML is tried once
 # more: an hour at the pilot's period, so a transient failure does not lock plain in for good.
 HTML_RETRY_TICKS = 12
+# The flag in ``raw_response`` of an edit the engine held back while the chat's outbound slot
+# was busy, and the status the tick records for it: not an edit, not a failure.
+SKIPPED_FLAG = "skipped"
+DEFERRED_STATUS = "deferred"
 # The rich form (0.12.0): the engine bot's raw Bot API call, the way the engine sends its own rich
 # messages (telegram adapter ``_bot_supports_rich``, v0.22.2); no verb of the adapter carries it.
 RICH_BOT_ATTRIBUTE = "_bot"
@@ -185,6 +251,40 @@ RICH_RETRY_TICKS = 12
 # The forum's General topic: Telegram rejects its id on a send, which goes without a topic there
 # (the engine's own ``_message_thread_id_for_send``, v0.22.2).
 GENERAL_TOPIC_ID = "1"
+# The record's key for the numeric id of the bot that sent ``message_id``: Telegram's user id of
+# the bot, which PTB keeps on the engine's bot from getMe at its start (``Bot.id``, no request),
+# never anything of its credentials. Only that bot may edit the message: a bot cannot edit
+# another's, and in a private chat the same number names one of its own messages.
+BOT_ID_KEY = "bot_id"
+BOT_ID_ATTRIBUTE = "id"
+# Why the record's message is not this bot's to edit, as the journal says it; and the reason a
+# tick waits while that cannot be told yet.
+OTHER_BOT = "was sent by another bot than this profile's"
+LAUNCH_BOT = (
+    "names no sender (written before 1.1.0), and in a served profile 1.0.0 sent the screen "
+    "through the launch profile's bot"
+)
+SENDER_UNKNOWN = "the runner has installed no adapter yet: the message's sender cannot be told"
+# How long a record without a sender waits for a multiplexing runner to tell the profile (a runner
+# that serves one profile tells it at once: ``_serves_one_profile``), counted from this
+# registration's start on the monotonic clock (a wall clock set right after a boot would end the
+# wait at once). The runner installs the launch profile's adapters once every platform of that
+# profile has answered its first connect; the engine runs those connects together and bounds them
+# at 45 s for Telegram and 30 s for the others (``gateway/run.py``, v0.22.2 to v0.23.0), and a
+# served profile's adapters connect after that. Five minutes is several times that bound, so a
+# slow start still ends inside the wait, and short enough that a served profile whose launch
+# profile installs no adapter at all gets a moving screen back within minutes: under the multiplex
+# a platform whose token is only in a secondary profile's ``.env`` is skipped for the launch
+# profile (#64674), or the launch profile's only platform failed at start. Past the wait the
+# message is taken as another bot's (``SENDER_UNPLACED``): never edited while its sender is
+# unknown. On a multiplexing gateway a connect bound raised past the wait (the engine's
+# ``HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT``) may run the launch profile's own wait out: its
+# message is then replaced, not edited.
+SENDER_WAIT_SECONDS = 300.0
+SENDER_UNPLACED = (
+    "names no sender (written before 1.1.0), and the runner installed no adapter in the "
+    f"{SENDER_WAIT_SECONDS:.0f} s since the start: whose bot sent it cannot be told"
+)
 # What says the request was refused and nothing was sent, as the engine tells it from a failure that
 # may have reached Telegram (``_is_rich_fallback_error``, ``_is_rich_capability_error``, v0.22.2):
 # Telegram's no, a method this Bot API server or library lacks, a call that could not be made.
@@ -193,6 +293,24 @@ _RICH_SETUP_ERRORS = (AttributeError, TypeError, NotImplementedError)
 _RICH_REFUSED_WORDS = ("bad request", "unsupported", "not implemented", "no such method")
 
 Collector = Callable[[datetime], Awaitable[Any]]
+
+# Issue #12: the registry of live tick loops, one entry per profile, in a module of its own name in
+# ``sys.modules``. A forced re-discovery evicts ``hermes_plugins.<slug>`` and its submodules with
+# every global of this file; this name is outside that namespace, so it survives. A later release
+# reads what this one wrote: an entry carries ``version``, and a reader takes only the keys it
+# knows (``LIVE_KEYS``), whatever else is there. A module or an entry whose ``version`` is higher
+# than this release's (``_later``) was written by a later release: this one never takes its loop
+# over and never writes into it, and serves its profile only while that release's loop does
+# not run (``_owns_profile``). The module
+# has ``version``, ``lock`` (a ``threading.Lock``) and ``profiles`` (key -> entry); an entry has
+# ``version``, ``owner``, ``adapter`` and ``runner`` (references: call one for the object, ``None``
+# once it is gone; ``runner`` is the adapter's ``gateway_runner``), ``platform`` (the adapter's
+# key in the runner's map), ``loop`` (the gateway's event loop), ``task``, ``generation`` and
+# ``primary`` (true once an adapter handed to this profile's registration was the one the runner
+# publishes: the launch profile, whose adapter the runner's map holds).
+LIVE_MODULE = "_telegram_dashboard_probe_live"
+LIVE_VERSION = 1
+LIVE_KEYS = ("adapter", "runner", "platform", "loop", "task", "generation", "primary")
 
 
 @dataclass(frozen=True)
@@ -209,6 +327,8 @@ class Settings:
     backup_status: Path | None
     # External limit sources as the config lists them; the package checks every entry.
     limits_sources: tuple[Any, ...] = ()
+    # How often Claude and Codex are asked through the usage facade (``facade_refresh_seconds``).
+    facade_refresh_seconds: float = DEFAULT_FACADE_REFRESH_SECONDS
     # The rules line (whether the agent sees its context files); on unless turned off.
     context_files: bool = True
     # The memory section (notebooks, the approval queue, a provider); on unless turned off.
@@ -220,6 +340,10 @@ class Settings:
     # The owner's label per cron job (``cron_notes``, job id to label), config only; pairs, so
     # the frozen settings hold nothing mutable. Sanitized where it is shown, like a name.
     cron_notes: tuple[tuple[str, str], ...] = ()
+    # The built-in limit providers to ask (``limits_providers``, config only, issue #14):
+    # ``None`` when not set (every one asked, one with no sign of an account without a line);
+    # a tuple, empty or not, asks exactly those and always shows them.
+    limits_providers: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -267,11 +391,13 @@ class _RichOutcome:
 class _EditResult:
     """What ``_edit`` and ``_send_rich`` answer when the plugin itself made the call: the public
     verb's ``SendResult`` is not constructed by the plugin, so a shape with the fields the tick
-    reads."""
+    reads. ``deferred``: the engine held the edit back (``_skipped``); ``success`` is false
+    then, so nothing that reads only ``success`` takes it for an edit."""
 
     success: bool
     error: str | None = None
     message_id: str | None = None
+    deferred: bool = False
 
 
 def read_settings(ctx: Any) -> Settings | None:
@@ -294,6 +420,12 @@ def read_settings(ctx: Any) -> Settings | None:
         limits_refresh_seconds=_refresh(
             _setting(ctx, "limits_refresh_seconds", ENV_LIMITS_REFRESH)
         ),
+        facade_refresh_seconds=_refresh(
+            _setting(ctx, "facade_refresh_seconds", ENV_FACADE_REFRESH),
+            name="facade_refresh_seconds",
+            default=DEFAULT_FACADE_REFRESH_SECONDS,
+            floor=MIN_FACADE_REFRESH_SECONDS,
+        ),
         display_timezone=_setting(ctx, "display_timezone", ENV_TZ) or "UTC",
         backup_status=Path(backup_status).expanduser() if backup_status else None,
         limits_sources=_entries(_raw_setting(ctx, "limits_sources")),
@@ -301,6 +433,7 @@ def read_settings(ctx: Any) -> Settings | None:
         memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
         rich=_setting(ctx, "rich", ENV_RICH).lower() in _TRUE_WORDS,
         cron_notes=_notes(_raw_setting(ctx, "cron_notes")),
+        limits_providers=_providers(_raw_setting(ctx, "limits_providers")),
     )
 
 
@@ -315,23 +448,38 @@ def _entries(raw: object) -> tuple[Any, ...]:
 
 def _notes(raw: object) -> tuple[tuple[str, str], ...]:
     """``cron_notes`` read by the package's own parser (``compat.parse_cron_notes``), so the
-    plugin and the cron tick agree; none when no package can be imported or one raises
-    (``import_dashboard`` says so, as it did before). Never raises: a broken copy must not stop
-    the handler from being registered. The exception's type only is logged, its message may
-    carry config text."""
+    plugin and the cron tick agree; none when no package can be imported or one raises."""
+    notes: tuple[tuple[str, str], ...] = _parsed("cron_notes", "parse_cron_notes", raw, ())
+    return notes
+
+
+def _providers(raw: object) -> tuple[str, ...] | None:
+    """``limits_providers`` read by the package's own parser (``compat.parse_limits_providers``),
+    so the plugin and the cron tick agree; not set when no package can be imported or one
+    raises."""
+    providers: tuple[str, ...] | None = _parsed(
+        "limits_providers", "parse_limits_providers", raw, None
+    )
+    return providers
+
+
+def _parsed(setting: str, parser: str, raw: object, fallback: Any) -> Any:
+    """A setting read by the package's own parser in ``compat``, the copy beside the plugin
+    first; ``fallback`` when no package can be imported or one raises (``import_dashboard`` says
+    so, as it did before). Never raises: a broken copy must not stop the handler from being
+    registered. The exception's type only is logged, its message may carry config text."""
     for base in (f"{__package__}.telegram_dashboard" if __package__ else "", "telegram_dashboard"):
         if not base:
             continue
         try:
-            parse = importlib.import_module(f"{base}.compat").parse_cron_notes
-            notes: tuple[tuple[str, str], ...] = parse(raw, logger, "probe: ")
+            parse = getattr(importlib.import_module(f"{base}.compat"), parser)
+            return parse(raw, logger, "probe: ")
         except ModuleNotFoundError:
             continue  # an absent candidate is the normal case; ``import_dashboard`` logs it
         except Exception as exc:
-            logger.warning("probe: cron_notes not read by %s: %s", base, type(exc).__name__)
+            logger.warning("probe: %s not read by %s: %s", setting, base, type(exc).__name__)
             continue
-        return notes
-    return ()
+    return fallback
 
 
 def _home(ctx: Any) -> Path:
@@ -404,24 +552,27 @@ def _period(raw: str) -> float:
     return clamped
 
 
-def _refresh(raw: str) -> float:
-    """A finite refresh interval of at least MIN; unreadable input uses the default."""
+def _refresh(
+    raw: str,
+    *,
+    name: str = "limits_refresh_seconds",
+    default: float = DEFAULT_LIMITS_REFRESH_SECONDS,
+    floor: float = MIN_LIMITS_REFRESH_SECONDS,
+) -> float:
+    """A finite refresh interval of at least ``floor``, no ceiling; unreadable input uses the
+    default. ``limits_refresh_seconds`` unless told otherwise."""
     if not raw:
-        return DEFAULT_LIMITS_REFRESH_SECONDS
+        return default
     try:
         seconds = float(raw)
     except ValueError:
         seconds = math.nan
     if not math.isfinite(seconds):
-        logger.warning(
-            "probe: limits_refresh_seconds %r unusable; using %.0fs",
-            raw,
-            DEFAULT_LIMITS_REFRESH_SECONDS,
-        )
-        return DEFAULT_LIMITS_REFRESH_SECONDS
-    clamped = max(seconds, MIN_LIMITS_REFRESH_SECONDS)
+        logger.warning("probe: %s %r unusable; using %.0fs", name, raw, default)
+        return default
+    clamped = max(seconds, floor)
     if clamped != seconds:
-        logger.warning("probe: limits_refresh_seconds %r clamped to %.0fs", raw, clamped)
+        logger.warning("probe: %s %r clamped to %.0fs", name, raw, clamped)
     return clamped
 
 
@@ -563,6 +714,54 @@ def _says(result: Any, markers: tuple[str, ...]) -> bool:
     return any(marker in error for marker in markers)
 
 
+def _skipped(result: Any) -> bool:
+    """Whether the public verb answered success without editing: the engine held the edit back
+    while the chat's outbound slot was busy (``raw_response`` carries ``SKIPPED_FLAG``)."""
+    raw = getattr(result, "raw_response", None)
+    held = isinstance(raw, dict) and bool(raw.get(SKIPPED_FLAG))
+    return held and bool(getattr(result, "success", False))
+
+
+def _deferred(result: Any) -> bool:
+    """Whether this tick's edit was held back (``_EditResult.deferred``), neither made nor
+    failed."""
+    return getattr(result, "deferred", False) is True
+
+
+def _bot_id(live: Any) -> int | None:
+    """The numeric id of the bot behind ``live``: what PTB keeps from getMe on the engine's bot
+    at its start (``Bot.id``, the bot the sends and edits go through), read without a request.
+    ``None`` without a bot, before it started (PTB raises then) or for anything not a number."""
+    try:
+        found = getattr(getattr(live, RICH_BOT_ATTRIBUTE, None), BOT_ID_ATTRIBUTE, None)
+    except Exception:
+        return None
+    return _a_bot_id(found)
+
+
+def _a_bot_id(value: object) -> int | None:
+    """``value`` when it can be a bot's id (a positive whole number), else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _serves_one_profile(runner: object) -> bool:
+    """Whether ``runner`` serves only the profile it was started for, read the way the runner
+    reads it (``GatewayRunner._multiplex_on``: ``config.multiplex_profiles``, settled at boot by
+    ``resolve_multiplex_mode``; v0.22.2 to v0.23.0). Such a runner starts no secondary profile's
+    adapters: a single-profile home, a standalone profile. ``False`` for a runner without a
+    config, which tells nothing (the map decides then), and when the verdict cannot be read."""
+    config = getattr(runner, "config", None)
+    if config is None:
+        return False
+    try:
+        return not getattr(config, "multiplex_profiles", False)
+    except Exception as exc:
+        logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
+        return False
+
+
 def _rich_message(markup: str) -> dict[str, Any]:
     """``InputRichMessage`` with Telegram's own detection of links, commands, mentions, hashtags
     and the like switched off: the second line behind ``<code>`` (``render._code_spans``)."""
@@ -586,6 +785,133 @@ def _rich_plain(text: str) -> str:
     return "<p>" + "<br>".join(escape(line) for line in text.split("\n")) + "</p>"
 
 
+@dataclass(frozen=True)
+class _Live:
+    """The registry module's lock and entries, as this release reads them; ``later`` when the
+    module says a later release made it (read only, never written)."""
+
+    lock: Any
+    profiles: dict[Any, Any]
+    later: bool = False
+
+
+@dataclass(frozen=True)
+class _Handover:
+    """What a registration takes over from an earlier one of its profile. ``adapter`` is
+    ``None`` when it is gone and the profile is the launch profile (``primary``): the runner's
+    map then has the adapter to use."""
+
+    loop: asyncio.AbstractEventLoop
+    adapter: Any
+    task: Any
+    generation: int
+    primary: bool = False
+    runner: Callable[[], Any] | None = None
+    platform: Any = None
+
+
+def _live() -> _Live | None:
+    """The process's registry of live tick loops, created on first use (``LIVE_MODULE``).
+    ``None`` when a module of that name has another shape: no takeover then, as before #12."""
+    module = sys.modules.get(LIVE_MODULE)
+    if module is None:
+        fresh = types.ModuleType(LIVE_MODULE, "telegram_dashboard_probe: live tick loops (#12)")
+        spec = importlib.machinery.ModuleSpec(LIVE_MODULE, None)  # find_spec answers for it
+        vars(fresh).update(__spec__=spec, version=LIVE_VERSION, lock=threading.Lock(), profiles={})
+        module = sys.modules.setdefault(LIVE_MODULE, fresh)
+    lock, profiles = getattr(module, "lock", None), getattr(module, "profiles", None)
+    if not isinstance(profiles, dict) or not callable(getattr(lock, "__enter__", None)):
+        return None
+    return _Live(lock, profiles, _later(getattr(module, "version", None)))
+
+
+def _later(version: object) -> bool:
+    """Whether a registry module's or entry's ``version`` is a later release's than this one's
+    (``LIVE_VERSION``): a whole number above it."""
+    if isinstance(version, bool) or not isinstance(version, int):
+        return False
+    return version > LIVE_VERSION
+
+
+def _written_later(live: _Live, entry: object) -> bool:
+    """Whether a later release wrote the registry module or this entry: neither taken over nor
+    written by this one."""
+    return live.later or (isinstance(entry, dict) and _later(entry.get("version")))
+
+
+def profile_key(ctx: Any, settings: Settings) -> str:
+    """The registry key of the profile a registration serves: the resolved path of its own state
+    file (``<home>/plugin-data/<namespace>/state.json``, one per profile; ``register()`` reads it
+    under the profile's scope), case-folded where the file system is. Without one, the home the
+    settings name. The process's ``HERMES_HOME`` is not the key: under the multiplex it names the
+    launch profile, not this one."""
+    state_path = getattr(getattr(ctx, "state", None), "path", None)
+    path = Path(state_path) if isinstance(state_path, (str, Path)) else settings.hermes_home
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError):  # an unreadable link: the path as given, made absolute
+        resolved = path.expanduser().absolute()
+    return os.path.normcase(str(resolved))
+
+
+def _ref(target: object) -> Callable[[], Any]:
+    """A weak reference where the object takes one, else a strong one: what an entry holds."""
+    try:
+        return weakref.ref(target)
+    except TypeError:
+        return lambda: target
+
+
+def _deref(reference: object) -> Any:
+    """What an entry's reference points at; ``None`` for a dead or missing one."""
+    return reference() if callable(reference) else None
+
+
+def _alive(task: object) -> bool:
+    """A task that has not finished, read by its ``done()``; anything else is not one."""
+    done = getattr(task, "done", None)
+    return callable(done) and not done()
+
+
+def _connected(adapter: object) -> bool:
+    return adapter is not None and bool(getattr(adapter, "is_connected", False))
+
+
+def _known(entry: object) -> dict[str, Any]:
+    """The keys of a registry entry this release knows, whichever release wrote it."""
+    if not isinstance(entry, dict):
+        return {}
+    return {key: entry[key] for key in LIVE_KEYS if key in entry}
+
+
+def _owner(entry: object) -> Any:
+    """The registration an entry names as its profile's, ``None`` when it names none alive."""
+    return _deref(entry.get("owner")) if isinstance(entry, dict) else None
+
+
+def _generation(entry: dict[str, Any]) -> int:
+    """The profile's adapter generation an entry carries; 0 for none readable."""
+    generation = entry.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        return 0
+    return generation
+
+
+def _handover(entry: dict[str, Any]) -> _Handover | None:
+    """What a takeover needs from an earlier registration's entry: the gateway loop, still open,
+    and the adapter that registration was handed, still alive, or for the launch profile the
+    runner, whose map has its adapter; ``None`` without them."""
+    loop, adapter = entry.get("loop"), _deref(entry.get("adapter"))
+    if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+        return None
+    primary = entry.get("primary") is True
+    runner = entry.get("runner") if callable(entry.get("runner")) else None
+    if adapter is None and not (primary and _deref(runner) is not None):
+        return None
+    generation, task = max(_generation(entry), 1), entry.get("task")
+    return _Handover(loop, adapter, task, generation, primary, runner, entry.get("platform"))
+
+
 class ProbeRuntime:
     """One per ``register()``; survives adapter replacement, owns exactly one task."""
 
@@ -597,6 +923,9 @@ class ProbeRuntime:
         # register() runs as the gateway starts: what the engine says once per process is said
         # after this moment (``Environment.process_started_at``).
         self.started_at = datetime.now(UTC)
+        # The same moment on the monotonic clock, which the wait for a message's sender is counted
+        # from (``SENDER_WAIT_SECONDS``).
+        self.started_monotonic = time.monotonic()
         self.collector: Collector = self._collect
         # One worker per source across ticks: a source abandoned by its deadline is not
         # started again until it returns (collect.Flights).
@@ -604,7 +933,17 @@ class ProbeRuntime:
         self.task: asyncio.Task[None] | None = None
         self.latest: Any = None
         self.generation = 0
-        self._generations: dict[int, int] = {}
+        # Every adapter handed here, by id: a reference to it and its generation.
+        self._generations: dict[int, tuple[Callable[[], Any], int]] = {}
+        # The registry key of the profile this registration serves (issue #12), and whether the
+        # engine unloaded it since (``retire``).
+        self.key = profile_key(ctx, settings)
+        self._retired = False
+        # The runner and the platform key of the adapters handed here, and whether this is the
+        # launch profile's registration (``_note_published``).
+        self._runner: Callable[[], Any] | None = None
+        self._platform: Any = None
+        self.primary = False
         self.ticks = 0
         self.record: dict[str, Any] = {}
         # ``None`` until the first edit answers; ``False`` while HTML is refused, with the tick
@@ -617,50 +956,210 @@ class ProbeRuntime:
         self._rich_render_error: str | None = None
         # The last reason a full form was refused on a rich message, said once in the journal.
         self._rich_form_refused: str | None = None
+        # Whether the current run of edits the engine held back said its one WARNING (``_defer``).
+        self._defer_warned = False
         # The adapter's own counters, read as attributes before each screen is composed.
         self.traffic_probe: Any = None
 
     # ------------------------------------------------------------------ factory (connect-time)
 
     def wire(self, native: Any, adapter: Any) -> None:
-        """Called by the adapter's ``connect()``; a reconnect calls it AGAIN with a new adapter."""
+        """Called by the adapter's ``connect()``; a reconnect calls it AGAIN with a new adapter.
+        The factory of a registration that was unloaded, or that a newer one of its profile
+        replaced, does nothing (issue #12)."""
+        if self._retired or not self._owns_profile():
+            logger.warning("probe: handler factory of an earlier registration called; ignored")
+            return
         self.generation += 1
-        self.latest = adapter
-        self._generations[id(adapter)] = self.generation
-        if self.task is not None and not self.task.done():
+        self._hand(adapter)
+        if _alive(self.task):
+            self._publish()
             logger.warning(
                 "probe: adapter generation %d wired while the loop runs; keeping one loop",
                 self.generation,
             )
             return
-        self.task = self._ctx.spawn_task(self.run(), name=TASK_NAME)
+        self._start()
         logger.info("probe: tick loop spawned on adapter generation %d", self.generation)
+
+    def _hand(self, adapter: Any) -> None:
+        self.latest = adapter
+        gone = [key for key, (reference, _) in self._generations.items() if reference() is None]
+        for key in gone:
+            del self._generations[key]
+        self._generations[id(adapter)] = (_ref(adapter), self.generation)
+        runner = getattr(adapter, "gateway_runner", None)
+        if runner is not None:
+            self._runner, self._platform = _ref(runner), getattr(adapter, "platform", None)
+
+    def _start(self) -> None:
+        """The one place the loop is spawned: through the engine, so an unload cancels it."""
+        self.task = self._ctx.spawn_task(self.run(), name=TASK_NAME)
+        self._publish()
+
+    # ------------------------------------------------------------------ registered again (#12)
+
+    def claim_profile(self) -> None:
+        """At ``register()``, on the engine's load worker thread: this registration serves its
+        profile from now on. When an earlier one in this process was handed an adapter, its loop
+        is taken over on the gateway loop (``_adopt``): the engine never calls this
+        registration's factory on a client it wired already. An entry a later release wrote is
+        left as it is (``_written_later``), said once."""
+        live = _live()
+        if live is None:
+            return
+        with live.lock:
+            current = live.profiles.get(self.key)
+            previous, later = _known(current), _written_later(live, current)
+            if not later:
+                live.profiles[self.key] = {**previous, "version": LIVE_VERSION, "owner": _ref(self)}
+        if later:
+            logger.warning(
+                "probe: this profile's registry entry was written by a later release; left as "
+                "it is, its loop not taken over"
+            )
+            return
+        # The profile's count of adapters goes on, and so does the marker: the record's
+        # adapter_generation never drops when a reconnect wires this one before _adopt runs.
+        self.generation, self.primary = _generation(previous), previous.get("primary") is True
+        handover = _handover(previous)
+        if handover is None:
+            return
+        try:
+            handover.loop.call_soon_threadsafe(self._adopt, handover)
+        except RuntimeError as exc:  # the loop closed after the check: nothing left to take over
+            logger.warning("probe: earlier tick loop not taken over (%s)", type(exc).__name__)
+
+    def _adopt(self, handover: _Handover) -> None:
+        """On the gateway loop: the earlier registration's loop stops (if the unload has not
+        stopped it yet) and this one's starts on the adapter that one was handed. Nothing when
+        this registration was unloaded meanwhile, no longer serves the profile, or runs a loop
+        already (a reconnect wired it first). The launch profile's registration starts without
+        an adapter when the earlier one's is gone: the runner's map has the current one."""
+        if self._retired or _alive(self.task) or not self._owns_profile():
+            return
+        if _alive(handover.task):
+            handover.task.cancel()
+        self.generation = handover.generation
+        self.primary = self.primary or handover.primary
+        if handover.adapter is not None:
+            self._hand(handover.adapter)
+        else:
+            self._runner, self._platform = handover.runner, handover.platform
+        self._start()
+        logger.info(
+            "probe: plugin registered again; tick loop taken over on adapter generation %d",
+            self.generation,
+        )
+
+    def retire(self) -> None:
+        """``ctx.on_unload``: the engine unloaded this registration (a disable, an update, a
+        forced re-discovery). Its factory and a takeover scheduled for it do nothing from now
+        on; the registry entry stays for the next registration of the profile."""
+        self._retired = True
+
+    def _owns_profile(self) -> bool:
+        """Whether this registration serves its profile: the newest one claimed it. With no
+        registry, or no entry for the profile, every registration does, as before #12. An entry
+        a later release wrote is never claimed: this registration serves while that release's
+        loop does not run, so there is one loop per profile all the same."""
+        live = _live()
+        if live is None:
+            return True
+        with live.lock:
+            entry = live.profiles.get(self.key)
+        if _written_later(live, entry):
+            return not _alive(_known(entry).get("task"))
+        return not isinstance(entry, dict) or _owner(entry) is self
+
+    def _publish(self) -> None:
+        """What a later registration of this profile needs to take the loop over: the adapter
+        last handed here and its runner, the gateway loop (``wire``, ``_adopt`` and the tick run
+        on it), the task, the generation and the launch-profile marker. Only the registration
+        that serves the profile writes."""
+        live = _live()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if live is None:
+            return
+        entry = {
+            "version": LIVE_VERSION,
+            "owner": _ref(self),
+            "adapter": _ref(self.latest),
+            "runner": self._runner,
+            "platform": self._platform,
+            "loop": loop,
+            "task": self.task,
+            "generation": self.generation,
+            "primary": self.primary,
+        }
+        with live.lock:
+            current = live.profiles.get(self.key)
+            if _written_later(live, current):
+                return
+            if not isinstance(current, dict) or _owner(current) is self:
+                live.profiles[self.key] = entry
 
     # ------------------------------------------------------------------ resolution
 
     def live_adapter(self) -> Any | None:
-        """The adapter the runner publishes now, else the one last handed to us; connected only."""
-        latest = self.latest
-        runner = getattr(latest, "gateway_runner", None)
-        adapters = getattr(runner, "adapters", None)
-        candidates: list[Any] = []
-        if isinstance(adapters, dict):
-            candidates.append(adapters.get(getattr(latest, "platform", None)))
-        candidates.append(latest)
+        """The adapter the runner publishes now when it is one handed to this registration (a
+        replacement's ``connect()`` hands it here first), else the one last handed to us;
+        connected only. The runner's map holds the launch profile's adapters, also for the
+        adapter of a served secondary profile: one never handed here is never used, or a
+        secondary profile's screen would go out through another profile's bot. The launch
+        profile's registration takes such an adapter up as handed (``_note_published``)."""
+        published = self._published()
+        if published is not None:
+            self._note_published(published)
+        candidates = [published] if self.generation_of(published) else []
+        candidates.append(self.latest)
         for candidate in candidates:
-            if candidate is not None and bool(getattr(candidate, "is_connected", False)):
+            if _connected(candidate):
                 return candidate
         return None
 
+    def _published(self) -> Any:
+        """What the runner publishes now for the platform of the adapters handed here: the
+        launch profile's adapter, whichever profile this registration serves."""
+        adapters = getattr(_deref(self._runner), "adapters", None)
+        return adapters.get(self._platform) if isinstance(adapters, dict) else None
+
+    def _note_published(self, published: Any) -> None:
+        """The launch-profile marker (issue #12). An adapter handed here that the runner
+        publishes makes this the launch profile's registration: a served secondary profile's
+        adapters are never in the runner's map. The launch profile's registration takes a
+        connected published adapter it was never handed as handed: Telegram reconnected while
+        no factory of this plugin was registered (inside a reload), and the new adapter's
+        ``connect()`` had nothing to call. A secondary profile's registration never does."""
+        if self.generation_of(published):
+            if not self.primary:
+                self.primary = True
+                self._publish()
+            return
+        if self.primary and _connected(published):
+            self.generation += 1
+            self._hand(published)
+            self._publish()
+            logger.info(
+                "probe: Telegram reconnected while the plugin was loading; adapter generation %d",
+                self.generation,
+            )
+
     def generation_of(self, adapter: Any) -> int:
-        return self._generations.get(id(adapter), 0)
+        """The generation ``adapter`` was handed here with; 0 for one never handed here. Held by
+        reference, not by ``id`` alone: a gone adapter's id may come back on another object."""
+        reference, generation = self._generations.get(id(adapter), (None, 0))
+        return generation if adapter is not None and _deref(reference) is adapter else 0
 
     # ------------------------------------------------------------------ loop
 
     async def run(self) -> None:
         self._load_record()
         loop = asyncio.get_running_loop()
-        while True:
+        while self._serves():
             started = loop.time()
             try:
                 await self.tick()
@@ -679,6 +1178,19 @@ class ProbeRuntime:
             # message banners "lagging" on a healthy system.
             elapsed = loop.time() - started
             await asyncio.sleep(max(0.0, self._pause() - elapsed))
+
+    def _serves(self) -> bool:
+        """Whether the loop goes on: its registration was not unloaded and still serves its
+        profile (issue #12). Read before every tick, so one loop per profile does not hang on
+        timing: a loop that a takeover left running, or one spawned right after its
+        registration was unloaded, ends at its next tick instead of editing on."""
+        if self._retired:
+            logger.info("probe: tick loop ends: this registration was unloaded")
+            return False
+        if not self._owns_profile():
+            logger.info("probe: tick loop ends: a newer registration serves this profile")
+            return False
+        return True
 
     def _pause(self) -> float:
         """The whole period after a tick that got to Telegram; a short retry while waiting for
@@ -704,20 +1216,8 @@ class ProbeRuntime:
             return
         generation = self.generation_of(live)
         chat = self.settings.chat_id
-        message_id = self.record.get("message_id")
-        if message_id and self.record.get("chat_id") == chat:
-            result = await self._edit(live, chat, str(message_id), screen)
-            if result.success:
-                self._note(status="edited", error=None, generation=generation, confirmed=True)
-                return
-            error = str(result.error or "")
-            if any(marker in error.lower() for marker in LOST_MARKERS):
-                logger.error("probe: message %s lost (%s); sending a new one", message_id, error)
-                self.record["lost_at"] = now.isoformat()
-                self.record["message_id"] = None
-            else:
-                self._note(status="edit_failed", error=error, generation=generation)
-                return
+        if await self._edited(live, chat, screen, generation, now):
+            return
         # Creation is rich when the setting is on and the adapter's bot can send it
         # (``_send_rich``). Otherwise the public verb as plain text (the adapter's own markdown
         # conversion, which the screen has no constructs for); the next tick edits it as HTML.
@@ -735,11 +1235,152 @@ class ProbeRuntime:
             self.record["message_id"] = str(result.message_id)
             self.record["chat_id"] = chat
             self.record["thread_id"] = self.settings.thread_id
+            self._sent_by(live)
             self._note(status="created", error=None, generation=generation, confirmed=True)
             return
         self._note(
             status="send_failed", error=str(result.error or "no message id"), generation=generation
         )
+
+    async def _edited(
+        self, live: Any, chat: str, screen: Screen, generation: int, now: datetime
+    ) -> bool:
+        """The record's message edited: ``True`` when the tick is done with it (edited, held
+        back, failed, or its sender cannot be told yet), ``False`` when a new message goes out
+        (none in this chat, lost, sent by another bot, or its sender still unknown once the wait
+        ran out, ``_sender``)."""
+        message_id = self.record.get("message_id")
+        if not message_id or self.record.get("chat_id") != chat:
+            return False
+        sender = self._sender(live)
+        if sender == SENDER_UNKNOWN:
+            self._note(status="waiting", error=SENDER_UNKNOWN)
+            return True
+        if sender is not None:
+            logger.error("probe: message %s %s; sending a new one", message_id, sender)
+            self._lost(now)
+            return False
+        result = await self._edit(live, chat, str(message_id), screen)
+        if result.success:
+            self._note(status="edited", error=None, generation=generation, confirmed=True)
+            return True
+        if _deferred(result):
+            self._defer(generation)
+            return True
+        error = str(result.error or "")
+        if any(marker in error.lower() for marker in LOST_MARKERS):
+            logger.error("probe: message %s lost (%s); sending a new one", message_id, error)
+            self._lost(now)
+            return False
+        self._note(status="edit_failed", error=error, generation=generation)
+        return True
+
+    def _lost(self, now: datetime) -> None:
+        self.record["lost_at"] = now.isoformat()
+        self.record["message_id"] = None
+
+    def _sender(self, live: Any) -> str | None:
+        """Why the record's message is not the bot behind ``live``'s to edit, ``SENDER_UNKNOWN``
+        while that cannot be told yet, ``None`` when it is. The record keeps the sender's id
+        (``BOT_ID_KEY``): another id is another bot (the profile's bot was replaced). A record
+        without one was written before 1.1.0: the launch profile's message went through its own
+        bot then as now, so it is edited and the id kept (on a runner that serves one profile,
+        from the first tick); a served profile's went through the launch profile's bot. While a
+        multiplexing runner tells neither (``_served``), the tick waits, for
+        ``SENDER_WAIT_SECONDS`` from this registration's start; then the message is taken as
+        another bot's (``SENDER_UNPLACED``), as a message whose sender is unknown is never
+        edited. A bot that tells no id leaves nothing to compare: edited as before."""
+        current = _bot_id(live)
+        if current is None:
+            return None
+        stored = _a_bot_id(self.record.get(BOT_ID_KEY))
+        if stored is not None:
+            return None if stored == current else OTHER_BOT
+        served = self._served()
+        if served is None:
+            return SENDER_UNKNOWN if self._sender_wait_left() else SENDER_UNPLACED
+        if served:
+            return LAUNCH_BOT
+        self.record[BOT_ID_KEY] = current
+        return None
+
+    def _served(self) -> bool | None:
+        """Whether this registration serves a secondary profile of a multiplexing gateway. False
+        on a runner that serves one profile (``_serves_one_profile``): it starts no other
+        profile's adapters, so whatever its map holds yet, this is the launch profile. Otherwise
+        read off the runner's map, which holds the launch profile's adapters
+        (``_note_published``): true when it publishes a Telegram adapter never handed here; false
+        for the launch profile, for an adapter without a runner, and for a map with no Telegram
+        adapter (1.0.0 then sent through this profile's own); ``None`` while the map is empty (a
+        start: the runner installs the adapters that connected once every platform has
+        answered; or a launch profile that installs none, which ``_sender`` waits for only so
+        long)."""
+        if self.primary:
+            return False
+        runner = _deref(self._runner)
+        if _serves_one_profile(runner):
+            return False
+        adapters = getattr(runner, "adapters", None)
+        if not isinstance(adapters, dict):
+            return False
+        if not adapters:
+            return None
+        return adapters.get(self._platform) is not None
+
+    def _sender_wait_left(self) -> bool:
+        """Whether a record without a sender still waits for the runner to tell the profile:
+        less than ``SENDER_WAIT_SECONDS`` since this registration started."""
+        return time.monotonic() - self.started_monotonic < SENDER_WAIT_SECONDS
+
+    def _sent_by(self, live: Any) -> None:
+        """The new message's sender into the record, or no sender when the bot tells none."""
+        sender = _bot_id(live)
+        if sender is None:
+            self.record.pop(BOT_ID_KEY, None)
+        else:
+            self.record[BOT_ID_KEY] = sender
+
+    def _defer(self, generation: int) -> None:
+        """The engine held this tick's edit back: the screen did not change, so no confirmation
+        and no error; the next tick edits again. One INFO line when a run of them starts, and
+        one WARNING once, while the run lasts, the last confirmation is past the screen's own
+        lagging threshold: from then on the screen and ``--check`` say lagging, and the journal
+        says why."""
+        if self.record.get("last_status") != DEFERRED_STATUS:
+            self._defer_warned = False
+            logger.info(
+                "probe: edit deferred: the engine held it back while the chat's outbound slot "
+                "was busy; the next tick edits again"
+            )
+        if not self._defer_warned and self._lagging(datetime.now(UTC)):
+            self._defer_warned = True
+            logger.warning(
+                "probe: edits held back while the chat's outbound slot stays busy; the screen "
+                "still shows the text confirmed at %s, past the lagging threshold",
+                self._confirmed_at(),
+            )
+        self._note(status=DEFERRED_STATUS, error=None, generation=generation)
+
+    def _lagging(self, now: datetime) -> bool:
+        """Whether the screen's own rule (``classify_message_freshness`` at the render period)
+        calls the message lagging or worse now; never without the package, whose screen is the
+        loud notice anyway."""
+        dashboard = self.dashboard
+        if dashboard is None:
+            return False
+        record = dashboard.freshness.record_from_plugin_state({STATE_KEY: self.record})
+        verdict = dashboard.freshness.classify_message_freshness(
+            record, now=now, period_seconds=self._render_period()
+        )
+        return bool(verdict != "confirmed")
+
+    def _confirmed_at(self) -> str:
+        """The last confirmation in the display zone, for the journal."""
+        try:
+            moment = datetime.fromisoformat(str(self.record.get("last_confirmed_at")))
+        except ValueError:
+            return "an unknown time"
+        return f"{moment.astimezone(self.zone):%Y-%m-%d %H:%M %Z}"
 
     # ------------------------------------------------------------------ the edit
 
@@ -752,7 +1393,8 @@ class ProbeRuntime:
         is lost: an edit in another form may be refused in the words of a lost one
         (LOST_MARKERS), and the tick would send a second message; an HTML or plain answer counts
         only when it says the message is not there (GONE_MARKERS). A rich edit there that may
-        have reached Telegram ends the tick; rich again next tick."""
+        have reached Telegram ends the tick; rich again next tick. An edit the engine held back
+        answered nothing: deferred, no verdict, whatever the message is."""
         rich_message = self.record.get("screen_format") == "rich"
         outcome = await self._try_rich_edit(live, chat, message_id, screen, rich_message)
         if outcome is not None and outcome.reason is None:
@@ -761,6 +1403,8 @@ class ProbeRuntime:
             return _EditResult(success=False, error=f"rich edit: {outcome.lost or outcome.reason}")
         refused = outcome.reason if outcome is not None else None
         result = await self._edit_html_or_plain(live, chat, message_id, screen)
+        if _deferred(result):
+            return result
         if result.success and refused is not None:
             self._rich_verdict(False, refused)
         if not result.success and rich_message and not _says(result, GONE_MARKERS):
@@ -907,7 +1551,9 @@ class ProbeRuntime:
 
         The verbs cannot tell "HTML refused" from "network down" on their own: the plain edit
         right after a failed HTML one does. Plain succeeded, HTML did not: the form was refused.
-        Both failed: no verdict, the tick's own error handling takes the plain result."""
+        Both failed: no verdict, the tick's own error handling takes the plain result. The
+        public verb held back by the engine (``_skipped``) landed nothing: deferred, no verdict,
+        and the record keeps the form it had."""
         reason: str | None = None
         if screen.html is not None and self._html_wanted():
             verb = _html_verb(live)
@@ -920,6 +1566,9 @@ class ProbeRuntime:
                         result = await edit_html(
                             chat, message_id, screen.html, parse_mode=HTML_PARSE_MODE
                         )
+                        if _skipped(result):
+                            # A plain edit right after it would be held back the same way.
+                            return _EditResult(success=False, deferred=True)
                         if result.success:
                             self._html_verdict(True, None, name)
                             return result
@@ -941,6 +1590,8 @@ class ProbeRuntime:
                     # Class name only: the message may carry chat ids.
                     reason = type(exc).__name__
         result = await live.edit_message(chat, message_id, screen.plain)
+        if _skipped(result):
+            return _EditResult(success=False, deferred=True)
         if result.success:
             # Plain on the screen now, the notice too; the verdict below says why when HTML failed.
             self.record["screen_format"] = "plain"
@@ -1077,6 +1728,7 @@ class ProbeRuntime:
             context_files_enabled=self.settings.context_files,
             memory_enabled=self.settings.memory,
             cron_notes=self.settings.cron_notes,
+            limits_providers=self.settings.limits_providers,
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,
@@ -1088,6 +1740,8 @@ class ProbeRuntime:
             now=now,
             flights=self.flights,
             version_cache=self.release_cache(),
+            facade_caches=self.facade_cache(),
+            facade_interval_seconds=self.settings.facade_refresh_seconds,
             external_caches=self.external_cache(),
             external_interval_seconds=self.settings.limits_refresh_seconds,
             period_seconds=self.settings.period_seconds,
@@ -1104,6 +1758,15 @@ class ProbeRuntime:
         if not isinstance(cache, dict):
             cache = {}
             self.record[RELEASE_CACHE_KEY] = cache
+        return cache
+
+    def facade_cache(self) -> dict[str, Any]:
+        """The usage facade's caches inside the record, one per provider, the same object on
+        every tick so a worker that returns after its deadline still writes into the record."""
+        cache = self.record.get(FACADE_CACHE_KEY)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.record[FACADE_CACHE_KEY] = cache
         return cache
 
     def external_cache(self) -> dict[str, Any]:
@@ -1224,7 +1887,28 @@ def _announce_sources(runtime: ProbeRuntime) -> None:
     logger.info("probe: %d external limits source(s) configured", len(sources))
 
 
+def _on_unload(ctx: Any, callback: Callable[[], None]) -> bool:
+    """``callback`` at the engine's unload of this registration, through ``ctx.on_unload``
+    (0.21.1 on). False when the engine refused it: the method answers ``None`` only once this
+    load ran past the engine's deadline (``plugins.load_timeout_seconds``), which counts the
+    plugin as failed and ignores its registrations. True otherwise, also without the method
+    (the ownership rule alone keeps one loop per profile then)."""
+    subscribe = getattr(ctx, "on_unload", None)
+    if not callable(subscribe):
+        return True
+    try:
+        handle = subscribe(callback)
+    except Exception as exc:
+        logger.warning("probe: unload callback not registered (%s)", type(exc).__name__)
+        return True
+    return handle is not None
+
+
 def register(ctx: Any) -> ProbeRuntime | None:
+    """The order matters (issue #12): the unload callback first, then the claim of the profile,
+    then the factory. A replacement adapter's ``connect()`` may call the factory as soon as it
+    is registered; claimed before, it is this registration's own. A load the engine abandoned
+    claims nothing."""
     settings = read_settings(ctx)
     if settings is None:
         logger.error(
@@ -1233,6 +1917,10 @@ def register(ctx: Any) -> ProbeRuntime | None:
         return None
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
     _announce_sources(runtime)
+    if _on_unload(ctx, runtime.retire):
+        runtime.claim_profile()
+    else:
+        logger.warning("probe: the engine abandoned this load past its deadline; no takeover")
     ctx.register_platform_handler(PLATFORM, runtime.wire)
     logger.info(
         "probe: registered Telegram handler factory (period %.0fs)", settings.period_seconds

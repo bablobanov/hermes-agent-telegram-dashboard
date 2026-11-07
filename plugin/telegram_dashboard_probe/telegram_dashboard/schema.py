@@ -10,8 +10,10 @@ Severity = Literal["normal", "warning", "critical", "unknown"]
 SourceState = Literal["fresh", "stale", "unavailable", "unsupported"]
 Authority = Literal["official", "local", "derived", "unknown"]
 # ``expired``: the provider answered that the login behind the number has ended; the line says
-# so instead of a number, and the owner signs in again.
-QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired"]
+# so instead of a number, and the owner signs in again. ``not_configured``: nothing says this
+# installation has the provider (issue #14): no line, no source, out of the coverage; the details
+# name it in one line (``Not configured: Claude``). Unlike ``unsupported`` it is never drawn.
+QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired", "not_configured"]
 DriftState = Literal["clean", "drift", "unknown", "unsupported"]
 BackupState = Literal["ok", "failed", "unknown", "unsupported"]
 GatewayProcessState = Literal["running", "stopped", "unknown", "unsupported"]
@@ -328,6 +330,9 @@ class QuotaMetric:
     login_expires_at: str | None = None
     # The last 429 the engine logged for the provider; ``None`` when nobody watches its log.
     refusal: Refusal | None = None
+    # The owner named the provider in ``limits_providers`` (issue #14): its line is drawn
+    # whatever it says, Gemini's included.
+    pinned: bool = False
 
 
 @dataclass(frozen=True, slots=True)

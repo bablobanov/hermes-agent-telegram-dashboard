@@ -154,6 +154,23 @@ def test_never_and_lost_speak_every_tick(
     assert watchdog.should_speak("stale", None, interval_seconds=INTERVAL) is True
 
 
+def test_a_deferred_tick_is_silence_while_its_last_confirmation_is_fresh(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``deferred`` (the engine held the edit back for a busy chat) is no failure: silence while
+    the last confirmation is fresh, the usual alert once it is not."""
+    cfg = _config(tmp_path, _state(tmp_path, **_record(60, last_status="deferred")))
+    assert _run(cfg, capsys) == (0, "")
+
+    code, out = _run(cfg, capsys, now=NOW + timedelta(seconds=THRESHOLD))
+    assert code == 0 and out.startswith("DASHBOARD PROBE ALERT: lagging\n🟡 Update lagging")
+    # The alert says why a message with no error lags (B5 review M1).
+    assert out.rstrip().endswith("error=None status=deferred")
+
+    code, out = _run(cfg, capsys, "--verbose")
+    assert out.rstrip().endswith("error=None status=deferred")
+
+
 @pytest.mark.parametrize(
     ("config", "reason"),
     [

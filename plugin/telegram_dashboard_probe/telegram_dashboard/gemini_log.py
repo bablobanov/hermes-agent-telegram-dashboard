@@ -369,8 +369,16 @@ def remembered_part(
     cache: Mapping[str, Any] | None, source: SourceObservation, *, now: datetime
 ) -> GeminiPart:
     """The line from what the record remembers, beside ``source``: the log was not read this
-    time (no directory, an unreadable file, the tick's deadline), so nothing is written."""
-    return _part(_current(refusal_from_record(cache), now), source, now)
+    time (no directory, an unreadable file, the tick's deadline), so nothing is written.
+
+    A record that holds ``last_429`` saw the log before: without a refusal there (``null``, or
+    one dated ahead of the clock) it remembers "none seen", the same as a read that found none,
+    so Gemini's empty line stays hidden (issue #14) and the details keep saying so. Only a
+    record that never saw the log gives no refusal at all."""
+    remembered = _current(refusal_from_record(cache), now)
+    if remembered is None and isinstance(cache, Mapping) and RECORD_KEY in cache:
+        remembered = Refusal()
+    return _part(remembered, source, now)
 
 
 def _current(refusal: Refusal | None, now: datetime) -> Refusal | None:

@@ -87,7 +87,7 @@ def test_the_external_sources_and_the_codex_plan_are_rows_of_the_matrix() -> Non
     assert "isinstance" in external["key_probe"]
     assert "only where the module has no such class" in external["key_probe"]
     assert "if that connect ran inside one" in external["key_probe"]
-    assert {"0.21.1", "0.21.6", "0.22.5"} == set(external["verified"])
+    assert {"0.21.1", "0.21.6", "0.22.2", "0.22.5", "0.22.7", "0.23.0"} == set(external["verified"])
     assert "f27cdbce5a" in external["verified"]["0.21.6"]
     assert ":219" in external["verified"]["0.21.6"] and ":115" in external["verified"]["0.21.6"]
     assert "_title_case_slug" in codex["contract"] and "Session" in codex["contract"]
@@ -111,6 +111,41 @@ def test_the_gemini_log_is_a_row_of_the_matrix_that_names_what_it_never_reads() 
     assert "0.21.3" in row["verified"]
     assert "engine's own calls" in row["caveat"]
     assert "always unsupported" not in sources["limits"]["contract"]
+
+
+def test_the_limits_row_says_how_often_the_facade_is_asked_and_what_the_record_keeps() -> None:
+    """Issue #16: each facade provider is asked once per ``facade_refresh_seconds`` and its last
+    attempt is kept in the record under ``facade_cache``; the row says so, and names what of a
+    snapshot never reaches the record."""
+    row = load_matrix()["sources"]["limits"]
+
+    assert "facade_refresh_seconds" in row["contract"] and "facade_cache" in row["contract"]
+    assert "default 300 s" in row["contract"] and "288 calls a day" in row["contract"]
+    assert "answered_at" in row["contract"] and "cron path keeps no record" in row["contract"]
+    for field in ("identity", "raw", "details", "class name"):
+        assert field in row["caveat"], field
+
+
+def test_the_limits_row_says_when_a_provider_is_not_configured() -> None:
+    """Issue #14: the row names the rule the code runs (three ``None`` attempts in a row for a
+    provider that never answered, seven days after the last answer for one that did), the
+    record's count, the allow-list, and that the limits source leaves with the last line; the
+    Gemini row says when the log is not read and when its line is drawn."""
+    sources = load_matrix()["sources"]
+    row, gemini = sources["limits"], sources["gemini_log"]
+
+    for words in (
+        "not_configured",
+        "3 None attempts in a row",
+        "none_attempts",
+        "7 days",
+        "limits_providers",
+        "there is none when no provider has one",
+        "not_configured at once unless the provider is listed",
+    ):
+        assert words in row["contract"], words
+    assert "limits_providers list without gemini = not read" in gemini["probe"]
+    assert "drawn only while a refusal is active" in gemini["contract"]
 
 
 def test_the_cron_sources_and_the_traffic_probe_are_rows_of_the_matrix() -> None:
@@ -162,6 +197,40 @@ def test_every_engine_source_has_a_row_for_hermes_0_21_6() -> None:
     for name, entry in load_matrix()["sources"].items():
         if name not in engine_free:
             assert "0.21.6" in entry["verified"], name
+
+
+def test_only_the_rows_the_engine_job_runs_say_executed_on_its_engines() -> None:
+    """1.1.0: the floor is 0.22.2, the engines the CI engine job runs the suite against are
+    0.22.2, 0.22.7 and 0.23.0. A row says executed on them only when a test of that run covers
+    it, and says so for all three; a row the run does not cover keeps what it had (0.22.2 read
+    in the source for the cron and rich rows, the facade read on all three). The floor and the
+    manifest agree (tests/test_dashboard_version.py)."""
+    matrix = load_matrix()
+    run = {
+        "plugin_platform_handler",
+        "screen_html",
+        "hermes_version",
+        "external_limits",
+        "context_files",
+        "memory",
+    }
+    sources = matrix["sources"]
+
+    def executed(entry: dict, version: str) -> bool:
+        return str(entry["verified"].get(version, "")).startswith("executed")
+
+    for version in ("0.22.7", "0.23.0"):
+        assert {name for name, entry in sources.items() if executed(entry, version)} == run
+    for name in run:
+        for version in ("0.22.2", "0.22.7", "0.23.0"):
+            assert sources[name]["verified"][version].startswith("executed, CI engine job"), name
+    for name in ("cron", "screen_rich"):
+        assert sources[name]["verified"]["0.22.2"].startswith("read-by-code"), name
+    # The usage facade is read in the source on the supported engines: the run skips its test,
+    # which would call the providers' APIs.
+    for version in ("0.22.2", "0.22.7", "0.23.0"):
+        assert sources["limits"]["verified"][version].startswith("read-by-code"), version
+    assert matrix["floors"]["delivery_plugin"]["minimum_version"] == "0.22.2"
 
 
 def test_the_memory_section_is_a_row_that_names_what_it_never_reads() -> None:

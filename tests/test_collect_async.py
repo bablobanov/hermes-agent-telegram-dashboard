@@ -768,6 +768,68 @@ def test_a_record_that_cannot_be_read_never_escapes_the_tick(
     assert (source.state, source.detail) == ("unavailable", "collector crashed: KeyError")
 
 
+def test_a_log_read_before_keeps_gemini_s_empty_line_hidden_while_it_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
+) -> None:
+    """B2 review M-a: once the log was read and held no refusal, the record says so
+    (``last_429: null``). A tick that cannot read the log (a file that is no text, a reader that
+    crashed) goes by that record: Gemini's empty line stays hidden (issue #14) and the details
+    keep ``Gemini refusals seen by Hermes: none``. Only a record that never saw the log keeps
+    the line as before."""
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.schema import Refusal
+
+    env = _env(tmp_path, limits_enabled=True)
+    (tmp_path / "logs").mkdir()
+    log = tmp_path / "logs" / "errors.log"
+    log.write_text("", encoding="utf-8")
+
+    def tick(cache: dict[str, Any]) -> Any:
+        return asyncio.run(
+            collect_all_async(
+                env,
+                BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+                now=NOW,
+                resolve_limits=lambda: None,
+                gemini_cache=cache,
+            )
+        )
+
+    def seen(snapshot: Any) -> tuple[Any, Any, list[str]]:
+        line = next(q for q in snapshot.capacity.quotas if q.provider == "Gemini")
+        source = next(s for s in snapshot.sources if s.name == "gemini_log")
+        return line.refusal, (source.state, source.detail), render_dashboard(snapshot, now=NOW)
+
+    cache: dict[str, Any] = {}
+    refusal, source, screen = seen(tick(cache))
+    assert cache["last_429"] is None and source == ("fresh", None)
+    assert refusal == Refusal() and "Gemini · no data" not in screen
+
+    log.write_bytes(b"\xff\xfe not text\n")
+    unreadable = seen(tick(cache))
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise KeyError("last_429")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(collect, "collect_gemini", boom)
+        crashed = seen(tick(cache))
+
+    for (refusal, source, screen), detail in (
+        (unreadable, "log unreadable: UnicodeDecodeError"),
+        (crashed, "collector crashed: KeyError"),
+    ):
+        assert source == ("unavailable", detail)
+        assert refusal == Refusal()
+        assert "Gemini · no data" not in screen
+        assert "> Gemini refusals seen by Hermes: none" in screen.splitlines()
+    assert cache == {"last_429": None, "checked_at": NOW.isoformat()}  # nothing written
+
+    refusal, source, screen = seen(tick({}))  # a record that never saw the log
+    assert source == ("unavailable", "log unreadable: UnicodeDecodeError")
+    assert refusal is None and "Gemini · no data" in screen
+
+
 def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid_alive: None
 ) -> None:
@@ -808,21 +870,265 @@ def test_a_daily_429_stays_an_event_while_the_log_read_misses_its_deadline(
     assert gemini.refusal is not None and gemini.refusal.at == seen
 
 
+@pytest.mark.parametrize("record", [False, True], ids=["no-record", "record"])
 @pytest.mark.parametrize("limits_enabled", [False, True], ids=["limits-off", "no-facade"])
 def test_every_provider_has_one_line_on_the_tick_when_the_facade_cannot_answer(
-    tmp_path: Path, pid_alive: None, limits_enabled: bool
+    tmp_path: Path, pid_alive: None, limits_enabled: bool, record: bool
 ) -> None:
+    caches: dict[str, Any] | None = {} if record else None
+
     snapshot = asyncio.run(
         collect_all_async(
             _env(tmp_path, limits_enabled=limits_enabled),
             BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
             now=NOW,
             resolve_limits=lambda: None,
+            facade_caches=caches,
         )
     )
 
     providers = [q.provider for q in snapshot.capacity.quotas]
     assert providers == ["Claude", "Codex", "Gemini"]
+    if caches is not None:  # nothing was asked, nothing is recorded as an attempt
+        assert all("attempted_at" not in cache for cache in caches.values())
+
+
+def test_an_installation_without_claude_and_codex_leaves_the_limits_source_on_the_tick(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Issue #14 on the tick's own path (the worker, the record): the facade answers ``None``
+    for both providers. The first two attempts are "no data" lines and ``limits (unavailable)``
+    on the ❔ line; from the third on neither has a line, the ``limits`` source is gone from the
+    coverage and the details name them once."""
+    from datetime import timedelta
+
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    flights, caches = Flights(), {}
+    runner = BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, ""))
+
+    def tick(minutes: int) -> Any:
+        return collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            runner,
+            now=NOW + timedelta(minutes=minutes),
+            resolve_limits=lambda: lambda provider: None,
+            flights=flights,
+            facade_caches=caches,
+            facade_interval_seconds=300,
+            period_seconds=60,
+        )
+
+    async def scenario():
+        return [await tick(minutes) for minutes in (0, 5, 10)]
+
+    snapshots = asyncio.run(scenario())
+
+    names = [[s.name for s in snapshot.sources] for snapshot in snapshots]
+    assert ["limits" in each for each in names] == [True, True, False]
+    assert [q.kind for q in snapshots[0].capacity.quotas[:2]] == ["unavailable"] * 2
+    assert [q.kind for q in snapshots[2].capacity.quotas[:2]] == ["not_configured"] * 2
+    first = render_dashboard(snapshots[0], now=NOW)
+    last = render_dashboard(snapshots[2], now=NOW + timedelta(minutes=10))
+    assert "limits (unavailable)" in first
+    assert "limits (" not in last
+    assert "Claude · no data" in first and "> Claude: no answer: no credential or" in first
+    assert "Claude" not in last.split("> ## Details")[0]
+    assert "> Not configured: Claude, Codex" in last.splitlines()
+    assert (caches["claude"]["none_attempts"], caches["codex"]["none_attempts"]) == (3, 3)
+
+
+def test_limits_providers_on_the_tick_asks_only_the_listed_ones(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """``limits_providers: [codex]`` on the tick: Claude is never asked, the Gemini log is not
+    read (no worker, no source), Codex is pinned; ``[]`` starts no facade worker at all."""
+    from dataclasses import replace
+
+    from telegram_dashboard.workers import Flights
+
+    class Spied(Flights):
+        """The workers the tick starts, by name (B2 review N7)."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.names: list[str] = []
+
+        async def run(self, name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+            self.names.append(name)
+            return await super().run(name, fn, *args, **kwargs)
+
+    (tmp_path / "logs").mkdir()
+    asked: list[str] = []
+
+    def fetch(provider: str) -> Any:
+        asked.append(provider)
+        return _facade_snapshot(NOW, 12.0)
+
+    gemini_cache: dict[str, Any] = {}
+
+    def tick(listed: tuple[str, ...], flights: Flights) -> Any:
+        env = replace(_env(tmp_path, limits_enabled=True), limits_providers=listed)
+        return collect_all_async(
+            env,
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: fetch,
+            flights=flights,
+            facade_caches={},
+            gemini_cache=gemini_cache,
+        )
+
+    codex_only = Spied()
+    snapshot = asyncio.run(tick(("codex",), codex_only))
+    nothing = Spied()
+    empty = asyncio.run(tick((), nothing))
+
+    assert asked == ["openai-codex"]
+    quotas = {q.provider: q for q in snapshot.capacity.quotas}
+    assert (quotas["Claude"].kind, quotas["Codex"].kind) == ("not_configured", "official")
+    assert quotas["Codex"].pinned and quotas["Gemini"].kind == "not_configured"
+    assert [s.name for s in snapshot.sources if s.name in ("limits", "gemini_log")] == ["limits"]
+    assert [s.name for s in empty.sources if s.name in ("limits", "gemini_log")] == []
+    assert gemini_cache == {}  # the log was never read
+    assert "limits" in codex_only.names and collect.GEMINI_LOG not in codex_only.names
+    assert "limits" not in nothing.names and collect.GEMINI_LOG not in nothing.names
+
+
+# ---------------------------------------------------------------- the usage facade on a cadence (#16)
+
+
+def _facade_snapshot(at: datetime, used: float) -> Any:
+    from types import SimpleNamespace
+
+    window = SimpleNamespace(label="5h", used_percent=used, reset_at=None)
+    return SimpleNamespace(
+        available=True,
+        unavailable_reason=None,
+        source="usage_api",
+        fetched_at=at,
+        windows=(window,),
+        plan=None,
+    )
+
+
+def _limits_source(snapshot):
+    return next(s for s in snapshot.sources if s.name == "limits")
+
+
+def test_a_slow_facade_never_holds_the_tick_and_the_screen_keeps_its_lines(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    """Issue #16, scaled down like the external source above: the facade answers in 0.6 s per
+    provider, the tick waits for it 0.1 s. The tick ends on time and shows each provider's last
+    answer with its own stamp; the worker is not started twice; it writes its answers to the
+    record when it returns, and the next tick shows them without asking again."""
+    from datetime import timedelta
+
+    from telegram_dashboard.render import render_dashboard
+    from telegram_dashboard.workers import Flights
+
+    calls: list[str] = []
+    clock = [NOW]
+
+    def fetch(provider: str) -> Any:
+        calls.append(provider)
+        at = clock[0]
+        if len(calls) > 2:
+            time.sleep(0.6)
+        return _facade_snapshot(at, float(len(calls)))
+
+    runner = BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, ""))
+    flights, caches = Flights(), {}
+    early = NOW - timedelta(minutes=30)
+
+    def tick(at: datetime) -> Any:
+        return collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            runner,
+            now=at,
+            resolve_limits=lambda: fetch,
+            flights=flights,
+            facade_caches=caches,
+            facade_interval_seconds=300,
+            limits_timeout_seconds=0.1,
+            period_seconds=1800,
+        )
+
+    async def scenario():
+        clock[0] = early  # the moment each answer is stamped with
+        first = await tick(early)
+        clock[0] = NOW
+        started = time.monotonic()
+        second = await tick(NOW)
+        took = time.monotonic() - started
+        third = await tick(NOW + timedelta(minutes=1))
+        asked = list(calls)
+        # The abandoned worker returns and writes the record.
+        await until(lambda: not flights.busy("limits"))
+        fourth = await tick(NOW + timedelta(minutes=2))
+        return first, second, took, third, asked, fourth
+
+    first, second, took, third, asked, fourth = asyncio.run(scenario())
+
+    def lines(snapshot):
+        quotas = snapshot.capacity.quotas[:2]
+        return [(q.provider, q.fetched_at, q.windows[0].used_percent) for q in quotas]
+
+    assert took < 0.5, took
+    assert lines(first) == [("Claude", early.isoformat(), 1.0), ("Codex", early.isoformat(), 2.0)]
+    assert lines(second) == lines(first)
+    assert _limits_source(second).state == "fresh", "one missed tick does not grey the status"
+    details = render_dashboard(second, now=NOW).splitlines()
+    assert "> Data 21:00 · Claude 20:30 · Codex 20:30" in details
+    assert lines(third) == lines(first)
+    assert asked == ["anthropic", "openai-codex", "anthropic"], "no second worker"
+    assert lines(fourth) == [("Claude", NOW.isoformat(), 3.0), ("Codex", NOW.isoformat(), 4.0)]
+    assert len(calls) == 4, "the next tick takes the late answers from the record"
+    assert caches["codex"]["attempted_at"] == NOW.isoformat()
+
+
+def test_a_facade_line_older_than_two_ticks_is_no_data_on_a_miss(
+    tmp_path: Path, pid_alive: None
+) -> None:
+    from telegram_dashboard.workers import Flights
+
+    def fetch(provider: str) -> Any:
+        time.sleep(0.4)
+        return None
+
+    stale_at = "2026-09-09T17:00:00+00:00"
+
+    def cached(key: str) -> dict[str, Any]:
+        window = {"label": "5h", "used_percent": 5, "reset_at": None}
+        item = {"provider": key, "status": "available", "fetched_at": stale_at, "windows": [window]}
+        return {"attempted_at": stale_at, "item": item}
+
+    caches = {"claude": cached("claude"), "codex": cached("codex")}
+
+    snapshot = asyncio.run(
+        collect_all_async(
+            _env(tmp_path, limits_enabled=True),
+            BlockingRunner(0, CommandResult(0, DRIFT_CLEAN, "")),
+            now=NOW,
+            resolve_limits=lambda: fetch,
+            flights=Flights(),
+            facade_caches=caches,
+            facade_interval_seconds=300,
+            limits_timeout_seconds=0.1,
+            period_seconds=1800,
+        )
+    )
+
+    missed = "timeout: facade did not answer within 0.1s"
+    assert [(q.kind, q.detail) for q in snapshot.capacity.quotas[:2]] == [
+        ("unavailable", missed)
+    ] * 2
+    assert (_limits_source(snapshot).state, _limits_source(snapshot).detail) == (
+        "unavailable",
+        missed,
+    )
 
 
 # ----------------------------------------------------------------------------- cron (0.9.0)

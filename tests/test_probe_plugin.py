@@ -86,10 +86,11 @@ async def _until(predicate, *, timeout: float = 3.0) -> None:
 # The engine paces one chat's sends and edits through a shared per-chat slot
 # (plugins/platforms/telegram/adapter.py, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0, from 0.21.6
 # on): a send waits for the slot, an interim edit_message is skipped while it is busy. A wait
-# that spans an edit_message AND a send after it takes two slots: 1.96-2.07 s measured on 0.22.2
-# and 0.22.7, alone and in this file's run (each test in a profile of its own). The 3 s default
-# of ``_until`` predates the slot and stays for the waits that cross no slot (HTML edits go
-# through _edit_text, which the slot does not gate; measured at 0.1 s and under).
+# that spans an edit_message AND a send after it takes two slots: the lost-message test takes
+# 2.1-2.2 s on 0.22.2 and 0.22.7 with the held-back edits deferred (each test in a profile of
+# its own; 1.96-2.07 s before that change). The 3 s default of ``_until`` predates the slot
+# and stays for the waits that cross no slot (HTML edits go through _edit_text, which the slot
+# does not gate; measured at 0.1 s and under).
 SLOT_WAIT = 10.0
 
 
@@ -282,7 +283,62 @@ def test_engine_discovery_loads_the_plugin_from_a_profile(tmp_path: Path, monkey
     manager.unload()
 
 
-def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
+# The engine's version parser passes re.split's maxsplit positionally: a DeprecationWarning on
+# every comparison this test makes (plugins_manifest.py, 0.22.2 and 0.22.7), the engine's own.
+@pytest.mark.filterwarnings("ignore:'maxsplit' is passed as positional argument:DeprecationWarning")
+@pytest.mark.parametrize("shape", ["as installed", "as the CI job sees it"])
+def test_the_engine_s_own_gate_reads_the_manifest_s_floor(monkeypatch, shape: str) -> None:
+    """``requires_hermes`` is what the engine checks before it imports the plugin (from 0.21.3
+    on, hermes_cli/plugins_manifest.py ``requires_hermes_error``). The gate is put to the
+    manifest at the release under test: ``HERMES_ENGINE_TAG`` when set (the CI engine job sets
+    it from its matrix, because its checkout is a commit with no tags and the engine tells its
+    own version as ``unknown``, which passes any spec), else the version the engine reports (an
+    install from a tag, as locally). When the engine knows its version, it must be that release.
+    The engine's own comparison also refuses a release below the floor. The second case runs the
+    CI job's shape wherever the engine knows its version: it reports ``unknown``, and the tag
+    names the release."""
+    import re
+
+    from hermes_cli import plugins_manifest
+    from hermes_cli.plugins_manifest import requires_hermes_error, version_satisfies
+
+    if shape == "as the CI job sees it":
+        installed = plugins_manifest.running_hermes_version()
+        tag = os.environ.get("HERMES_ENGINE_TAG") or f"v{installed}"
+        monkeypatch.setenv("HERMES_ENGINE_TAG", tag)
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "unknown")
+
+    manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    declared = re.search(r'^requires_hermes: "([^"]+)"$', manifest, re.MULTILINE)
+    assert declared is not None
+    spec = declared.group(1)
+    assert spec == ">=0.22.2"
+    assert version_satisfies(spec, "0.22.2") and version_satisfies(spec, "0.22.7")
+    assert not version_satisfies(spec, "0.22.1") and not version_satisfies(spec, "0.21.6")
+
+    reported = plugins_manifest.running_hermes_version()
+    tag = os.environ.get("HERMES_ENGINE_TAG", "").strip().removeprefix("v")
+    release = tag or reported
+    if tag and reported != "unknown":
+        assert reported == tag, f"the engine reports {reported}, the job tests {tag}"
+    if not re.fullmatch(r"\d+\.\d+\.\d+", release):
+        pytest.skip(
+            "the engine tells its version as unknown and HERMES_ENGINE_TAG names none: "
+            "its gate would let any manifest through"
+        )
+
+    # The engine's own gate function, with the running version it reads set to the release.
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: release)
+    assert requires_hermes_error({"requires_hermes": spec}) is None
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "0.22.1")
+    assert requires_hermes_error({"requires_hermes": spec}) == (
+        "requires hermes >=0.22.2, running 0.22.1"
+    )
+
+
+def test_lost_message_is_recreated_once_and_recorded(
+    probe_env, caplog: pytest.LogCaptureFixture
+) -> None:
     manager, ctx = _context()
     runtime = _load_plugin().register(ctx)
     assert runtime is not None
@@ -293,8 +349,13 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         _wire(adapter, manager)
         adapter._mark_connected()
         runner.adapters[Platform.TELEGRAM] = adapter
-        await _until(lambda: bot.edit_message_text.await_count >= 1)
+        # The plugin's record, not the Bot mock's count: the engine awaits the Bot call through a
+        # deadline wrapper (_await_with_thread_deadline), so the count rises a few loop turns
+        # before the edit returns to the plugin and its verdict is set.
+        await _until(lambda: runtime.record.get("last_status") == "edited")
+        assert bot.edit_message_text.await_count >= 1
         assert bot.send_message.await_count == 1  # message 101, sent in this test's profile
+        assert runtime.html is True  # the first edit went out as HTML
 
         async def gone_until_recreated(**kwargs: object) -> bool:
             # Only the lost message is gone: the one sent in its place can be edited.
@@ -305,21 +366,153 @@ def test_lost_message_is_recreated_once_and_recorded(probe_env) -> None:
         bot.edit_message_text.side_effect = gone_until_recreated
         bot.send_message.return_value = MagicMock(message_id=102)
         # The HTML edit fails: the message is gone. The plain edit_message the plugin falls back
-        # to is skipped by the engine's chat slot, which the first send still holds, and comes
-        # back as a success (raw_response {"skipped": True}). The plugin today misreads that: a
-        # false "HTML refused" verdict, and no loss seen until a later tick. That is a plugin
-        # defect, fixed in the next pull request. This test pins only that the message is
-        # recreated once: when the slot frees, an edit fires and confirms the loss, and the new
-        # send waits for the slot that edit took (SLOT_WAIT).
+        # to is held back by the engine's chat slot while the first send still holds it, and
+        # answers success with raw_response {"skipped": True}: the plugin takes that as a
+        # deferred edit, with no "HTML refused" verdict, and tries again on the next tick. When
+        # the slot frees, the plain edit fires and confirms the loss, and the new send waits for
+        # the slot that edit took (SLOT_WAIT).
         await _until(lambda: bot.send_message.await_count >= 2, timeout=SLOT_WAIT)
         await _until(lambda: runtime.record.get("message_id") == "102", timeout=SLOT_WAIT)
         # The ticks after the recreate edit the new message. Waiting for that edit, not reading
         # the status of the recreate itself, keeps the test independent of how many ticks a
-        # runner fits in before the checks (a fast runner had already edited 102).
+        # runner fits in before the checks (on the CI runners a later tick had already run).
         await _until(lambda: runtime.record.get("last_status") == "edited", timeout=SLOT_WAIT)
 
         assert bot.send_message.await_count == 2  # recreated once
         assert runtime.record["lost_at"] and runtime.record["recreated_at"]
+        # No false verdict on the form: a failed HTML edit and a plain one that never fired (or
+        # failed) say nothing about HTML.
+        assert runtime.html is True and runtime.record.get("html_error") is None
+        assert not [r for r in caplog.records if "HTML edit refused" in r.getMessage()]
         manager.unload()
 
     asyncio.run(scenario())
+
+
+def test_an_edit_the_engine_holds_back_for_a_busy_chat_is_deferred_and_the_next_tick_edits(
+    probe_env, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The engine's shared per-chat slot (adapter.py, #116312): while a reply in the same chat
+    holds it, an interim edit_message edits nothing and answers success with raw_response
+    {"skipped": True}. Here Telegram refuses the HTML form, so the tick falls to that plain verb
+    while the slot is held: the record says deferred, not edited, keeps its last confirmation,
+    and no "HTML refused" verdict comes of it; the first tick the slot is free, the plain edit
+    reaches the Bot and the verdict follows. The loop ticks once (the message is created), then
+    sleeps an hour; the test drives the two ticks after it by hand."""
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_PERIOD", "3600")
+    manager, ctx = _context()
+    runtime = _load_plugin().register(ctx)
+    assert runtime is not None
+    runner = SimpleNamespace(adapters={})
+    from telegram_dashboard.__main__ import run_check
+
+    def refuse_html(**kwargs):
+        if kwargs.get("parse_mode") is not None:
+            raise BadRequest("Can't parse entities: unsupported start tag at byte offset 0")
+        return True
+
+    def plain_edits(bot: MagicMock) -> list:
+        return [c for c in bot.edit_message_text.await_args_list if "parse_mode" not in c.kwargs]
+
+    async def scenario() -> None:
+        adapter, bot = _adapter(101, runner)
+        _wire(adapter, manager)
+        adapter._mark_connected()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        await _until(lambda: runtime.record.get("last_status") == "created")
+        created = runtime.record["last_confirmed_at"]
+        bot.edit_message_text.side_effect = refuse_html
+
+        # An agent's reply in the same chat holds the slot: the engine's own call, with its
+        # tunable budget raised so that no slow tick outlives it.
+        adapter._telegram_chat_outbound_slot_secs = 60.0
+        adapter._hold_chat_outbound_slot(CHAT)
+        await runtime.tick()
+
+        assert bot.edit_message_text.await_count == 1  # the refused HTML edit, nothing else
+        assert plain_edits(bot) == []  # the engine held the plain edit back
+        record = ctx.state.get("probe")
+        assert (record["last_status"], record["last_error"]) == ("deferred", None)
+        assert record["last_confirmed_at"] == created
+        assert runtime.html is None and "html_error" not in record
+        assert record["screen_format"] == "plain"  # as the creation left it
+        # Not a failure by itself: the watchdog judges by the last confirmation.
+        assert run_check({"plugin_state_path": str(ctx.state.path), "period_seconds": 300}) == 0
+
+        # The reply is out and the slot is free: the next tick's plain edit goes through.
+        adapter._telegram_chat_outbound_slot_secs = 0.0
+        adapter._hold_chat_outbound_slot(CHAT)
+        await runtime.tick()
+
+        assert [c.kwargs["message_id"] for c in plain_edits(bot)] == [101]
+        record = ctx.state.get("probe")
+        assert record["last_status"] == "edited" and record["last_confirmed_at"] != created
+        assert (record["screen_format"], record["html_error"]) == ("plain", "BadRequest")
+        manager.unload()
+
+    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
+        asyncio.run(scenario())
+
+    said = [r.getMessage() for r in caplog.records if r.name.endswith("telegram_dashboard_probe")]
+    assert sum("deferred" in line for line in said) == 1
+    assert sum("HTML edit refused" in line for line in said) == 1  # once the plain edit landed
+
+
+def test_the_sender_s_id_is_the_one_ptb_keeps_from_get_me(probe_env) -> None:
+    """The record keeps the id of the bot that sent the message (``_bot_id``), read off the
+    adapter's PTB bot the way PTB keeps it: ``Bot.id``, the user getMe answered at
+    ``initialize()``, cached on the object, so no request goes out (conftest's guard would refuse
+    one). A bot that has not started raises there, and the plugin reads no id. The PTB bot here
+    is made without credentials: only its cached user is set."""
+    from telegram import Bot, User
+
+    plugin = _load_plugin()
+    adapter, _ = _adapter(101, SimpleNamespace(adapters={}))
+    bot = Bot.__new__(Bot)
+    object.__setattr__(bot, "_bot_user", None)  # what Bot.__init__ leaves before initialize()
+    adapter._bot = bot
+
+    assert plugin._bot_id(adapter) is None
+    object.__setattr__(bot, "_bot_user", User(id=4242, first_name="probe", is_bot=True))
+    assert plugin._bot_id(adapter) == 4242
+
+
+def test_a_single_profile_gateway_keeps_editing_its_message_from_1_0_0(
+    probe_env, monkeypatch
+) -> None:
+    """The update from 1.0.0 on a gateway that serves one profile, with the engine's own verdict:
+    ``load_gateway_config_for_runner`` (where ``GatewayRunner`` takes its config from) settles
+    ``multiplex_profiles`` to false for this home, which holds one profile, and such a runner
+    starts no other profile's adapters. The record on disk names message 4242 and no sender; the
+    runner's map is still empty and the wait for a sender has run out. The plugin edits message
+    4242 through the real adapter, keeps the bot's id and sends nothing."""
+    from gateway.run import load_gateway_config_for_runner
+
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    config = load_gateway_config_for_runner()
+    assert config.multiplex_profiles is False
+    manager, ctx = _context()
+    ctx.state.set("probe", {"message_id": "4242", "chat_id": CHAT, "last_status": "edited"})
+    plugin = _load_plugin()
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    runtime.started_monotonic = time.monotonic() - plugin.SENDER_WAIT_SECONDS - 1
+    runner = SimpleNamespace(adapters={}, config=config)
+
+    async def scenario() -> None:
+        adapter, bot = _adapter(101, runner)
+        bot.id = 1111  # PTB's Bot.id: the user getMe answered at the bot's start
+        _wire(adapter, manager)
+        adapter._mark_connected()
+        await _until(lambda: runtime.record.get("bot_id") == 1111)
+        await _until(lambda: bot.edit_message_text.await_count >= 2)
+        manager.unload()
+        edited = {call.kwargs.get("message_id") for call in bot.edit_message_text.await_args_list}
+        assert edited == {4242}
+        assert bot.send_message.await_count == 0
+
+    asyncio.run(scenario())
+
+    stored = ctx.state.get("probe")
+    assert (stored["message_id"], stored["bot_id"]) == ("4242", 1111)
+    assert stored["last_status"] == "edited" and "lost_at" not in stored

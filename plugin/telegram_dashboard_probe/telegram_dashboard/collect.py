@@ -51,12 +51,24 @@ from .hermes_version import known_answer as known_release_answer
 from .hermes_version import running_version
 from .hermes_version import summarize as summarize_version
 from .hermes_version import tick as version_tick
-from .limits import Resolver, build_limits_payload, fetch_limits_payload_off_loop, import_fetcher
+from .limits import (
+    NONE_REASON,
+    NOT_CONFIGURED,
+    NOT_CONFIGURED_REASON,
+    OFF_REASON,
+    Cadence,
+    Resolver,
+    build_limits_payload,
+    elapsed_clock,
+    fetch_limits_payload_off_loop,
+    import_fetcher,
+)
 from .memory import SOURCE_NAME as MEMORY
 from .memory import MemoryPart, read_memory
 from .normalize import classify_freshness, derive_overall
 from .policy import sanitize_public_text
 from .quota_cache import Fetch as QuotaFetch
+from .quota_cache import cache_for, last_answer
 from .quota_cache import tick as quota_tick
 from .schema import (
     Authority,
@@ -81,7 +93,7 @@ from .schema import (
 from .telegram_traffic import SOURCE_NAME as TRAFFIC
 from .telegram_traffic import Probe as TrafficProbe
 from .telegram_traffic import TrafficPart, collect_traffic, note_probe, remembered_traffic
-from .timeparse import age_seconds, is_from_the_future, parse_timestamp
+from .timeparse import parse_timestamp
 from .workers import Flights, StillRunning, failure_name
 
 logger = logging.getLogger(__name__)
@@ -103,9 +115,11 @@ LocalVersion = Callable[[], tuple[str | None, str | None]]
 # The lines that close the block: Gemini, built from the engine's log (``gemini_log.py``); an
 # external source's new provider sits before it.
 _TRAILING_PROVIDERS = frozenset({GEMINI_LABEL.lower()})
-# What the facade's ``None`` means (``_fetch_anthropic_account_usage`` returns it only when no
-# token resolves): the installation has no credential, not a provider that refused.
-_NO_CREDENTIAL = "no account token"
+# What the facade's ``None`` says, on a line that is still shown (issue #14): no credential, or a
+# call that failed. ``fetch_account_usage`` turns every exception of a provider's fetcher (an
+# HTTP 401, 429 or 5xx, a network error, Codex without an account) into the same ``None`` as a
+# missing token, on every version read (0.21.1 to 0.23.0), so the two cannot be told apart.
+_NO_ANSWER = "no answer: no credential or the call failed"
 # A window's own verdict as the provider states it; anything else is no verdict at all.
 _WINDOW_SEVERITIES = ("normal", "warning", "critical")
 
@@ -415,17 +429,40 @@ def _drift_from_command(
 # ``collect_limits`` is the synchronous form for the cron/CLI path; ``collect_limits_async`` is
 # the form a gateway plugin must use: the facade runs in a worker thread with a deadline so the
 # event loop never waits on a provider API, and a miss is one ``unavailable`` tick, not a crash.
+# Given the record's per-provider caches (``facade_caches``), either form asks each provider at
+# most once per ``facade_interval_seconds``, success or failure, like an external source; a
+# missed deadline shows the last answer with its own stamp while it is young enough.
 
 LIMITS_TIMEOUT_SECONDS = 45.0
+# How often a facade provider is asked when the caller does not say (the plugin passes
+# ``facade_refresh_seconds``): 288 calls a day per provider at a 60 s period instead of one per
+# tick. The plugin requires the name (``REQUIRED_API``): a copy without it calls the facade on
+# every tick.
+FACADE_DEFAULT_INTERVAL_SECONDS = 300.0
+# The facade's block, its ``limits`` source (``None`` when no provider has a line: issue #14) and
+# the probe's verdict.
+LimitsResult = tuple[CapacitySummary, SourceObservation | None, ProbeResult]
 
 
 def collect_limits(
-    env: Environment, *, now: datetime, resolve: Resolver = import_fetcher
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+    env: Environment,
+    *,
+    now: datetime,
+    resolve: Resolver = import_fetcher,
+    caches: dict[str, Any] | None = None,
+    interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
+) -> LimitsResult:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
-    return parse_limits_payload(build_limits_payload(resolve), now=now)
+    show = _show_seconds(interval_seconds, None)
+    cadence = (
+        None if caches is None else Cadence(caches, now, interval_seconds, show, elapsed_clock(now))
+    )
+    listed = _listing(env)
+    payload = build_limits_payload(resolve, cadence, listed)
+    capacity, source, probe = parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    return chosen(capacity, listed), source, probe
 
 
 async def collect_limits_async(
@@ -435,14 +472,51 @@ async def collect_limits_async(
     resolve: Resolver = import_fetcher,
     timeout_seconds: float = LIMITS_TIMEOUT_SECONDS,
     flights: Flights | None = None,
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+    caches: dict[str, Any] | None = None,
+    interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
+    period_seconds: float | None = None,
+) -> LimitsResult:
     disabled = _limits_disabled(env)
     if disabled is not None:
         return disabled
-    payload = await fetch_limits_payload_off_loop(
-        resolve, timeout_seconds=timeout_seconds, flights=flights
+    show = _show_seconds(interval_seconds, period_seconds)
+    cadence = (
+        None if caches is None else Cadence(caches, now, interval_seconds, show, elapsed_clock(now))
     )
-    return parse_limits_payload(payload, now=now)
+    listed = _listing(env)
+    payload = await fetch_limits_payload_off_loop(
+        resolve, timeout_seconds=timeout_seconds, flights=flights, cadence=cadence, listed=listed
+    )
+    capacity, source, probe = parse_limits_payload(payload, now=now, ttl_seconds=_limits_ttl(show))
+    return chosen(capacity, listed), source, probe
+
+
+def _listing(env: Environment) -> frozenset[str] | None:
+    """The owner's ``limits_providers`` as a set; ``None`` when the setting is not there."""
+    return None if env.limits_providers is None else frozenset(env.limits_providers)
+
+
+def chosen(capacity: CapacitySummary, listed: frozenset[str] | None) -> CapacitySummary:
+    """The built-in lines as the owner's ``limits_providers`` has them (issue #14): a provider it
+    names is pinned, its line drawn whatever it says; one it leaves out has no line and is named
+    in the details (``Off in the dashboard settings: Gemini``). Without the list, the lines as
+    they are. Before the external sources are merged: those are never subject to the list."""
+    if listed is None:
+        return capacity
+    return CapacitySummary(tuple(_chosen(quota, listed) for quota in capacity.quotas))
+
+
+def _chosen(quota: QuotaMetric, listed: frozenset[str]) -> QuotaMetric:
+    if quota.provider.lower() in listed:
+        return replace(quota, pinned=True)
+    return QuotaMetric(quota.provider, "not_configured", detail=OFF_REASON)
+
+
+def _limits_ttl(show_seconds: float) -> float:
+    """How old the freshest facade number may be before the source is stale: never stricter
+    than ``LIMITS_STALE_SECONDS``, and no stricter than the cadence lets a number get, or a
+    long ``facade_refresh_seconds`` would flash ``limits (stale)`` between attempts."""
+    return max(float(LIMITS_STALE_SECONDS), show_seconds)
 
 
 def _limits_disabled(
@@ -456,8 +530,15 @@ def _limits_disabled(
 
 
 def parse_limits_payload(
-    payload: dict[str, Any], *, now: datetime
-) -> tuple[CapacitySummary, SourceObservation, ProbeResult]:
+    payload: dict[str, Any], *, now: datetime, ttl_seconds: float = LIMITS_STALE_SECONDS
+) -> LimitsResult:
+    """The block and the ``limits`` source from the facade's payload. The source stands on the
+    freshest ``fetched_at`` among the providers with a number, against ``ttl_seconds``; with no
+    number at all it is unavailable, with the payload's reason when it gives one (a missed
+    deadline served from the record). It is the source of the providers that have a line: one
+    ``not_configured`` (issue #14) keeps its metric for the details, and when no provider has a
+    line there is no ``limits`` source at all, so it leaves the coverage instead of standing
+    there unavailable for good."""
     if payload.get("ok") is not True:
         reason = sanitize_public_text(str(payload.get("reason") or "no reason"), limit=80)
         if reason.startswith("unsupported"):
@@ -477,6 +558,9 @@ def parse_limits_payload(
         label = _PROVIDER_LABELS.get(key)
         if label is None:
             continue
+        if item.get("status") == NOT_CONFIGURED:
+            quotas[key] = _not_configured(label, item)
+            continue
         quotas[key] = _quota_from_item(label, item)
         fetched_at = item.get("fetched_at")
         if quotas[key].kind == "official" and isinstance(fetched_at, str):
@@ -485,13 +569,26 @@ def parse_limits_payload(
         quotas.get(key) or QuotaMetric(label, "unavailable", detail="provider not in the answer")
         for key, label in _PROVIDER_LABELS.items()
     ]
+    probe = ProbeResult("limits", "supported")
+    if all(quota.kind == "not_configured" for quota in ordered):
+        return CapacitySummary(tuple(ordered)), None, probe
     observed_at = max(fetched) if fetched else None
     if observed_at is None:
-        source = SourceObservation("limits", "official", "unavailable", detail="no windows at all")
+        missed = payload.get("reason")
+        detail = sanitize_public_text(str(missed), limit=80) if missed else "no windows at all"
+        source = SourceObservation("limits", "official", "unavailable", detail=detail)
     else:
-        freshness = classify_freshness(observed_at, now=now, ttl_seconds=LIMITS_STALE_SECONDS)
+        freshness = classify_freshness(observed_at, now=now, ttl_seconds=int(ttl_seconds))
         source = SourceObservation("limits", "official", freshness, observed_at=observed_at)
-    return CapacitySummary(tuple(ordered)), source, ProbeResult("limits", "supported")
+    return CapacitySummary(tuple(ordered)), source, probe
+
+
+def _not_configured(label: str, item: dict[str, Any]) -> QuotaMetric:
+    """A provider without a line (issue #14): its metric stays in the block until the external
+    sources are merged (one naming it takes its place), the details name it by the reason."""
+    reason = item.get("reason")
+    detail = sanitize_public_text(reason, limit=60) if isinstance(reason, str) and reason else None
+    return QuotaMetric(label, "not_configured", detail=detail or NOT_CONFIGURED_REASON)
 
 
 def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
@@ -511,8 +608,8 @@ def _quota_from_item(label: str, item: dict[str, Any]) -> QuotaMetric:
         )
     if item.get("status") != "available":
         reason = item.get("reason")
-        if reason == "none":
-            detail = _NO_CREDENTIAL
+        if reason == NONE_REASON:
+            detail = _NO_ANSWER
         else:
             detail = sanitize_public_text(str(reason), limit=60) if reason else "no data"
         return QuotaMetric(label, "unavailable", detail=detail, plan=plan, login_expires_at=login)
@@ -750,21 +847,10 @@ def _cached_line(
     cache: dict[str, Any], *, now: datetime, show_seconds: float, missed: str
 ) -> dict[str, Any]:
     """The source's last answer while it is young enough, else "no data" with ``missed``."""
-    cached = cache.get("item")
-    if isinstance(cached, dict) and cached.get("status") in ("available", "expired"):
-        fetched = parse_timestamp(cached.get("fetched_at"))
-        age = age_seconds(fetched, now) if fetched is not None else None
-        if age is not None and not is_from_the_future(age) and age <= show_seconds:
-            return cached
+    cached = last_answer(cache, now=now, show_seconds=show_seconds)
+    if cached is not None:
+        return cached
     return {"provider": None, "status": "unavailable", "reason": missed, "windows": []}
-
-
-def _cache_for(store: dict[str, Any], key: str) -> dict[str, Any]:
-    cache = store.get(key)
-    if not isinstance(cache, dict):
-        cache = {}
-        store[key] = cache
-    return cache
 
 
 def _capacity_unavailable(detail: str) -> CapacitySummary:
@@ -860,6 +946,8 @@ def collect_all(
     *,
     now: datetime,
     resolve_limits: Resolver = import_fetcher,
+    facade_caches: dict[str, Any] | None = None,
+    facade_interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
     external_caches: dict[str, Any] | None = None,
     external_interval_seconds: float = EXTERNAL_DEFAULT_INTERVAL_SECONDS,
     external_fetch: ExternalFetch | None = None,
@@ -868,6 +956,9 @@ def collect_all(
     traffic_probe: TrafficProbe | None = None,
     traffic_cache: dict[str, Any] | None = None,
 ) -> DashboardSnapshot:
+    """The snapshot in one synchronous pass (the cron/CLI path). Without ``facade_caches``
+    (``__main__`` passes none) every run asks the usage facade, as it asks every external
+    source."""
     externals = _externals_sync(
         env,
         external_caches,
@@ -891,11 +982,18 @@ def collect_all(
     )
     rules, rules_source, rules_incidents = read_rules(env, now=now)
     memory, memory_source, memory_incidents = read_memory(env, now=now)
-    capacity, limits_source, _ = collect_limits(env, now=now, resolve=resolve_limits)
-    if env.limits_enabled:
-        gemini, gemini_source, gemini_incidents = collect_gemini(env, gemini_cache, now=now)
-    else:
-        gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
+    capacity, limits_source, _ = collect_limits(
+        env,
+        now=now,
+        resolve=resolve_limits,
+        caches=facade_caches,
+        interval_seconds=facade_interval_seconds,
+    )
+    gemini, gemini_source, gemini_incidents = (
+        collect_gemini(env, gemini_cache, now=now)
+        if _reads_gemini(env)
+        else _gemini_unread(env, capacity, limits_source)
+    )
     metrics = [part[0] for part in externals]
     return build_snapshot(
         now=now,
@@ -906,12 +1004,12 @@ def collect_all(
         traffic=traffic,
         rules=rules,
         memory=memory,
-        capacity=merge_external(merge_quotas(capacity, gemini), metrics),
+        capacity=_limits_block(env, capacity, gemini, metrics),
         sources=(
             gateway_source,
-            limits_source,
+            *_present(limits_source),
             *(part[1] for part in externals),
-            gemini_source,
+            *_present(gemini_source),
             drift_source,
             backup_source,
             cron_source,
@@ -966,7 +1064,7 @@ def _externals_sync(
     return [
         collect_external(
             source,
-            _cache_for(store, source.key),
+            cache_for(store, source.key),
             now=now,
             interval_seconds=interval_seconds,
             show_seconds=show,
@@ -976,12 +1074,47 @@ def _externals_sync(
     ]
 
 
-def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation) -> GeminiPart:
+def _gemini_off(capacity: CapacitySummary, limits_source: SourceObservation | None) -> GeminiPart:
     """Limits off: the log is not read, the line and the source take the block's verdict."""
-    source = SourceObservation(
-        GEMINI_SOURCE, "local", limits_source.state, detail=limits_source.detail
-    )
+    state: SourceState = "unsupported" if limits_source is None else limits_source.state
+    detail = "disabled" if limits_source is None else limits_source.detail
+    source = SourceObservation(GEMINI_SOURCE, "local", state, detail=detail)
     return quota_off_for(GEMINI_LABEL, capacity), source, ()
+
+
+# Gemini's part when its log is not read: limits off (the block's verdict), or left out of the
+# owner's ``limits_providers`` (no source, no event, the details name it).
+UnreadGemini = tuple[QuotaMetric, SourceObservation | None, tuple[Incident, ...]]
+
+
+def _reads_gemini(env: Environment) -> bool:
+    """The engine's log is read for Gemini while limits are on and the owner's list, if there
+    is one, names Gemini (issue #14)."""
+    listed = _listing(env)
+    return env.limits_enabled and (listed is None or GEMINI_LABEL.lower() in listed)
+
+
+def _gemini_unread(
+    env: Environment, capacity: CapacitySummary, limits_source: SourceObservation | None
+) -> UnreadGemini:
+    if not env.limits_enabled:
+        return _gemini_off(capacity, limits_source)
+    return QuotaMetric(GEMINI_LABEL, "not_configured", detail=OFF_REASON), None, ()
+
+
+def _limits_block(
+    env: Environment,
+    capacity: CapacitySummary,
+    gemini: QuotaMetric,
+    externals: Sequence[QuotaMetric],
+) -> CapacitySummary:
+    """The facade's lines, Gemini's, then the external sources' over them: the owner's list
+    marks the built-in ones first (limits off: no list), so a hidden line still meets an
+    external source that names it (decision 7 of #14)."""
+    built_in = merge_quotas(capacity, gemini)
+    if env.limits_enabled:
+        built_in = chosen(built_in, _listing(env))
+    return merge_external(built_in, externals)
 
 
 # ----------------------------------------------------------------------------- plugin tick
@@ -1002,7 +1135,7 @@ _UNGUARDED = (asyncio.CancelledError, KeyboardInterrupt)
 
 GatewayPart = tuple[GatewaySummary, SourceObservation, tuple[Incident, ...]]
 DriftPart = tuple[DriftSummary, SourceObservation, tuple[Incident, ...]]
-LimitsPart = tuple[CapacitySummary, SourceObservation, tuple[Incident, ...]]
+LimitsPart = tuple[CapacitySummary, SourceObservation | None, tuple[Incident, ...]]
 
 
 async def collect_all_async(
@@ -1012,6 +1145,8 @@ async def collect_all_async(
     now: datetime,
     resolve_limits: Resolver = import_fetcher,
     limits_timeout_seconds: float = LIMITS_TIMEOUT_SECONDS,
+    facade_caches: dict[str, Any] | None = None,
+    facade_interval_seconds: float = FACADE_DEFAULT_INTERVAL_SECONDS,
     drift_timeout_seconds: float = DRIFT_TIMEOUT_SECONDS,
     flights: Flights | None = None,
     version_cache: dict[str, Any] | None = None,
@@ -1042,6 +1177,10 @@ async def collect_all_async(
     record): a worker abandoned by its deadline still writes its attempt there when it returns,
     so the next tick serves it instead of asking again; without it (no durable record) the
     version line is not collected at all.
+    ``facade_caches`` is the durable dict of the usage facade's providers, one cache per
+    provider (``claude``, ``codex``): each is asked at most once per
+    ``facade_interval_seconds``, and an answer that misses ``limits_timeout_seconds`` is
+    written there by its worker when it returns; without it every tick asks.
     ``external_caches`` is the durable dict of the external limit sources, one cache per URL
     (``Source.key``); ``period_seconds`` is the tick's own period, which sets how old a source's
     last line may be and still stand in for a missed answer. ``gemini_cache`` is the record of
@@ -1120,7 +1259,7 @@ async def collect_all_async(
                 env, gemini_cache, now=now, timeout_seconds=gemini_timeout_seconds, flights=flights
             )
         )
-        if env.limits_enabled
+        if _reads_gemini(env)
         else None
     )
     try:
@@ -1139,6 +1278,9 @@ async def collect_all_async(
                 resolve=resolve_limits,
                 timeout_seconds=limits_timeout_seconds,
                 flights=flights,
+                caches=facade_caches,
+                interval_seconds=facade_interval_seconds,
+                period_seconds=period_seconds,
             ),
         )
         version, version_incidents = await version_task
@@ -1148,10 +1290,11 @@ async def collect_all_async(
         rules, rules_source, rules_incidents = await rules_task
         memory, memory_source, memory_incidents = await memory_task
         cron, cron_source, cron_incidents = _cron_guarded(cron_store, scan=scan, now=now, runs=runs)
-        if gemini_task is None:
-            gemini, gemini_source, gemini_incidents = _gemini_off(capacity, limits_source)
-        else:
-            gemini, gemini_source, gemini_incidents = await gemini_task
+        gemini, gemini_source, gemini_incidents = (
+            _gemini_unread(env, capacity, limits_source)
+            if gemini_task is None
+            else await gemini_task
+        )
         metrics = [part[0] for part in externals]
         return build_snapshot(
             now=now,
@@ -1163,12 +1306,12 @@ async def collect_all_async(
             traffic=traffic,
             rules=rules,
             memory=memory,
-            capacity=merge_external(merge_quotas(capacity, gemini), metrics),
+            capacity=_limits_block(env, capacity, gemini, metrics),
             sources=(
                 gateway_source,
-                limits_source,
+                *_present(limits_source),
                 *(part[1] for part in externals),
-                gemini_source,
+                *_present(gemini_source),
                 drift_source,
                 backup_source,
                 cron_source,
@@ -1418,10 +1561,20 @@ async def _limits_guarded(
     resolve: Resolver,
     timeout_seconds: float,
     flights: Flights,
+    caches: dict[str, Any] | None,
+    interval_seconds: float,
+    period_seconds: float | None,
 ) -> LimitsPart:
     try:
         capacity, source, _probe = await collect_limits_async(
-            env, now=now, resolve=resolve, timeout_seconds=timeout_seconds, flights=flights
+            env,
+            now=now,
+            resolve=resolve,
+            timeout_seconds=timeout_seconds,
+            flights=flights,
+            caches=caches,
+            interval_seconds=interval_seconds,
+            period_seconds=period_seconds,
         )
         return capacity, source, ()
     except _UNGUARDED:
@@ -1453,7 +1606,7 @@ async def _externals_guarded(
         *(
             _external_guarded(
                 source,
-                _cache_for(store, source.key),
+                cache_for(store, source.key),
                 now=now,
                 interval_seconds=interval_seconds,
                 show_seconds=show,

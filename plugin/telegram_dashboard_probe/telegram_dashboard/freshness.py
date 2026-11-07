@@ -109,6 +109,12 @@ def confirmation_slack_seconds(period_seconds: int) -> float:
 
 PLUGIN_STATE_KEY = "probe"
 _PLUGIN_FAILED_SUFFIX = "_failed"
+# The statuses the probe plugin writes as ``last_status``: 1.0.0's six and ``deferred`` (1.1.0).
+# The state line of ``--check`` and the watchdog names one of these and prints anything else as
+# ``None``, so the words of a foreign or hand-edited file never reach an alert.
+PLUGIN_STATUSES = frozenset(
+    {"created", "edited", "waiting", "deferred", "edit_failed", "send_failed", "tick_failed"}
+)
 
 
 def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) -> DeliveryRecord:
@@ -116,7 +122,10 @@ def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) ->
 
     The plugin keeps ``last_status``/``last_error`` and clears ``message_id`` when the message is
     lost; ``lost`` here therefore means lost and not recreated. ``never`` for a missing key or a
-    foreign file: a watchdog pointed at the wrong file must fail, not pass.
+    foreign file: a watchdog pointed at the wrong file must fail, not pass. Only a status ending
+    in ``_failed`` is an error; any other (``edited``, ``created``, ``waiting``, ``deferred``: an
+    edit the engine held back while the chat's outbound slot was busy) leaves the verdict to
+    the age of the last confirmation.
     """
     if not isinstance(payload, dict):
         return DeliveryRecord()
@@ -143,19 +152,36 @@ def record_from_plugin_state(payload: object, *, key: str = PLUGIN_STATE_KEY) ->
     )
 
 
-def load_plugin_record(path: Path) -> DeliveryRecord:
-    """The probe plugin's record from its PluginState file; an empty record (``never``) when the
-    file is missing or unreadable: a watchdog pointed at a wrong path must fail, not pass."""
+def plugin_last_status(payload: object, *, key: str = PLUGIN_STATE_KEY) -> str | None:
+    """The probe plugin's ``last_status`` as it wrote it (``edited``, ``deferred``,
+    ``edit_failed``, ...), for the state line of ``--check`` and the watchdog: a message that went
+    stale with no error says why there (``deferred``: the engine kept holding the edits back).
+    ``None`` for a missing key, a foreign file or a value that is not one of the plugin's own
+    statuses (``PLUGIN_STATUSES``)."""
+    raw = payload.get(key) if isinstance(payload, dict) else None
+    status = _plugin_str(raw.get("last_status")) if isinstance(raw, dict) else None
+    return status if status in PLUGIN_STATUSES else None
+
+
+def load_plugin_state(path: Path) -> tuple[DeliveryRecord, str | None]:
+    """The probe plugin's record and its last status from its PluginState file; an empty record
+    (``never``) and no status when the file is missing or unreadable: a watchdog pointed at a
+    wrong path must fail, not pass."""
     logger = logging.getLogger(__name__)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.error("plugin state file missing: %s", path.name)
-        return DeliveryRecord()
+        return DeliveryRecord(), None
     except (OSError, ValueError, UnicodeDecodeError) as exc:
         logger.error("plugin state unreadable (%s): %s", type(exc).__name__, path.name)
-        return DeliveryRecord()
-    return record_from_plugin_state(payload)
+        return DeliveryRecord(), None
+    return record_from_plugin_state(payload), plugin_last_status(payload)
+
+
+def load_plugin_record(path: Path) -> DeliveryRecord:
+    """``load_plugin_state`` without the status."""
+    return load_plugin_state(path)[0]
 
 
 def _plugin_message_id(value: object) -> int | None:
