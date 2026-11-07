@@ -11,8 +11,9 @@ active profile's value; the process environment outside Hermes), and never from 
 variable: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN``, the cron path of this
 dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``, and any ``*_BOT_TOKEN`` is refused with them. The
 plugin never reads the bot token itself (the catalog review, hermes-agent#122408). A key with
-whitespace or a control character is never sent, and a failed request that carried the key names
-the error's class only: the text of a transport error can hold the header.
+whitespace or a control character is never sent, and a failed request names the error's class
+only, with or without a key: the text of a transport error can quote the URL with its query, and
+the header.
 """
 
 from __future__ import annotations

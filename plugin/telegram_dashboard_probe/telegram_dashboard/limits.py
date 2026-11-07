@@ -203,7 +203,7 @@ async def fetch_limits_payload_off_loop(
     ``cadence`` a miss shows each provider's own standing attempt, or its last answer while it
     is young enough (``_missed``), and the abandoned worker records its attempt when it
     returns, so the next tick serves it without asking again. With no provider to ask
-    (``listed`` names none) no worker starts.
+    (``listed`` names none) no worker starts. ``judged`` as for :func:`build_limits_payload`.
     """
     if not asked(listed):
         return build_limits_payload(resolve, cadence, listed, judged)
@@ -261,7 +261,7 @@ def _missed(
     ``show_seconds``, else "no data" with the reason, as an external source does
     (``collect._external_guarded``). A miss is neither an answer nor a ``None``: a provider
     that was not configured stays so (``_judged`` reads the record, which the miss leaves
-    alone)."""
+    alone), unless ``judged`` is off: then no provider is judged by its silence."""
     if cadence is None:
         return _not_ok(reason)
     providers = []
@@ -309,7 +309,8 @@ def _judged(
     ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row, one that answered before once its last
     answer is older than ``QUIET_SHOWN_SECONDS``. Without a record (``cache`` ``None``, the cron
     path) there is no memory: the facade's ``None`` is not configured at once. A provider the
-    owner named in ``limits_providers`` (``pinned``) keeps its line whatever it says. The
+    owner named in ``limits_providers``, and every provider where the silence says nothing
+    (``judged`` off in the caller), is ``pinned`` and keeps its line whatever it says. The
     cache's own item stays what the attempt returned; only the payload's item changes."""
     if pinned or not _quiet(item, cache, now):
         return item

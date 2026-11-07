@@ -1856,6 +1856,57 @@ def test_a_listed_provider_keeps_its_line_through_a_missed_deadline_and_a_busy_t
         assert (codex.kind, codex.detail) == ("not_configured", "off in the dashboard settings")
 
 
+def test_the_tick_s_own_path_keeps_no_data_on_the_launch_profile_of_a_multiplexing_gateway(
+    tmp_path: Path,
+) -> None:
+    """The async path the plugin's tick takes, with ``facade_unscoped``: a record that would
+    hide both providers (three empty answers in a row) leaves each its "no data" line on a tick
+    whose worker misses its deadline, on the next while it is still busy, and on a tick whose
+    worker answers empty again."""
+    from probe_fakes import until
+
+    from telegram_dashboard.workers import Flights
+
+    release = threading.Event()
+
+    def fetch(provider: str):
+        release.wait(5)
+        return None
+
+    caches = {key: _quiet_cache(key, 3) for key in ("claude", "codex")}
+    env = Environment(hermes_home=tmp_path, facade_unscoped=True)
+    flights = Flights()
+
+    def tick(seconds: float):
+        return collect_limits_async(
+            env,
+            now=NOW + timedelta(seconds=seconds),
+            resolve=lambda: fetch,
+            timeout_seconds=0.05,
+            flights=flights,
+            caches=caches,
+            interval_seconds=300,
+        )
+
+    async def scenario():
+        first = await tick(0)
+        second = await tick(60)
+        release.set()
+        await until(lambda: not flights.busy("limits"))
+        third = await tick(700)
+        return first[0], second[0], third[0]
+
+    first, second, third = asyncio.run(scenario())
+
+    for capacity, reason in (
+        (first, "timeout: facade did not answer within 0.05s"),
+        (second, "busy: the previous facade call has not returned yet"),
+        (third, _NO_ANSWER),
+    ):
+        assert [(q.kind, q.detail) for q in capacity.quotas] == [("unavailable", reason)] * 2
+    assert caches["claude"]["none_attempts"] >= 4  # the record still counts them
+
+
 def test_claude_on_an_api_key_is_an_answer_and_keeps_its_line(tmp_path: Path) -> None:
     """A snapshot without numbers (Claude on an API key) is an answer: the account is there, the
     line stays "no data" with the engine's reason however often it comes."""
