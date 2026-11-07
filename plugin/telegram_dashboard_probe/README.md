@@ -253,10 +253,12 @@ named under "Disclosure" below.
 
 Two documented engine modules are imported. Account limits come from
 `agent.account_usage.fetch_account_usage`, a public function the plugin calls the same way on
-every verified version, as the gateway's own `/usage` calls it (worker thread, deadline,
-failures never propagate; `limits.py`) but with the provider's name alone: `/usage` also passes
-the session's `base_url` and `api_key`. Both leave `read_only` at its default, so the engine may
-refresh the account's OAuth token while it answers. Each provider is asked once per
+every verified version, as the gateway's own `/usage` calls it (in a worker thread, failures
+never propagate; `limits.py`), with two differences: the plugin adds a 45 s deadline `/usage`
+does not have, and it passes the provider's name alone, where `/usage` also passes the session's
+`base_url` and `api_key`. Both leave `read_only` at its default, and the engine may refresh the
+account's OAuth token while it answers (an expired login is refreshed whatever `read_only` says;
+the flag only stops Codex's retry after a 401). Each provider is asked once per
 `facade_refresh_seconds` (5 minutes by default; an attempt due within 5 s goes out on the tick at
 hand, so a tick that wakes a moment early does not push it a whole period). An import failure
 makes the source `unsupported`. The key of a `limits_sources` entry is read with
@@ -307,16 +309,23 @@ carry the full story. Module paths are relative to this folder.
   bot sent it, then a new message is sent. The plugin pins and unpins nothing ("The plugin",
   "Updating from 1.0.0").
 - Account limits, through Hermes. While `limits_enabled` is on (the default),
-  `agent.account_usage.fetch_account_usage("anthropic")` and `("openai-codex")` are called in
-  one worker thread with a 45 s deadline, each provider once per `facade_refresh_seconds`
+  `agent.account_usage.fetch_account_usage("anthropic")` and `("openai-codex")` are called in one
+  worker thread with a 45 s deadline, each provider once per `facade_refresh_seconds`
   (default 300 s, at least 60 s), not on every tick. That engine function asks Anthropic's OAuth
-  usage endpoint and Codex's usage endpoint on the ChatGPT backend with the account's own
-  credentials; the plugin passes the provider's name alone and leaves `read_only` at its
-  default, so, as for `/usage`, Hermes' auth code may refresh the account's OAuth token on the
-  way. A provider with no sign of an account here is still asked on that cadence;
-  `limits_providers` is what stops the asking: a provider it leaves out is never asked, and with
-  neither Claude nor Codex listed the facade is not even imported ("Limits: three kinds that
-  never mix").
+  usage endpoint (`api.anthropic.com`, only for an OAuth login) and Codex's usage endpoint
+  (`chatgpt.com/backend-api/wham/usage`, unless Hermes' Codex base URL or a pooled key's route
+  points elsewhere) with the account's own credentials. To find them it may read, outside
+  `HERMES_HOME`, Claude Code's `~/.claude/.credentials.json` (under `CLAUDE_CONFIG_DIR` when set)
+  and, on macOS, the login Keychain (it runs `security find-generic-password`), and when Hermes'
+  own Codex login is missing or its refresh is refused, the Codex CLI's `~/.codex/auth.json`
+  (`CODEX_HOME`). An expired login is refreshed on the way, whatever `read_only` says (the plugin
+  leaves it at its default; it only stops Codex's retry after a 401): a request to
+  `platform.claude.com` (fallback `console.anthropic.com`) or `auth.openai.com`, the new token
+  written as under "What it writes". `auth.adopt_external_logins: false` in Hermes' `config.yaml`
+  keeps Hermes off the Claude Code and Codex CLI logins. A provider with no sign of an account
+  here is still asked on that cadence; `limits_providers` is what stops the asking: a provider it
+  leaves out is never asked, and with neither Claude nor Codex listed the facade is not even
+  imported ("Limits: three kinds that never mix").
 - GitHub. At most once per 15 minutes (later when GitHub's rate limit asks for it), an
   unauthenticated GET of `https://api.github.com/repos/NousResearch/hermes-agent/releases/latest`
   with the last ETag, and of `releases?per_page=100` when Latest names another version than the
@@ -351,7 +360,10 @@ carry the full story. Module paths are relative to this folder.
   profile's outside any, so a secondary profile's dashboard reads its own key, and on the launch
   profile's dashboard a keyed source shows no data with `key not readable outside a profile
   scope`. Names Hermes treats as process-wide (`TERMINAL_*`, `HERMES_TELEGRAM_*`, `PATH` and the
-  like) come from the process environment even there.
+  like) come from the process environment even there. The limits facade looks up Claude's
+  login the same way, so on the launch profile's dashboard of a multiplexing gateway Claude only
+  ever gets the facade's empty answer and is taken as not configured ("Limits: three kinds that
+  never mix"), unless `limits_providers` names it.
 - Text a keyed source sends back is scrubbed before it is shown or kept: `Bearer <key>` or the
   key becomes `[key]`, and a text that still holds any 8 characters of the key in a row becomes
   `[key hidden]`. A failed request that carried the key is named by its exception class only.
@@ -450,16 +462,21 @@ log line.
 - The gateway's journal gets the adapter's error text of a failed edit or send (WARNING; a lost
   message at ERROR with its id), the record's path at start (INFO) and, for an unforeseen failure
   of a tick, a collector or the render, a traceback.
-- Hermes' auth code behind the limits facade may save a refreshed OAuth token; the plugin's own
-  code writes no credential, no file under `HERMES_HOME/cron`, no memory or pending file and no
-  database.
+- Hermes' auth code behind the limits facade may write a refreshed login back where it came
+  from: Claude Code's `~/.claude/.credentials.json` (mode 0600, with a `.credentials.lock` beside
+  it) and, on macOS, its Keychain item (through `security`), or Hermes' own `auth.json`, whose
+  `auth.lock` every Codex call takes; a Codex CLI login it takes up is copied into Hermes'
+  `auth.json`. The plugin's own code writes no credential, no file under `HERMES_HOME/cron`, no
+  memory or pending file and no database.
 
 **Processes**
 
 - `drift_command`, if set and no `drift_report` is: run every tick in a worker as argv without a
-  shell, in its own process group with stdin closed, 30 s limit, then killed with its process
-  tree. It inherits the gateway's environment and working directory and runs with the gateway
-  user's rights. No other process is started.
+  shell, in its own process group with stdin from the null device, 30 s limit, then killed with
+  its process group (POSIX) or its process tree (`taskkill /T /F`, Windows). It inherits the
+  gateway's environment and working directory and runs with the gateway user's rights.
+- The plugin's own code starts no other process (but that `taskkill`); the limits facade may run
+  `security` on macOS (above).
 
 **Where it runs and what it imports**
 
