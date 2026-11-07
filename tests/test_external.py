@@ -1108,7 +1108,7 @@ def test_only_the_external_module_reads_a_source_key() -> None:
 
 # ---------------------------------------------------------------- the published contract
 
-README = PLUGIN_DIR.parents[1] / "README.md"
+README = PLUGIN_DIR / "README.md"
 
 
 def _readme_section(heading: str) -> str:
