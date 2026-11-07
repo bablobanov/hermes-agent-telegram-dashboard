@@ -271,7 +271,7 @@ private members of the live Telegram adapter are listed under "Disclosure".
 ## Disclosure: what the plugin reads, writes and sends
 
 Everything the plugin does outside its own code, in one list; the sections named in quotes
-carry the full story. Module paths are relative to this folder.
+carry the full story.
 
 **How it runs**
 
@@ -287,6 +287,8 @@ carry the full story. Module paths are relative to this folder.
   file, it holds references to the registration, the adapter and the gateway runner (weak where
   the object takes one), the adapter's platform key, the gateway's event loop, the task, the
   adapter generation and whether it is the launch profile ("Restarts, reloads and profiles").
+  Nothing removes the registry: after an unload or a disable it stays in the process, holding
+  the event loop and the last task, until the gateway exits.
 - Every tick (`period_seconds`, default 60 s) reads the sources below, renders one screen and
   edits one message. Slow reads run in worker threads of the gateway's default executor under a
   deadline; a thread that misses it runs on until it returns, and its source is not started
@@ -304,9 +306,12 @@ carry the full story. Module paths are relative to this folder.
   calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
   (`raw_response` `{"skipped": true}`) is recorded as `deferred` and made again on the next
   tick. The record keeps the id of the bot that sent the message, and a bot with another id does
-  not edit it: a new message is sent. On a multiplexing gateway a record from before 1.1.0,
-  which names no sender, waits at most five minutes from the start for the runner to tell whose
-  bot sent it, then a new message is sent. The plugin pins and unpins nothing ("The plugin",
+  not edit it: a new message is sent. A record from before 1.1.0 names no sender: on a gateway
+  that serves one profile its message is edited and the sender recorded; on a multiplexing one
+  the launch profile's message is edited the same way, a served profile's (1.0.0 sent it
+  through the launch profile's bot) is replaced, and while the runner cannot tell yet which
+  profile it is, the tick waits, at most five minutes from the start, then replaces it. A
+  replaced message stays in the chat; the plugin pins and unpins nothing ("The plugin",
   "Updating from 1.0.0").
 - Account limits, through Hermes. While `limits_enabled` is on (the default),
   `agent.account_usage.fetch_account_usage("anthropic")` and `("openai-codex")` are called in one
@@ -334,11 +339,11 @@ carry the full story. Module paths are relative to this folder.
   `api.github.com`; 10 s socket timeout, 25 s tick deadline, the body cut at 16 MB, an error
   answer's body read up to 2,000 bytes to tell a rate limit. No setting turns this check off
   ("The Hermes version line").
-- `limits_sources`, only if configured: up to 4 entries, each asked with one GET per
-  `limits_refresh_seconds` (default 900 s, at least 60 s) at an `http` URL on `127.0.0.1`,
-  `localhost` or `[::1]` with no credentials in it; no proxy, no redirect, the answer cut at
-  64 KB, timeout 1 to 120 s (default 20 s), tick deadline 25 s. Any other entry is refused at
-  start and never asked ("External limit sources").
+- `limits_sources`, only if configured and while `limits_enabled` is on: up to 4 entries, each
+  asked with one GET per `limits_refresh_seconds` (default 900 s, at least 60 s) at an `http` URL
+  on `127.0.0.1`, `localhost` or `[::1]` with no credentials in it; no proxy, no redirect, an
+  answer over 64 KB refused (no more is read), timeout 1 to 120 s (default 20 s), tick deadline
+  25 s. Any other entry is refused at start and never asked ("External limit sources").
 - Nothing else: the plugin's own code contacts no other host, opens no port, calls no LLM and
   reports no telemetry.
 
@@ -346,14 +351,17 @@ carry the full story. Module paths are relative to this folder.
 
 - The plugin never reads the Telegram bot token; it stays inside the engine's bot. To tell whose
   message it edits it keeps the bot's numeric Telegram id (`bot_id`), read off the adapter's
-  private `_bot`, which holds it from getMe at the bot's start: no request, nothing of the token.
-- The only secret its own code reads is the optional key of a `limits_sources` entry
+  private `_bot`, which holds it from getMe at the bot's start: no request, nothing secret (the
+  id is the bot's public user id).
+- The only secret its own code uses is the optional key of a `limits_sources` entry
   (`key_env`), sent as `Authorization: Bearer <key>`. It is read with
   `agent.secret_scope.get_secret`; only where that module does not exist at all (the standalone
   CLI outside the engine's interpreter, CI) is the process environment read.
   `TELEGRAM_BOT_TOKEN`, `HERMES_DASHBOARD_BOT_TOKEN` and any name ending in `_BOT_TOKEN` are
   refused, and so is a key shorter than 8 characters or one with whitespace or a control
-  character, which a header cannot carry; nothing is requested then.
+  character, which a header cannot carry; nothing is requested then. `config.yaml`, which can
+  hold API keys (`delegation.api_key` and the like), is parsed whole, so such values pass through
+  memory unused; none is shown, logged or kept.
 - Scope. A gateway that serves one profile reads the process environment. On a gateway that
   multiplexes profiles `get_secret` answers in the profile scope the dashboard's loop was started
   in: Hermes connects a secondary profile's adapter inside that profile's scope and the launch
@@ -382,9 +390,10 @@ carry the full story. Module paths are relative to this folder.
 - Imported at call time: `agent.account_usage` and `agent.secret_scope` (documented for
   plugins) and `hermes_yaml`, the engine's YAML parser (not documented for plugins; PyYAML is the
   fallback), which the import loads if the gateway has not.
-- Read from modules the gateway already imported, never imported or changed: `hermes_cli`'s
-  version (as a value of the module, else last through its `__getattr__`, which reads the install
-  stamp from disk), the private `hermes_cli.version_info._cached_version_info` (its `source` and
+- Looked up in modules the gateway already imported, without importing them, and never changed:
+  `hermes_cli`'s version (as a value of the module, else last through its `__getattr__`, which
+  may import `hermes_cli.steward` and `pm.paths` and reads the install stamp from disk), the
+  private `hermes_cli.version_info._cached_version_info` (its `source` and
   `base_version`, and the module's `__file__`), and the signature, never a call, of the private
   `agent.prompt_builder._read_text_with_timeout`.
 - On the live Telegram adapter: the private method `_edit_text` and the private attribute
@@ -398,14 +407,14 @@ carry the full story. Module paths are relative to this folder.
   never the tick.
 - Of the plugin API: `ctx.register_platform_handler`, `ctx.spawn_task`, `ctx.on_unload`,
   `ctx.get_config` and `ctx.state`.
-- Nothing in the engine is assigned, patched or replaced; the one name the plugin adds to
-  `sys.modules` is its registry (above), and Hermes' own `no core override` check, the one
-  `hermes plugins validate` runs, passes the plugin.
+- Nothing in the engine is assigned, patched or replaced; the one module the plugin creates in
+  `sys.modules` by hand is its registry (above), beside what its imports load, and Hermes' own
+  `no core override` check, the one `hermes plugins validate` runs, passes the plugin.
 
 **What it reads**
 
 Under the profile's `HERMES_HOME` (the `hermes_home` setting, else the home of the plugin's own
-state file, else the `HERMES_HOME` variable, else `~/.hermes`), never written:
+state file, else the `HERMES_HOME` variable, else `~/.hermes`), only read:
 
 - `gateway_state.json`: the pid and start time, `updated_at`, `gateway_state` and the
   `platforms` entries (state, error code, attention flag, writer stamps); the recorded pid is
@@ -420,7 +429,9 @@ state file, else the `HERMES_HOME` variable, else `~/.hermes`), never written:
   line").
 - `cron/executions.db` and `state.db`, opened `mode=ro` with `PRAGMA query_only` in a worker: the
   failed or undelivered runs, never the `error` column; the newest saved system prompt of each
-  platform the running gateway lists (up to 12), no other session's ("The rules line").
+  platform the running gateway lists (up to 12), no other session's ("The rules line"). Nothing
+  in them is written by the plugin (SQLite may still keep its `-shm` file current for a database
+  in WAL mode).
 - `logs/errors.log`, the last 256 KB every tick (for the Gemini line the whole file, up to 4 MB,
   until its first successful read): Gemini HTTP 429 lines (time, limit, retry, model), the
   engine's `Failed to send Telegram message` lines (time) and, with a memory provider
@@ -432,33 +443,39 @@ state file, else the `HERMES_HOME` variable, else `~/.hermes`), never written:
 
 Outside `HERMES_HOME`:
 
-- The project context files the engine would load, in the directory the saved prompt names,
-  else the engine's `TERMINAL_CWD`, else the gateway's working directory: any directory on the
-  host. Finding them, the plugin checks for `.git` in that directory and each parent and for the
+- The project context files the engine would load, from the directory the saved prompt names,
+  else the engine's `TERMINAL_CWD`, else the gateway's working directory: `.hermes.md` or
+  `HERMES.md` there or in a parent up to the git root, the `AGENTS.override.md` / `AGENTS.md` /
+  `agents.md` chain from the git root down to it, `CLAUDE.md` or `claude.md`, `.cursorrules` and
+  `.cursor/rules/*.mdc` there; any directory on the host, links followed. Finding them, the
+  plugin checks for `.git` in that directory and each parent and for the
   engine's own source tree in each directory it looks in and its parents. `.hermes.md`,
   `HERMES.md` and the AGENTS names are also read in the gateway's working directory and in
   `HERMES_HOME` ("The rules line").
 - `backup_status` and `drift_report`, if set: a JSON file at the path the operator gives, read
   every tick.
 - Beside the engine's code: whether a `.git` directory is there ("The Hermes version line").
-- Environment variables: `HERMES_HOME`, `TERMINAL_CWD` and the `HERMES_DASHBOARD_PROBE_*`
-  fallbacks of the settings.
+- Environment variables: `HERMES_HOME`, `TERMINAL_CWD`, the `HERMES_DASHBOARD_PROBE_*`
+  fallbacks of the settings and the variable a `limits_sources` entry names in `key_env` (see
+  "Secrets").
 
-Of all this, the screen and the record carry names (of jobs, files, providers), numbers, times
-and one-word kinds; never the text of a prompt, a context file, a notebook, a pending write or a
-log line.
+Of all this, the screen and the record carry names (of jobs, files, providers), numbers, times,
+one-word kinds and a few short texts a source gives as its reason (a backup status's `phase` and
+`reason`, an external source's or the facade's reason, a platform's error code), cleaned and
+cut; never the text of a prompt, a context file, a notebook, a pending write or a log line.
 
 **What it writes**
 
-- Only its record, through the engine's plugin state:
-  `HERMES_HOME/plugin-data/<namespace>/state.json`, one key `probe`, written by Hermes atomically
-  with mode 0600. It holds the chat, topic and message ids, the sending bot's id, the last status
-  and the adapter's own error text of a failed edit or send (`last_error`, in full), times and
-  counters, the screen format and why, and the caches `release_cache`, `facade_cache`,
-  `external_cache`, `gemini_log_cache`, `cron_cache` (job names and `cron_notes` labels among
-  them) and `traffic_cache`, each described under "The plugin". A facade provider that is not
-  configured keeps its entry and its count of empty answers; one left out of `limits_providers`
-  gets no new entry.
+- Only its record, through the engine's plugin state, on every tick:
+  `plugin-data/<namespace>/state.json` under the engine's profile home (whatever `hermes_home`
+  says), one key `probe`, written by Hermes atomically (a temporary file, then a replace) with
+  mode 0600, with a lock file `.state.json.lock` beside it. It holds the chat, topic and message
+  ids, the sending bot's id, the last status and the adapter's own error text of a failed edit or
+  send (`last_error`, in full), times and counters, the screen format and why, and the caches
+  `release_cache`, `facade_cache`, `external_cache`, `gemini_log_cache`, `cron_cache` (job names
+  and `cron_notes` labels among them) and `traffic_cache`, each described under "The plugin". A
+  facade provider that is not configured keeps its entry and its count of empty answers; one left
+  out of `limits_providers` gets no new entry.
 - The gateway's journal gets the adapter's error text of a failed edit or send (WARNING; a lost
   message at ERROR with its id), the record's path at start (INFO) and, for an unforeseen failure
   of a tick, a collector or the render, a traceback.
@@ -495,7 +512,10 @@ log line.
   `editMessageText`, `pinChatMessage`) with the token in the URL through `urllib`'s default
   opener (proxies from the environment apply, redirects are followed), writes its own delivery
   record to the `state_path` its config names, and, in an interpreter where
-  `agent.account_usage` imports, calls the limits facade in its own process on every run.
+  `agent.account_usage` imports, calls the limits facade in its own process on every run. It
+  also asks every `limits_sources` entry (while `limits_enabled` is on) and runs `drift_command`
+  (when no `drift_report` is set) on every run, reads the same files as the plugin, and does not
+  ask GitHub.
 
 ## The plugin: the screen inside the gateway
 
@@ -699,7 +719,7 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `chat_id` | `HERMES_DASHBOARD_PROBE_CHAT` | required; no chat, no handler |
    | `thread_id` | `HERMES_DASHBOARD_PROBE_THREAD` | forum topic; omit for General |
    | `period_seconds` | `HERMES_DASHBOARD_PROBE_PERIOD` | default 60; finite, clamped to [0.01, 86400]; while the Telegram adapter is not connected yet (right after a start) the next try comes in 30 s, not a period later |
-   | `hermes_home` | `HERMES_HOME` | unset: the profile home the plugin's own state file lives in, else the variable, else `~/.hermes`; where the engine's files are read: `gateway_state.json`, `config.yaml`, `state.db`, `cron/`, `memories/`, `pending/`, `skills/` and `logs/errors.log`, which the Gemini line reads |
+   | `hermes_home` | `HERMES_HOME` | unset: the profile home the plugin's own state file lives in, else the variable, else `~/.hermes`; where the engine's files are read: `gateway_state.json`, `config.yaml`, `state.db`, `cron/`, `memories/`, `pending/`, `skills/` and `logs/errors.log`, which the Gemini, Telegram and memory lines read |
    | `drift_report` | `HERMES_DASHBOARD_PROBE_DRIFT_REPORT` | JSON with `checked_at`, `exit_code`, `stdout` |
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
@@ -938,7 +958,7 @@ The details always carry the times: `✓ Telegram last update seen Sep 30 12:30 
 checked; plus `sends blocked since …` and `quiet 9 h, usual gap up to 4 h` when they apply) and
 `Telegram send errors: last Sep 30 11:58` or `none in the log`. "Last update seen" is the tick
 that saw the counter grow, not the update's own time. Failed sends are the engine's own
-`Failed to send Telegram message` ERROR lines in the last 256 KB of `logs/errors.log`, read
+`Failed to send Telegram message` lines in the last 256 KB of `logs/errors.log`, read
 every tick in a worker of its own while the adapter's counters can be read, whether the limits
 are on or off; three in an hour are an event. Successful sends are not logged
 at that level: the last successful send the plugin can vouch for is its own confirmed edit
@@ -1034,9 +1054,9 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   then ran in the engine's `TERMINAL_CWD` when that exists on the host, else in the process's
   own directory, and so does the verdict; with neither (the cron tick without `gateway_dir`)
   rules in the prompt are `unknown`, never an alarm
-- **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (the same
-  read-only connection as the cron history): the schema (two queries), then two or three short
-  statements per platform, the newest session row with a saved prompt (its start and the
+- **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (like
+  the cron history, on a connection of its own): the schema (two queries), then one to three
+  short statements per platform, the newest session row with a saved prompt (its start and the
   prompt's hash, by the source index) and that one prompt (from the table of saved prompts,
   else the session's own column). No other session's prompt is read, and the connection is
   closed before any file is, so a database in rollback-journal mode holds its writer back for
