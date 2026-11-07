@@ -1150,7 +1150,9 @@ The guards, and why:
   `no data` with the reason, and nothing is requested. The request ignores proxies from the
   environment and follows no redirect: a redirect would carry the key to wherever it points. An
   answer other than 200, over 64 KB or not JSON is `no data` with the reason; the body of an
-  error answer is not read
+  error answer is not read. A request that fails is `request failed:` with the error's class
+  alone, with or without a key (a refused connection names the class urllib wraps,
+  `ConnectionRefusedError`): the error's text can quote the URL, its query among it
 - `key_env` names a variable, never a bot token. The key must have at least 8 characters and no
   whitespace or control character, otherwise the source shows no data with the reason. It is
   read with Hermes' `get_secret`: the process environment on a single-profile gateway. On a
