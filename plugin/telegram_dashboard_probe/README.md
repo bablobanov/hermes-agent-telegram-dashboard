@@ -243,17 +243,25 @@ the plugin host`; `hermes plugins validate` reports the verdict `in_process`). T
 cannot fix that on its side: the message is edited through the live Telegram adapter, which
 stays in the gateway. A gateway under `host` has the fallback cron tick with its own bot token.
 
-Three prohibitions, learned from a predecessor that died of them: no imports of engine
-**internals**, no replacement of core files, no post-merge hooks or `assume-unchanged`.
+Three prohibitions, learned from a predecessor that died of them: no replacement of core files,
+no rebinding of engine objects, no post-merge hooks or `assume-unchanged`. Engine internals are
+used only where a capability needs them, and never changed; each one the plugin touches is
+named under "Disclosure" below.
 
-Two named exceptions. Account limits come from `agent.account_usage.fetch_account_usage`, a public
-function with the same signature on every verified version, called exactly the way the gateway's
-own `/usage` calls it (worker thread, deadline, failures never propagate; `limits.py`), but
-once per `facade_refresh_seconds` for each provider (5 minutes by default; an attempt due within
-5 s goes out on the tick at hand, so a tick that wakes a moment early does not push it a whole
-period). An import failure makes the source `unsupported`. The key of a `limits_sources` entry is read with
+Two documented engine modules are imported. Account limits come from
+`agent.account_usage.fetch_account_usage`, a public function the plugin calls the same way on
+every verified version, as the gateway's own `/usage` calls it (worker thread, deadline,
+failures never propagate; `limits.py`) but with the provider's name alone: `/usage` also passes
+the session's `base_url` and `api_key`. Both leave `read_only` at its default, so the engine may
+refresh the account's OAuth token while it answers. Each provider is asked once per
+`facade_refresh_seconds` (5 minutes by default; an attempt due within 5 s goes out on the tick at
+hand, so a tick that wakes a moment early does not push it a whole period). An import failure
+makes the source `unsupported`. The key of a `limits_sources` entry is read with
 `agent.secret_scope.get_secret`, so that the active profile's value is the one used
-(`external.py`). Each exception is a row in the matrix, not a habit.
+(`external.py`). Each of the two is a row in the matrix (`limits`, `external_limits`), not a
+habit. They are not the only engine touchpoints: one undocumented module (`hermes_yaml`, the
+engine's YAML parser), two private values read from modules the gateway already imported and
+private members of the live Telegram adapter are listed under "Disclosure".
 
 ## The plugin: the screen inside the gateway
 
@@ -457,7 +465,7 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `chat_id` | `HERMES_DASHBOARD_PROBE_CHAT` | required; no chat, no handler |
    | `thread_id` | `HERMES_DASHBOARD_PROBE_THREAD` | forum topic; omit for General |
    | `period_seconds` | `HERMES_DASHBOARD_PROBE_PERIOD` | default 60; finite, clamped to [0.01, 86400]; while the Telegram adapter is not connected yet (right after a start) the next try comes in 30 s, not a period later |
-   | `hermes_home` | `HERMES_HOME` | default `~/.hermes`; where `gateway_state.json` lives, and the engine's `logs/errors.log`, which the Gemini line reads |
+   | `hermes_home` | `HERMES_HOME` | unset: the profile home the plugin's own state file lives in, else the variable, else `~/.hermes`; where the engine's files are read: `gateway_state.json`, `config.yaml`, `state.db`, `cron/`, `memories/`, `pending/`, `skills/` and `logs/errors.log`, which the Gemini line reads |
    | `drift_report` | `HERMES_DASHBOARD_PROBE_DRIFT_REPORT` | JSON with `checked_at`, `exit_code`, `stdout` |
    | `drift_command` | (config only, a list) | argv of `check_drift.py`; run off-loop on EVERY tick, 30 s limit, never two at once |
    | `limits_enabled` | `HERMES_DASHBOARD_PROBE_LIMITS` | default on; `0`/`false`/`no`/`off` turns it off |
@@ -509,10 +517,14 @@ file, not on the journal; an empty `grep probe:` in the journal means nothing.
 A record written by 1.0.0 may still carry `limits_cache` (the old per-provider cache of two
 built-in readers that 1.1.0 no longer has); 1.1.0 drops that key when it loads the record.
 `release_cache` holds the check of the latest Hermes release (at most one per 15 minutes, see
-"The Hermes version line") the same way
-(`attempted_at` and its item), and `external_cache` the external limit sources: one entry per
-source under the first eight hex digits of its URL's SHA-256 (the URL itself is not written),
-with the provider, the plan and the login date it last named. `facade_cache` keeps the usage
+"The Hermes version line") the same way: `attempted_at` and its item (Latest and up to 100
+releases, each as its version and publication date, the ETag, GitHub's remaining requests and
+retry time, when the check ran and why it failed, if it did). `external_cache` holds the
+external limit sources: one entry per source under the first eight hex digits of its URL's
+SHA-256 (the URL itself is not written), with the last attempt (`attempted_at` and its item: the
+provider, the status, the reason, `fetched_at`, the plan, the login date and the windows, each
+with its label, share, reset, scope and severity) and the provider, the plan and the login date
+it last named. `facade_cache` keeps the usage
 facade's providers the same way, one entry each (`claude`, `codex`): the last attempt
 (`attempted_at`, the moment that provider was asked), its item (the provider, the status, the reason, the source's name,
 `fetched_at`, the plan, and the windows, each with its label, share and reset; every text
@@ -526,10 +538,11 @@ message; the limit and the retry are kept, not shown) and when the log was last 
 (`checked_at`), so a 429 that rotated out of the log is still the last one. `cron_cache` holds
 where the run-history read left off (`runs_checked_at`), the last tick that looked
 (`checked_at`) and the failures the engine erased that the details still hold (`held`, by job
-id: the kind, the time, the name, the kind of the error in a word, how many ticks shown).
-`traffic_cache` holds the polling generation and the update counter last seen, the last tick
-that saw the counter grow, the longest gap between updates per day of the last seven, the first
-sighting of a blocked send path and the last send error the engine logged.
+id: the kind, the time, the job's name or its `cron_notes` label, the kind of the error in a
+word, the streak, how many ticks shown). `traffic_cache` holds the polling generation and the
+update counter last seen, the last tick that saw the counter grow, the longest gap between
+updates per day of the last seven, the first sighting of a blocked send path, the time of the
+last failed send the engine logged (never its text) and when the log was last checked.
 
 ### The cron line
 
@@ -554,11 +567,14 @@ schedule in the engine's own words, `schedule_display`, else the stored schedule
 the order `hermes cron list` falls back to them (`schedule.display`, `schedule.value`,
 `schedule.expr`, `schedule.run_at`); since 1.0.0 also how often it runs, from `schedule.kind`
 with `schedule.expr` or `schedule.minutes`, below), the ticker's stamps
-(`ticker_heartbeat`, `ticker_last_success`, `ticker_last_error`; the first token of each is the
-epoch, which is why main's `<epoch> <pid>` heartbeat reads the same), and `executions.db`, the
-run history, opened `mode=ro` with `PRAGMA query_only` in a worker under the tick's deadline
-(`cron_jobs.py`, `cron_runs.py`). Never read: `prompt`, `script`, `deliver` (chat ids live
-there), `skills`, the model, the `error` column of the history, `state.db`.
+(`ticker_heartbeat` and `ticker_last_success` for the epoch in their first token, which is why
+main's `<epoch> <pid>` heartbeat reads the same; `ticker_last_error` for its message, reduced
+to the kind of the error in a word), and `executions.db`, the run history, opened `mode=ro`
+with `PRAGMA query_only` in a worker under the tick's deadline (`cron_jobs.py`,
+`cron_runs.py`). Never used: `prompt`, `script`, `deliver` (chat ids live there), `skills` and
+the model; `jobs.json` is parsed whole, so they pass through unread. The `error` column of the
+history is never selected. The cron line does not open `state.db`; the rules line does (see
+"The rules line").
 
 What counts as a failure is the engine's own rule set (`hermes cron status`): a `last_status`
 outside `ok`, `delivery_failed`, `delivery_queued` is a failed run (a literal the plugin does not
@@ -688,8 +704,9 @@ The details always carry the times: `✓ Telegram last update seen Sep 30 12:30 
 checked; plus `sends blocked since …` and `quiet 9 h, usual gap up to 4 h` when they apply) and
 `Telegram send errors: last Sep 30 11:58` or `none in the log`. "Last update seen" is the tick
 that saw the counter grow, not the update's own time. Failed sends are the engine's own
-`Failed to send Telegram message` ERROR lines in `logs/errors.log` (the same tail the Gemini
-line reads, in its own worker); three in an hour are an event. Successful sends are not logged
+`Failed to send Telegram message` ERROR lines in the last 256 KB of `logs/errors.log`, read
+every tick in a worker of its own while the adapter's counters can be read, whether the limits
+are on or off; three in an hour are an event. Successful sends are not logged
 at that level: the last successful send the plugin can vouch for is its own confirmed edit
 (`Confirmed` in the details). Without the counters (an adapter of another shape, or the cron
 path, which holds no adapter) Telegram keeps the verdict of the gateway state, the ❔ line names
@@ -784,16 +801,21 @@ top-level domain) nor a command a tap would send to the dashboard's own chat.
   own directory, and so does the verdict; with neither (the cron tick without `gateway_dir`)
   rules in the prompt are `unknown`, never an alarm
 - **what is read**: `HERMES_HOME/state.db`, opened `mode=ro` with `PRAGMA query_only` (the same
-  read-only connection as the cron history), two short statements per platform: the newest
-  session row with a saved prompt (its start and the prompt's hash, by the source index), then
-  that one prompt. No other session's prompt is read, and the connection is closed before any
-  file is, so a database in rollback-journal mode holds its writer back for milliseconds. In
-  the prompt: the header, the block right after it and the runtime block's working directory.
+  read-only connection as the cron history): the schema (two queries), then two or three short
+  statements per platform, the newest session row with a saved prompt (its start and the
+  prompt's hash, by the source index) and that one prompt (from the table of saved prompts,
+  else the session's own column). No other session's prompt is read, and the connection is
+  closed before any file is, so a database in rollback-journal mode holds its writer back for
+  milliseconds. In the prompt: the header, the block right after it and the runtime block's
+  working directory.
   On disk: the context files by the names the engine loads, in the directory the prompt names
   (else the engine's `TERMINAL_CWD` or the gateway's working directory, either of which may be
   outside `HERMES_HOME`), and the `.hermes.md`, `HERMES.md` and AGENTS names also in the
-  gateway's working directory and `HERMES_HOME`: their text (up to 4 MB, to compare) and change
-  time; a leading BOM is read the way the running engine reads it (0.21.6 drops it before
+  gateway's working directory and `HERMES_HOME`: their text (up to 4 MB, to compare; a larger
+  file is only stat'ed) and change time. To find them the plugin checks for `.git` in that
+  directory and each parent (the git root, as the engine finds it), and for the engine's own
+  source tree (`hermes_cli/main.py` beside `agent/`) in each directory it looks in and its
+  parents. A leading BOM is read the way the running engine reads it (0.21.6 drops it before
   `strip`, earlier versions after it; told by the default `encoding` in the signature of the
   engine's private `agent.prompt_builder._read_text_with_timeout`, looked up in the module the
   gateway already imported and never called, both ways tried where no engine is loaded). In
@@ -1169,8 +1191,13 @@ The guards, and why:
   read with Hermes' `get_secret`: the process environment on a single-profile gateway. On a
   gateway that multiplexes profiles the key is the one of the profile whose Telegram connection
   started the dashboard, when that connection ran in a profile's scope; where the dashboard's
-  tick carries no profile scope, `get_secret` refuses and the source shows no data. Outside
-  Hermes (the standalone CLI) the process environment is read.
+  tick carries no profile scope, `get_secret` refuses and the source shows no data. Hermes
+  connects a secondary profile's adapter inside that profile's scope and the launch profile's
+  outside any, so a secondary profile's dashboard reads its own key and the launch profile's
+  dashboard gets none (`key not readable outside a profile scope`). Only where
+  `agent.secret_scope` does not exist at all (the standalone CLI outside the engine's
+  interpreter, CI) is the process environment read; the CLI run with the engine's interpreter
+  reads through `get_secret` too.
   `TELEGRAM_BOT_TOKEN` (the engine's Telegram adapter reads it), `HERMES_DASHBOARD_BOT_TOKEN` (the
   fallback tick's token) and any name ending in `_BOT_TOKEN`, in any case, are refused and never
   read: the plugin does not read the bot token itself, and a setting must not become a way to
