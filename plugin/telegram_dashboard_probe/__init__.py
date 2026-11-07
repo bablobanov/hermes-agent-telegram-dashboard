@@ -184,13 +184,13 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # CRON_RUNS and TRAFFIC with ``cron_cache``, ``traffic_probe`` and ``traffic_cache``
     # (0.9.0), RULES with the rules line's ``Environment`` fields (0.10.0), compat's CRON_NOTES
     # and parse_cron_notes with ``Environment.cron_notes`` (1.0.0), compat's LIMITS_PROVIDERS
-    # and parse_limits_providers with ``Environment.limits_providers`` (issue #14): a copy
-    # without them would reject the tick's arguments every time.
+    # and parse_limits_providers with ``Environment.limits_providers`` (issue #14), compat's
+    # FACADE_UNSCOPED with ``Environment.facade_unscoped`` (1.1.0): a copy without them would
+    # reject the tick's arguments every time.
     # EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0, whose tick hands no cache to providers
     # an older copy read by itself: that copy would ask them on every tick.
     # FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue #16): a copy without it
-    # would reject that argument, or call the facade on every tick. compat's FACADE_UNSCOPED
-    # came with ``Environment.facade_unscoped`` (1.1.0).
+    # would reject that argument, or call the facade on every tick.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -748,35 +748,27 @@ def _a_bot_id(value: object) -> int | None:
     return value
 
 
-def _serves_one_profile(runner: object) -> bool:
-    """Whether ``runner`` serves only the profile it was started for, read the way the runner
-    reads it (``GatewayRunner._multiplex_on``: ``config.multiplex_profiles``, settled at boot by
-    ``resolve_multiplex_mode``; v0.22.2 to v0.23.0). Such a runner starts no secondary profile's
-    adapters: a single-profile home, a standalone profile. ``False`` for a runner without a
-    config, which tells nothing (the map decides then), and when the verdict cannot be read."""
+def _multiplex_verdict(runner: object) -> bool | None:
+    """Whether ``runner`` multiplexes profiles, read the way the runner reads it
+    (``GatewayRunner._multiplex_on``: ``config.multiplex_profiles``, settled at boot by
+    ``resolve_multiplex_mode``; v0.22.2 to v0.23.0; 0.23.0 may turn it on at runtime when a
+    second profile appears, so it is read when asked). ``None`` for a runner without a config,
+    which tells nothing, and when the verdict cannot be read."""
     config = getattr(runner, "config", None)
     if config is None:
-        return False
-    try:
-        return not getattr(config, "multiplex_profiles", False)
-    except Exception as exc:
-        logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
-        return False
-
-
-def _multiplexes(runner: object) -> bool:
-    """Whether ``runner`` says it multiplexes profiles, read as the runner reads it
-    (``config.multiplex_profiles``, ``GatewayRunner._multiplex_on``; 0.23.0 may turn it on at
-    runtime when a second profile appears, so it is read every tick). ``False`` without a
-    config or a readable verdict: that tells nothing."""
-    config = getattr(runner, "config", None)
-    if config is None:
-        return False
+        return None
     try:
         return bool(getattr(config, "multiplex_profiles", False))
     except Exception as exc:
         logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
-        return False
+        return None
+
+
+def _serves_one_profile(runner: object) -> bool:
+    """Whether ``runner`` serves only the profile it was started for (``_multiplex_verdict``
+    false). Such a runner starts no secondary profile's adapters: a single-profile home, a
+    standalone profile. ``False`` when the verdict tells nothing (the map decides then)."""
+    return _multiplex_verdict(runner) is False
 
 
 def _rich_message(markup: str) -> dict[str, Any]:
@@ -1344,6 +1336,15 @@ class ProbeRuntime:
             return None
         return adapters.get(self._platform) is not None
 
+    def _unscoped(self) -> bool:
+        """Whether this tick may run outside any profile scope on a gateway that multiplexes
+        profiles: the launch profile's adapter connects outside one and the tick runs in that
+        context, so the facade's silence says nothing here (``Environment.facade_unscoped``).
+        Taken so until the runner tells that this registration serves another profile
+        (``_served`` true): a start's ticks come before the launch marker, while the record
+        already holds the empty answers counted before the restart."""
+        return _multiplex_verdict(_deref(self._runner)) is True and self._served() is not True
+
     def _sender_wait_left(self) -> bool:
         """Whether a record without a sender still waits for the runner to tell the profile:
         less than ``SENDER_WAIT_SECONDS`` since this registration started."""
@@ -1746,9 +1747,7 @@ class ProbeRuntime:
             memory_enabled=self.settings.memory,
             cron_notes=self.settings.cron_notes,
             limits_providers=self.settings.limits_providers,
-            # The launch profile's adapter connects outside any profile scope and the tick runs
-            # in that context: on a multiplexing gateway the facade's silence says nothing here.
-            facade_unscoped=self.primary and _multiplexes(_deref(self._runner)),
+            facade_unscoped=self._unscoped(),
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,

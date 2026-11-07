@@ -548,32 +548,49 @@ def test_limits_providers_are_read_from_the_config_entry_only(
 
 
 @pytest.mark.parametrize(
-    ("primary", "config", "unscoped"),
+    ("primary", "config", "published", "unscoped"),
     [
-        (True, {"multiplex_profiles": True}, True),
-        (True, {"multiplex_profiles": False}, False),
-        (False, {"multiplex_profiles": True}, False),
-        (True, None, False),
+        (True, {"multiplex_profiles": True}, {"telegram": "ours"}, True),
+        (False, {"multiplex_profiles": True}, {}, True),
+        (False, {"multiplex_profiles": True}, {"slack": "other"}, True),
+        (True, {"multiplex_profiles": False}, {"telegram": "ours"}, False),
+        (False, {"multiplex_profiles": True}, {"telegram": "the launch profile's"}, False),
+        (True, None, {}, False),
     ],
-    ids=["launch, multiplexing", "launch, one profile", "served profile", "no verdict"],
+    ids=[
+        "launch, multiplexing",
+        "a start, the map still empty",
+        "no Telegram adapter published yet",
+        "launch, one profile",
+        "served profile",
+        "no verdict",
+    ],
 )
 def test_the_launch_profile_of_a_multiplexing_gateway_reaches_the_collector(
-    monkeypatch, tmp_path: Path, primary: bool, config: dict | None, unscoped: bool
+    monkeypatch,
+    tmp_path: Path,
+    primary: bool,
+    config: dict | None,
+    published: dict,
+    unscoped: bool,
 ) -> None:
     """The launch profile's adapter connects outside any profile scope, and the tick runs in
     that context: on a gateway that multiplexes profiles the facade's silence says nothing
-    there. A served profile's tick runs in its own scope; a gateway that serves one profile
-    has no scope to miss; a runner without a verdict tells nothing."""
+    there. Until the runner tells that this registration serves another profile (its map
+    publishes a Telegram adapter never handed here), the tick counts as unscoped: after a
+    restart the record already holds empty answers, and the launch marker comes only with the
+    runner's map. A served profile's tick runs in its own scope; a gateway that serves one
+    profile has no scope to miss; a runner without a verdict tells nothing."""
     from datetime import datetime
     from types import SimpleNamespace
 
     plugin = load_plugin()
     runtime = plugin.register(FakeContext(_settings(monkeypatch, _home(tmp_path))))
     assert runtime is not None
-    runner = SimpleNamespace(adapters={})
+    runner = SimpleNamespace(adapters=published)
     if config is not None:
         runner.config = SimpleNamespace(**config)
-    runtime._runner, runtime.primary = (lambda: runner), primary
+    runtime._runner, runtime.primary, runtime._platform = (lambda: runner), primary, "telegram"
     seen: list[Any] = []
 
     async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
@@ -694,6 +711,28 @@ def test_a_package_copy_without_the_facade_cadence_is_refused_at_load(tmp_path: 
     collect_py.write_text(text.replace(name, "_OLDER_FACADE_INTERVAL_SECONDS"), "utf-8")
 
     plugin = load_plugin("hermes_plugins.pre_facade_cadence_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "installed"
+
+
+def test_a_package_copy_without_the_unscoped_facade_field_is_refused_at_load(
+    tmp_path: Path,
+) -> None:
+    """The plugin hands ``facade_unscoped`` to ``Environment`` (1.1.0); a copy without it would
+    reject the argument on every tick. A copy without ``FACADE_UNSCOPED`` is refused at load
+    and the next candidate is taken."""
+    assert "FACADE_UNSCOPED" in load_plugin().REQUIRED_API["compat"]
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    compat_py = plugin_dir / "telegram_dashboard" / "compat.py"
+    text = compat_py.read_text(encoding="utf-8")
+    line = 'FACADE_UNSCOPED = "facade_unscoped"\n'
+    assert line in text
+    compat_py.write_text(text.replace(line, ""), "utf-8")
+
+    plugin = load_plugin("hermes_plugins.pre_unscoped_probe", plugin_dir, vendored=True)
     dashboard = plugin.import_dashboard()
 
     assert dashboard is not None
