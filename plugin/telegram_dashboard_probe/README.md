@@ -1,10 +1,10 @@
 # hermes-agent-telegram-dashboard
 
-**English** · [简体中文](README.zh-Hans.md)
+**English** · [简体中文](../../README.zh-Hans.md)
 
 [![CI](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml)
 
-![Hermes Agent Telegram Dashboard](docs/social-preview.jpg)
+![Hermes Agent Telegram Dashboard](../../docs/social-preview.jpg)
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call.
@@ -122,7 +122,7 @@ Hermes version the gateway runs next to the latest upstream release, and a colla
 block with the reasons and the timestamps. Nothing to open, nothing to install
 on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
 
-<img src="docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
+<img src="../../docs/dashboard-preview.jpg" width="600" alt="An illustration of the pinned dashboard: status line, gateway, backup, drift, usage limits and details">
 
 The picture is an illustration of what the message carries, drawn before 1.0.0; the message
 itself is the screen above.
