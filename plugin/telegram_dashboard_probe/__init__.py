@@ -189,7 +189,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # EXTERNAL_DEFAULT_INTERVAL_SECONDS came with 1.1.0, whose tick hands no cache to providers
     # an older copy read by itself: that copy would ask them on every tick.
     # FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue #16): a copy without it
-    # would reject that argument, or call the facade on every tick.
+    # would reject that argument, or call the facade on every tick. compat's FACADE_UNSCOPED
+    # came with ``Environment.facade_unscoped`` (1.1.0).
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -210,6 +211,7 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "parse_cron_notes",
         "LIMITS_PROVIDERS",
         "parse_limits_providers",
+        "FACADE_UNSCOPED",
     ),
     # classify_message_freshness: the screen's own lagging rule, which a run of edits the engine
     # holds back is measured against (``_defer``); in the module since 0.3.0, the first release.
@@ -757,6 +759,21 @@ def _serves_one_profile(runner: object) -> bool:
         return False
     try:
         return not getattr(config, "multiplex_profiles", False)
+    except Exception as exc:
+        logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
+        return False
+
+
+def _multiplexes(runner: object) -> bool:
+    """Whether ``runner`` says it multiplexes profiles, read as the runner reads it
+    (``config.multiplex_profiles``, ``GatewayRunner._multiplex_on``; 0.23.0 may turn it on at
+    runtime when a second profile appears, so it is read every tick). ``False`` without a
+    config or a readable verdict: that tells nothing."""
+    config = getattr(runner, "config", None)
+    if config is None:
+        return False
+    try:
+        return bool(getattr(config, "multiplex_profiles", False))
     except Exception as exc:
         logger.debug("probe: the runner's multiplex verdict unreadable (%s)", type(exc).__name__)
         return False
@@ -1729,6 +1746,9 @@ class ProbeRuntime:
             memory_enabled=self.settings.memory,
             cron_notes=self.settings.cron_notes,
             limits_providers=self.settings.limits_providers,
+            # The launch profile's adapter connects outside any profile scope and the tick runs
+            # in that context: on a multiplexing gateway the facade's silence says nothing here.
+            facade_unscoped=self.primary and _multiplexes(_deref(self._runner)),
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,

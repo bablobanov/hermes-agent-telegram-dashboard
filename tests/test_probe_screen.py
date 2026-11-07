@@ -547,6 +547,45 @@ def test_limits_providers_are_read_from_the_config_entry_only(
     assert "Grok-secret" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("primary", "config", "unscoped"),
+    [
+        (True, {"multiplex_profiles": True}, True),
+        (True, {"multiplex_profiles": False}, False),
+        (False, {"multiplex_profiles": True}, False),
+        (True, None, False),
+    ],
+    ids=["launch, multiplexing", "launch, one profile", "served profile", "no verdict"],
+)
+def test_the_launch_profile_of_a_multiplexing_gateway_reaches_the_collector(
+    monkeypatch, tmp_path: Path, primary: bool, config: dict | None, unscoped: bool
+) -> None:
+    """The launch profile's adapter connects outside any profile scope, and the tick runs in
+    that context: on a gateway that multiplexes profiles the facade's silence says nothing
+    there. A served profile's tick runs in its own scope; a gateway that serves one profile
+    has no scope to miss; a runner without a verdict tells nothing."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    plugin = load_plugin()
+    runtime = plugin.register(FakeContext(_settings(monkeypatch, _home(tmp_path))))
+    assert runtime is not None
+    runner = SimpleNamespace(adapters={})
+    if config is not None:
+        runner.config = SimpleNamespace(**config)
+    runtime._runner, runtime.primary = (lambda: runner), primary
+    seen: list[Any] = []
+
+    async def spy(env: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(env)
+        return "snapshot"
+
+    monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", spy)
+    asyncio.run(runtime._collect(datetime(2026, 10, 24, 7, 0, tzinfo=UTC)))
+
+    assert seen[0].facade_unscoped is unscoped
+
+
 def test_limits_providers_reach_the_collector(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime
 

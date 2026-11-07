@@ -1059,6 +1059,12 @@ record decides (`facade_cache`):
   it changes nothing, and a provider without a line stays without one
 - when neither Claude nor Codex has a line there is no `limits` source at all, so an
   installation with neither (OpenRouter, Nous) does not stay grey on `limits (unavailable)`
+- the launch profile's dashboard on a gateway that multiplexes profiles judges no silence. Its
+  tick runs outside any profile scope, where Hermes refuses the facade's lookup of Claude's
+  login and the facade answers empty whatever the account has; so there a provider without an
+  answer keeps its `no data` line with the reason and is never taken as not configured. A
+  served profile's dashboard, whose tick runs in that profile's scope, and a gateway that serves
+  one profile judge as above
 
 `limits_providers` makes it explicit: a listed provider keeps its line whatever it answers (a
 login broken from day one stays in sight), one left out is never asked. A local source that

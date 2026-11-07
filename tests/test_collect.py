@@ -1917,6 +1917,45 @@ def test_the_cron_path_has_no_memory_and_takes_the_facade_s_none_as_not_configur
     assert source is not None and source.state == "unavailable"
 
 
+def test_on_the_launch_profile_of_a_multiplexing_gateway_silence_is_never_not_configured(
+    tmp_path: Path,
+) -> None:
+    """There the facade runs outside any profile scope: Hermes' secret lookup refuses, the
+    facade turns that into its empty answer whatever the account has, so its silence says
+    nothing about this installation. Claude keeps a "no data" line with the reason, past the
+    threshold of empty answers, past the quiet week, and on the cron path; the record still
+    counts the empty answers."""
+    from telegram_dashboard.limits import NOT_CONFIGURED_AFTER
+
+    env = Environment(hermes_home=tmp_path, facade_unscoped=True)
+
+    def answer(provider: str, now: datetime):
+        return None if provider == "anthropic" else _snapshot(fetched_at=now)
+
+    facade = _Facade(answer)
+    caches: dict = {}
+    for k in range(NOT_CONFIGURED_AFTER + 2):
+        at = NOW + timedelta(seconds=300 * k)
+        facade.now = at
+        capacity, _source, _probe = collect_limits(
+            env, now=at, resolve=lambda: facade, caches=caches, interval_seconds=300
+        )
+        assert (capacity.quotas[0].kind, capacity.quotas[0].detail) == (
+            "unavailable",
+            _NO_ANSWER,
+        )
+    assert caches["claude"]["none_attempts"] == NOT_CONFIGURED_AFTER + 2
+
+    quiet = {"claude": _quiet_cache("claude", 1, answered=NOW - timedelta(days=8))}
+    capacity, _source, _probe = collect_limits(
+        env, now=NOW, resolve=lambda: _Facade(answer), caches=quiet, interval_seconds=300
+    )
+    assert capacity.quotas[0].kind == "unavailable"
+
+    capacity, _source, _probe = collect_limits(env, now=NOW, resolve=lambda: _Facade(answer))
+    assert capacity.quotas[0].kind == "unavailable"
+
+
 def test_no_limits_source_at_all_when_no_facade_provider_has_a_line(tmp_path: Path) -> None:
     """Issue #14, the installation without Claude and Codex: once neither has a line there is
     no ``limits`` source, so it leaves the coverage and no longer holds the status at grey;
