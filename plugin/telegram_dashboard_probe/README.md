@@ -370,8 +370,9 @@ carry the full story.
   scope`. Names Hermes treats as process-wide (`TERMINAL_*`, `HERMES_TELEGRAM_*`, `PATH` and the
   like) come from the process environment even there. The limits facade looks up Claude's
   login the same way, so on the launch profile's dashboard of a multiplexing gateway Claude only
-  ever gets the facade's empty answer and is taken as not configured ("Limits: three kinds that
-  never mix"), unless `limits_providers` names it.
+  ever gets the facade's empty answer; there no provider is taken as not configured by its
+  silence, and a silent one keeps its `no data` line with the reason ("Limits: three kinds that
+  never mix").
 - Text a keyed source sends back is scrubbed before it is shown or kept: `Bearer <key>` or the
   key becomes `[key]`, and a text that still holds any 8 characters of the key in a row becomes
   `[key hidden]`. A failed request that carried the key is named by its exception class only.
@@ -379,11 +380,10 @@ carry the full story.
   is itself a time or a number from 0 to 100 can come back through a time field or
   `used_percent`, which are read as values, not as text; a key equal to a protocol word (a
   `state` or `severity` value) is not hidden, as that word does not depend on the key.
-- A source asked without a key gets its transport error's own text as the reason (cleaned, up to
-  60 characters), which can quote part of its URL. A reason stays in the record until the
-  source's next attempt.
-- No key is stored, and a source's URL is not written to the record (save what such an error
-  text quotes).
+- A failed request without a key is named the same way, `request failed:` with the error's
+  class alone: an error's text can quote the URL, its query among it. A reason stays in the
+  record until the source's next attempt.
+- No key is stored, and a source's URL is not written to the record.
 
 **Engine internals it touches**
 
