@@ -17,6 +17,9 @@ runs it: it reads the bot token from the environment variable its JSON config na
 (`HERMES_DASHBOARD_BOT_TOKEN` by default) and calls `api.telegram.org` itself (`sendMessage`,
 `editMessageText`, `pinChatMessage`).
 
+What the plugin reads, writes and sends, and which engine internals it touches, is in one
+place: [Disclosure](#disclosure-what-the-plugin-reads-writes-and-sends).
+
 ## Install
 
 The plugin is listed in the [Hermes Plugin Catalog](https://hermes-agent.nousresearch.com/docs/plugins/telegram_dashboard_probe)
@@ -262,6 +265,220 @@ makes the source `unsupported`. The key of a `limits_sources` entry is read with
 habit. They are not the only engine touchpoints: one undocumented module (`hermes_yaml`, the
 engine's YAML parser), two private values read from modules the gateway already imported and
 private members of the live Telegram adapter are listed under "Disclosure".
+
+## Disclosure: what the plugin reads, writes and sends
+
+Everything the plugin does outside its own code, in one list; the sections named in quotes
+carry the full story. Module paths are relative to this folder.
+
+**How it runs**
+
+- `register()` registers one Telegram handler factory and an unload callback (`ctx.on_unload`),
+  nothing else: no tool, hook, middleware or command.
+- When the engine's Telegram adapter connects, the factory starts one task through
+  `ctx.spawn_task`, one per profile, until the gateway stops or unloads the plugin; a reconnect
+  adds none. The native SDK client handed to the factory is not used.
+- A reload of plugins registers the plugin again, and the new registration takes the loop over:
+  it cancels the earlier task and starts its own through `ctx.spawn_task`. What it takes over
+  lives in a registry of the plugin's own in `sys.modules`, `_telegram_dashboard_probe_live`, a
+  module object that is not a Hermes module: keyed by the resolved path of each profile's state
+  file, it holds references to the registration, the adapter and the gateway runner (weak where
+  the object takes one), the adapter's platform key, the gateway's event loop, the task, the
+  adapter generation and whether it is the launch profile ("Restarts, reloads and profiles").
+- Every tick (`period_seconds`, default 60 s) reads the sources below, renders one screen and
+  edits one message. Slow reads run in worker threads of the gateway's default executor under a
+  deadline; a thread that misses it runs on until it returns, and its source is not started
+  again before that.
+
+**What it sends over the network**
+
+- Telegram, through the engine's adapter only. The message is created with the adapter's public
+  `send` and edited with its public `edit_message`; HTML goes through
+  `edit_message(..., parse_mode="HTML")` when its signature has that parameter, else through the
+  adapter's private `_edit_text`. With `rich: true` the message is sent and edited as a Rich
+  Message through the raw Bot API call of the adapter's private `_bot`
+  (`_bot.do_api_request("sendRichMessage" | "editMessageText", ...)`, 30 s deadline); a message
+  that is rich already is edited that way, with its plain words, even with `rich` off. The other
+  calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
+  (`raw_response` `{"skipped": true}`) is recorded as `deferred` and made again on the next
+  tick. The record keeps the id of the bot that sent the message, and a bot with another id does
+  not edit it: a new message is sent. On a multiplexing gateway a record from before 1.1.0,
+  which names no sender, waits at most five minutes from the start for the runner to tell whose
+  bot sent it, then a new message is sent. The plugin pins and unpins nothing ("The plugin",
+  "Updating from 1.0.0").
+- Account limits, through Hermes. While `limits_enabled` is on (the default),
+  `agent.account_usage.fetch_account_usage("anthropic")` and `("openai-codex")` are called in
+  one worker thread with a 45 s deadline, each provider once per `facade_refresh_seconds`
+  (default 300 s, at least 60 s), not on every tick. That engine function asks Anthropic's OAuth
+  usage endpoint and Codex's usage endpoint on the ChatGPT backend with the account's own
+  credentials; the plugin passes the provider's name alone and leaves `read_only` at its
+  default, so, as for `/usage`, Hermes' auth code may refresh the account's OAuth token on the
+  way. A provider with no sign of an account here is still asked on that cadence;
+  `limits_providers` is what stops the asking: a provider it leaves out is never asked, and with
+  neither Claude nor Codex listed the facade is not even imported ("Limits: three kinds that
+  never mix").
+- GitHub. At most once per 15 minutes (later when GitHub's rate limit asks for it), an
+  unauthenticated GET of `https://api.github.com/repos/NousResearch/hermes-agent/releases/latest`
+  with the last ETag, and of `releases?per_page=100` when Latest names another version than the
+  last answer. Headers: `User-Agent: hermes-agent-telegram-dashboard` and
+  `X-GitHub-Api-Version`. Proxies from the environment apply; a redirect is followed only within
+  `api.github.com`; 10 s socket timeout, 25 s tick deadline, the body cut at 16 MB, an error
+  answer's body read up to 2,000 bytes to tell a rate limit. No setting turns this check off
+  ("The Hermes version line").
+- `limits_sources`, only if configured: up to 4 entries, each asked with one GET per
+  `limits_refresh_seconds` (default 900 s, at least 60 s) at an `http` URL on `127.0.0.1`,
+  `localhost` or `[::1]` with no credentials in it; no proxy, no redirect, the answer cut at
+  64 KB, timeout 1 to 120 s (default 20 s), tick deadline 25 s. Any other entry is refused at
+  start and never asked ("External limit sources").
+- Nothing else: the plugin's own code contacts no other host, opens no port, calls no LLM and
+  reports no telemetry.
+
+**Secrets**
+
+- The plugin never reads the Telegram bot token; it stays inside the engine's bot. To tell whose
+  message it edits it keeps the bot's numeric Telegram id (`bot_id`), read off the adapter's
+  private `_bot`, which holds it from getMe at the bot's start: no request, nothing of the token.
+- The only secret its own code reads is the optional key of a `limits_sources` entry
+  (`key_env`), sent as `Authorization: Bearer <key>`. It is read with
+  `agent.secret_scope.get_secret`; only where that module does not exist at all (the standalone
+  CLI outside the engine's interpreter, CI) is the process environment read.
+  `TELEGRAM_BOT_TOKEN`, `HERMES_DASHBOARD_BOT_TOKEN` and any name ending in `_BOT_TOKEN` are
+  refused, and so is a key shorter than 8 characters or one with whitespace or a control
+  character, which a header cannot carry; nothing is requested then.
+- Scope. A gateway that serves one profile reads the process environment. On a gateway that
+  multiplexes profiles `get_secret` answers in the profile scope the dashboard's loop was started
+  in: Hermes connects a secondary profile's adapter inside that profile's scope and the launch
+  profile's outside any, so a secondary profile's dashboard reads its own key, and on the launch
+  profile's dashboard a keyed source shows no data with `key not readable outside a profile
+  scope`. Names Hermes treats as process-wide (`TERMINAL_*`, `HERMES_TELEGRAM_*`, `PATH` and the
+  like) come from the process environment even there.
+- Text a keyed source sends back is scrubbed before it is shown or kept: `Bearer <key>` or the
+  key becomes `[key]`, and a text that still holds any 8 characters of the key in a row becomes
+  `[key hidden]`. A failed request that carried the key is named by its exception class only.
+  Known limits: a key the source re-encodes (base64, URL escaping) is not recognised; a key that
+  is itself a time or a number from 0 to 100 can come back through a time field or
+  `used_percent`, which are read as values, not as text; a key equal to a protocol word (a
+  `state` or `severity` value) is not hidden, as that word does not depend on the key.
+- A source asked without a key gets its transport error's own text as the reason (cleaned, up to
+  60 characters), which can quote part of its URL. A reason stays in the record until the
+  source's next attempt.
+- No key is stored, and a source's URL is not written to the record (save what such an error
+  text quotes).
+
+**Engine internals it touches**
+
+- Imported at call time: `agent.account_usage` and `agent.secret_scope` (documented for
+  plugins) and `hermes_yaml`, the engine's YAML parser (not documented for plugins; PyYAML is the
+  fallback), which the import loads if the gateway has not.
+- Read from modules the gateway already imported, never imported or changed: `hermes_cli`'s
+  version (as a value of the module, else last through its `__getattr__`, which reads the install
+  stamp from disk), the private `hermes_cli.version_info._cached_version_info` (its `source` and
+  `base_version`, and the module's `__file__`), and the signature, never a call, of the private
+  `agent.prompt_builder._read_text_with_timeout`.
+- On the live Telegram adapter: the private method `_edit_text` and the private attribute
+  `_bot` (called as above; `_bot.id` read for the sender), four private counters read as
+  attributes (`_updates_received_total`, `_polling_generation`,
+  `_polling_last_progress_monotonic`, `_polling_generation_started_monotonic`), and the public
+  `send`, `edit_message` (its signature too), `send_path_degraded`, `is_connected`, `platform`
+  and `gateway_runner`. Of the runner: `adapters` (the adapters it publishes) and
+  `config.multiplex_profiles` (whether it serves one profile). Each private member is a
+  capability read off the object on every tick; an adapter without it costs a line or a form,
+  never the tick.
+- Of the plugin API: `ctx.register_platform_handler`, `ctx.spawn_task`, `ctx.on_unload`,
+  `ctx.get_config` and `ctx.state`.
+- Nothing in the engine is assigned, patched or replaced; the one name the plugin adds to
+  `sys.modules` is its registry (above), and Hermes' own `no core override` check, the one
+  `hermes plugins validate` runs, passes the plugin.
+
+**What it reads**
+
+Under the profile's `HERMES_HOME` (the `hermes_home` setting, else the home of the plugin's own
+state file, else the `HERMES_HOME` variable, else `~/.hermes`), never written:
+
+- `gateway_state.json`: the pid and start time, `updated_at`, `gateway_state` and the
+  `platforms` entries (state, error code, attention flag, writer stamps); the recorded pid is
+  probed with `os.kill(pid, 0)` on POSIX, which sends no signal.
+- `config.yaml`, parsed whole by the engine's YAML parser, once for the rules line and once for
+  the memory section; used: the `memory` limits, switches, `write_approval` and `provider`,
+  `skills.write_approval` and `gateway.platforms.<name>.skip_context_files`.
+- `cron/jobs.json`, parsed whole; used: each job's id, name, enabled flag, state, `paused_at`,
+  schedule, run times, `last_status` and `failure_streak`, and `last_error` and
+  `last_delivery_error` reduced to a one-word kind. `cron/ticker_heartbeat` and
+  `ticker_last_success` for their epoch, `cron/ticker_last_error` reduced to a kind ("The cron
+  line").
+- `cron/executions.db` and `state.db`, opened `mode=ro` with `PRAGMA query_only` in a worker: the
+  failed or undelivered runs, never the `error` column; the newest saved system prompt of each
+  platform the running gateway lists (up to 12), no other session's ("The rules line").
+- `logs/errors.log`, the last 256 KB every tick (for the Gemini line the whole file, up to 4 MB,
+  until its first successful read): Gemini HTTP 429 lines (time, limit, retry, model), the
+  engine's `Failed to send Telegram message` lines (time) and, with a memory provider
+  configured, the warnings about it (time, whether one says unavailable).
+- `memories/MEMORY.md` and `memories/USER.md` (up to 4 MB each, to count characters); the names
+  and times of every `pending/memory/*.json` and `pending/skills/*.json`, and of the first 2,000
+  memory ones (up to 256 KB each) the action, target and length of each add; the time of
+  `skills/.curator_ledger.jsonl` ("The memory section").
+
+Outside `HERMES_HOME`:
+
+- The project context files the engine would load, in the directory the saved prompt names,
+  else the engine's `TERMINAL_CWD`, else the gateway's working directory: any directory on the
+  host. Finding them, the plugin checks for `.git` in that directory and each parent and for the
+  engine's own source tree in each directory it looks in and its parents. `.hermes.md`,
+  `HERMES.md` and the AGENTS names are also read in the gateway's working directory and in
+  `HERMES_HOME` ("The rules line").
+- `backup_status` and `drift_report`, if set: a JSON file at the path the operator gives, read
+  every tick.
+- Beside the engine's code: whether a `.git` directory is there ("The Hermes version line").
+- Environment variables: `HERMES_HOME`, `TERMINAL_CWD` and the `HERMES_DASHBOARD_PROBE_*`
+  fallbacks of the settings.
+
+Of all this, the screen and the record carry names (of jobs, files, providers), numbers, times
+and one-word kinds; never the text of a prompt, a context file, a notebook, a pending write or a
+log line.
+
+**What it writes**
+
+- Only its record, through the engine's plugin state:
+  `HERMES_HOME/plugin-data/<namespace>/state.json`, one key `probe`, written by Hermes atomically
+  with mode 0600. It holds the chat, topic and message ids, the sending bot's id, the last status
+  and the adapter's own error text of a failed edit or send (`last_error`, in full), times and
+  counters, the screen format and why, and the caches `release_cache`, `facade_cache`,
+  `external_cache`, `gemini_log_cache`, `cron_cache` (job names and `cron_notes` labels among
+  them) and `traffic_cache`, each described under "The plugin". A facade provider that is not
+  configured keeps its entry and its count of empty answers; one left out of `limits_providers`
+  gets no new entry.
+- The gateway's journal gets the adapter's error text of a failed edit or send (WARNING; a lost
+  message at ERROR with its id), the record's path at start (INFO) and, for an unforeseen failure
+  of a tick, a collector or the render, a traceback.
+- Hermes' auth code behind the limits facade may save a refreshed OAuth token; the plugin's own
+  code writes no credential, no file under `HERMES_HOME/cron`, no memory or pending file and no
+  database.
+
+**Processes**
+
+- `drift_command`, if set and no `drift_report` is: run every tick in a worker as argv without a
+  shell, in its own process group with stdin closed, 30 s limit, then killed with its process
+  tree. It inherits the gateway's environment and working directory and runs with the gateway
+  user's rights. No other process is started.
+
+**Where it runs and what it imports**
+
+- In the gateway's process only: under `plugins.isolation: host` Hermes refuses
+  `register_platform_handler` in its plugin host, and the plugin does not load ("In process
+  only"). The floor is `requires_hermes: ">=0.22.2"`.
+- The `telegram_dashboard` package is imported from beside the plugin; if that copy is missing or
+  broken, a `telegram_dashboard` package installed in the gateway's interpreter is imported
+  instead.
+
+**The standalone CLI**
+
+- `python -m telegram_dashboard` is for running from cron outside Hermes, and the plugin never
+  runs it. It reads the bot token from the environment variable its JSON config names
+  (`HERMES_DASHBOARD_BOT_TOKEN` by default), calls `api.telegram.org` itself (`sendMessage`,
+  `editMessageText`, `pinChatMessage`) with the token in the URL through `urllib`'s default
+  opener (proxies from the environment apply, redirects are followed), writes its own delivery
+  record to the `state_path` its config names, and, in an interpreter where
+  `agent.account_usage` imports, calls the limits facade in its own process on every run.
 
 ## The plugin: the screen inside the gateway
 
