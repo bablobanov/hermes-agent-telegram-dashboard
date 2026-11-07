@@ -876,13 +876,72 @@ def test_a_key_of_digits_never_reaches_a_reason_through_a_number() -> None:
     assert "481516" not in json.dumps(item)
 
 
-def test_a_failed_request_without_a_key_keeps_the_error_text() -> None:
+def test_a_failed_request_without_a_key_names_only_the_error_s_class() -> None:
+    """An error's text can quote the source's URL, its query among it (a token an operator put
+    there): without a key as with one, only the class reaches the reason."""
+
     def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
-        raise OSError("connection refused")
+        raise OSError(f"cannot reach {url}")
 
-    item = fetch_item(_source(), now=NOW, get=get)
+    item = fetch_item(_source(url=URL + "?token=s3cr3t-in-query"), now=NOW, get=get)
 
-    assert item["reason"] == "request failed: connection refused"
+    assert item["reason"] == "request failed: OSError"
+    assert "s3cr3t" not in json.dumps(item) and "token" not in json.dumps(item)
+
+
+def test_a_refused_connection_is_named_by_the_class_urllib_wraps() -> None:
+    """urllib wraps a refused connection in ``URLError``; the class of what it wraps says what
+    happened (the source is not running) without a word of the URL."""
+    import urllib.error
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise urllib.error.URLError(ConnectionRefusedError(111, f"refused: {url}"))
+
+    item = fetch_item(_source(url=URL + "?token=s3cr3t-in-query"), now=NOW, get=get)
+
+    assert item["reason"] == "request failed: ConnectionRefusedError"
+    assert "s3cr3t" not in json.dumps(item)
+
+
+def test_a_refused_connection_with_a_key_is_named_the_same_way() -> None:
+    import urllib.error
+
+    def get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        raise urllib.error.URLError(ConnectionRefusedError(111, headers["Authorization"]))
+
+    source = _source(key_env="LIMITS_SOURCE_KEY")
+    item = fetch_item(source, now=NOW, get=get, environ={"LIMITS_SOURCE_KEY": "sk-0123456789"})
+
+    assert item["reason"] == "request failed: ConnectionRefusedError"
+    assert "sk-0123456789" not in json.dumps(item)
+
+
+def test_a_real_refused_connection_names_the_class_and_not_the_url() -> None:
+    """The real request path to a loopback port nobody listens on."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    (source,) = read_sources([{"url": f"http://127.0.0.1:{port}/v1/usage?token=s3cr3t"}])
+
+    item = fetch_item(source, now=NOW)
+
+    assert item["reason"] == "request failed: ConnectionRefusedError"
+    assert "s3cr3t" not in json.dumps(item)
+
+
+def test_the_transport_s_own_error_without_a_key_does_not_quote_the_url(server: _Server) -> None:
+    """The real request path: http.client refuses a URL with a space and quotes the path and
+    the query in its error text, before any connection. Without a key only the class reaches
+    the reason, and the query never does."""
+    (source,) = read_sources([{"url": server.url("/v1/usage?token=s3cr3t in-query")}])
+
+    item = fetch_item(source, now=NOW)
+
+    assert item["reason"] == "request failed: InvalidURL"
+    assert "s3cr3t" not in json.dumps(item) and "usage" not in json.dumps(item)
+    assert server.seen == []  # type: ignore[attr-defined]
 
 
 def test_the_transport_s_own_error_for_a_key_names_only_its_class(server: _Server) -> None:

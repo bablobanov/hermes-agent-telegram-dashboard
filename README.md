@@ -150,7 +150,9 @@ only when it is incomplete, as one line:
 source on this installation, or no data from a source that line names, is left out of the row
 and said by that line once. A provider that is not configured here is not counted at all: no
 line, no place on the ❔ line or in the coverage; when neither Claude nor Codex has a line, the
-`limits` source itself is gone, so an installation without either does not stay grey. The
+`limits` source itself is gone, so an installation without either does not stay grey (on the
+launch profile of a gateway that multiplexes profiles, where no silence is judged,
+`limits_providers` says which to leave out). The
 details close with the dashboard's own version (`Dashboard 1.1.0`), so the installed copy can be
 told from the pinned message at a glance.
 
@@ -1058,7 +1060,16 @@ record decides (`facade_cache`):
   and keeps its line. A missed deadline or a worker still running is no answer and no empty one:
   it changes nothing, and a provider without a line stays without one
 - when neither Claude nor Codex has a line there is no `limits` source at all, so an
-  installation with neither (OpenRouter, Nous) does not stay grey on `limits (unavailable)`
+  installation with neither (OpenRouter, Nous) does not stay grey on `limits (unavailable)`;
+  on the launch profile of a multiplexing gateway (next point) `limits_providers` leaves them
+  out
+- the launch profile's dashboard on a gateway that multiplexes profiles judges no silence. Its
+  tick runs outside any profile scope, where Hermes refuses the facade's lookup of Claude's
+  login and the facade answers empty whatever the account has; so there a provider without an
+  answer keeps its `no data` line with the reason and is never taken as not configured. Until
+  the runner shows that a dashboard serves another profile (at a start, before it publishes the
+  adapters), the tick counts as the launch profile's. A served profile's dashboard, whose tick
+  runs in that profile's scope, and a gateway that serves one profile judge as above
 
 `limits_providers` makes it explicit: a listed provider keeps its line whatever it answers (a
 login broken from day one stays in sight), one left out is never asked. A local source that
@@ -1150,7 +1161,9 @@ The guards, and why:
   `no data` with the reason, and nothing is requested. The request ignores proxies from the
   environment and follows no redirect: a redirect would carry the key to wherever it points. An
   answer other than 200, over 64 KB or not JSON is `no data` with the reason; the body of an
-  error answer is not read
+  error answer is not read. A request that fails is `request failed:` with the error's class
+  alone, with or without a key (a refused connection names the class urllib wraps,
+  `ConnectionRefusedError`): the error's text can quote the URL, its query among it
 - `key_env` names a variable, never a bot token. The key must have at least 8 characters and no
   whitespace or control character, otherwise the source shows no data with the reason. It is
   read with Hermes' `get_secret`: the process environment on a single-profile gateway. On a

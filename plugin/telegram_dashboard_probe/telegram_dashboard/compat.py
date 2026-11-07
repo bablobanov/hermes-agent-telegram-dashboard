@@ -31,6 +31,10 @@ CRON_NOTES = "cron_notes"
 # The setting and the ``Environment`` field of the owner's list of built-in limit providers
 # (issue #14). The plugin requires the name (``REQUIRED_API``), as for ``CRON_NOTES``.
 LIMITS_PROVIDERS = "limits_providers"
+# The ``Environment`` field that says the tick runs outside any profile scope on a gateway that
+# multiplexes profiles (1.1.0, the launch profile's dashboard). The plugin requires the name
+# (``REQUIRED_API``), as for ``CRON_NOTES``.
+FACADE_UNSCOPED = "facade_unscoped"
 # The providers the list may name: the facade's two and Gemini from the engine's log. An external
 # source (``limits_sources``) is no built-in provider and is never subject to the list.
 BUILT_IN_PROVIDERS = ("claude", "codex", "gemini")
@@ -132,6 +136,11 @@ class Environment:
     # built-in provider and hides one with no sign of an account; a tuple (empty or not) asks
     # exactly those it names and always shows them (issue #14).
     limits_providers: tuple[str, ...] | None = None
+    # The tick runs outside any profile scope on a gateway that multiplexes profiles (the plugin
+    # path, the launch profile's dashboard): Hermes' secret lookup refuses there, the usage
+    # facade answers empty whatever the account has, and its silence says nothing about this
+    # installation, so it never makes a provider not configured (``limits._judged``).
+    facade_unscoped: bool = False
     # The gateway process's working directory, where an operator may expect the agent's rules;
     # ``None`` outside the gateway unless the cron tick's config names it.
     gateway_dir: Path | None = None

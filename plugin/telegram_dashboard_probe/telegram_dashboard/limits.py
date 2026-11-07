@@ -20,6 +20,10 @@ every exception, on every version read). A provider whose silence says it is not
 since the record began, after ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row; one that
 answered before, once its last answer is ``QUIET_SHOWN_SECONDS`` old. Any answer brings it back.
 Without a record (the cron path) there is no memory, and ``None`` is ``not_configured`` at once.
+Where the silence says nothing (``judged`` off: the launch profile's dashboard on a gateway that
+multiplexes profiles, whose tick runs outside any profile scope, so the facade's lookup of
+Claude's login is refused and turned into ``None``) no provider is judged: a ``None`` stays a
+"no data" line.
 
 Nothing here reads or stores credentials; the facade uses the account's own material inside the
 engine. Of a snapshot only the fields ``_item_of`` names are read: never its ``identity``, ``raw``
@@ -138,6 +142,7 @@ def build_limits_payload(
     resolve: Resolver = import_fetcher,
     cadence: Cadence | None = None,
     listed: frozenset[str] | None = None,
+    judged: bool = True,
 ) -> LimitsPayload:
     """Ask the facade for every provider; the answer has the shape ``parse_limits_payload`` reads.
 
@@ -145,7 +150,8 @@ def build_limits_payload(
     called only when its attempt is due (``quota_cache.tick``) and its cache in
     ``cadence.caches`` records the attempt; between attempts the cached answer is the item.
     Either way a provider whose silence says it is not set up here is ``not_configured``
-    (``_judged``). ``listed`` is the owner's ``limits_providers`` (``None``: not set): a
+    (``_judged``), unless ``judged`` is off: then every provider asked keeps its line, as a
+    listed one does. ``listed`` is the owner's ``limits_providers`` (``None``: not set): a
     provider it names is asked and keeps its line whatever it answers, one it leaves out is
     never asked; with none to ask the facade is not even imported.
 
@@ -160,17 +166,18 @@ def build_limits_payload(
         return _not_ok(f"unsupported: facade resolver failed ({type(exc).__name__})")
     if fetch is None:
         return _not_ok("unsupported: facade not importable")
+    kept = listed is not None or not judged
     providers = []
     for key, provider in PROVIDERS:
         if listed is not None and key not in listed:
             providers.append(_off(key))
         elif cadence is None:
             item = _provider_item(key, provider, fetch)
-            providers.append(_judged(key, item, None, None, pinned=listed is not None))
+            providers.append(_judged(key, item, None, None, pinned=kept))
         else:
             item = _provider_tick(key, provider, fetch, cadence)
             cache = cache_for(cadence.caches, key)
-            providers.append(_judged(key, item, cache, cadence.now, pinned=listed is not None))
+            providers.append(_judged(key, item, cache, cadence.now, pinned=kept))
     return {"ok": True, "reason": None, "providers": providers}
 
 
@@ -186,6 +193,7 @@ async def fetch_limits_payload_off_loop(
     flights: Flights | None = None,
     cadence: Cadence | None = None,
     listed: frozenset[str] | None = None,
+    judged: bool = True,
 ) -> LimitsPayload:
     """``build_limits_payload`` in a worker thread with a deadline, exactly like ``/usage``.
 
@@ -195,10 +203,10 @@ async def fetch_limits_payload_off_loop(
     ``cadence`` a miss shows each provider's own standing attempt, or its last answer while it
     is young enough (``_missed``), and the abandoned worker records its attempt when it
     returns, so the next tick serves it without asking again. With no provider to ask
-    (``listed`` names none) no worker starts.
+    (``listed`` names none) no worker starts. ``judged`` as for :func:`build_limits_payload`.
     """
     if not asked(listed):
-        return build_limits_payload(resolve, cadence, listed)
+        return build_limits_payload(resolve, cadence, listed, judged)
     if cadence is not None:
         # Made on the loop, before the worker starts: the worker only fills them.
         for key in asked(listed):
@@ -210,15 +218,17 @@ async def fetch_limits_payload_off_loop(
             resolve,
             cadence,
             listed,
+            judged,
             timeout_seconds=timeout_seconds,
         )
     except TimeoutError:
         missed = f"timeout: facade did not answer within {timeout_seconds:g}s"
-        return _missed(missed, cadence, listed)
+        return _missed(missed, cadence, listed, judged)
     except StillRunning:
-        return _missed("busy: the previous facade call has not returned yet", cadence, listed)
+        busy = "busy: the previous facade call has not returned yet"
+        return _missed(busy, cadence, listed, judged)
     except Exception as exc:  # thread start failure, SystemExit in the facade; the tick goes on
-        return _missed(f"error: {failure_name(exc)}", cadence, listed)
+        return _missed(f"error: {failure_name(exc)}", cadence, listed, judged)
     if cadence is not None and payload.get("ok") is not True:
         _drop_unused(cadence.caches)
     return payload
@@ -238,7 +248,10 @@ def _not_ok(reason: str) -> LimitsPayload:
 
 
 def _missed(
-    reason: str, cadence: Cadence | None, listed: frozenset[str] | None = None
+    reason: str,
+    cadence: Cadence | None,
+    listed: frozenset[str] | None = None,
+    judged: bool = True,
 ) -> LimitsPayload:
     """No answer from the worker this tick. Without a cadence the whole block is "no data" with
     the reason. With one, a provider whose own attempt still stands (its interval has not run
@@ -248,7 +261,7 @@ def _missed(
     ``show_seconds``, else "no data" with the reason, as an external source does
     (``collect._external_guarded``). A miss is neither an answer nor a ``None``: a provider
     that was not configured stays so (``_judged`` reads the record, which the miss leaves
-    alone)."""
+    alone), unless ``judged`` is off: then no provider is judged by its silence."""
     if cadence is None:
         return _not_ok(reason)
     providers = []
@@ -261,7 +274,8 @@ def _missed(
         if line is None:
             line = last_answer(cache, now=cadence.now, show_seconds=cadence.show_seconds)
         item = _plan_filled(cache, line if line is not None else _failed(key, reason))
-        providers.append(_judged(key, item, cache, cadence.now, pinned=listed is not None))
+        kept = listed is not None or not judged
+        providers.append(_judged(key, item, cache, cadence.now, pinned=kept))
     return {"ok": True, "reason": reason, "providers": providers}
 
 
@@ -295,7 +309,8 @@ def _judged(
     ``NOT_CONFIGURED_AFTER`` ``None`` attempts in a row, one that answered before once its last
     answer is older than ``QUIET_SHOWN_SECONDS``. Without a record (``cache`` ``None``, the cron
     path) there is no memory: the facade's ``None`` is not configured at once. A provider the
-    owner named in ``limits_providers`` (``pinned``) keeps its line whatever it says. The
+    owner named in ``limits_providers``, and every provider where the silence says nothing
+    (``judged`` off in the caller), is ``pinned`` and keeps its line whatever it says. The
     cache's own item stays what the attempt returned; only the payload's item changes."""
     if pinned or not _quiet(item, cache, now):
         return item

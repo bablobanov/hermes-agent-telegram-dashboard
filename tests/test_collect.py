@@ -1856,6 +1856,57 @@ def test_a_listed_provider_keeps_its_line_through_a_missed_deadline_and_a_busy_t
         assert (codex.kind, codex.detail) == ("not_configured", "off in the dashboard settings")
 
 
+def test_the_tick_s_own_path_keeps_no_data_on_the_launch_profile_of_a_multiplexing_gateway(
+    tmp_path: Path,
+) -> None:
+    """The async path the plugin's tick takes, with ``facade_unscoped``: a record that would
+    hide both providers (three empty answers in a row) leaves each its "no data" line on a tick
+    whose worker misses its deadline, on the next while it is still busy, and on a tick whose
+    worker answers empty again."""
+    from probe_fakes import until
+
+    from telegram_dashboard.workers import Flights
+
+    release = threading.Event()
+
+    def fetch(provider: str):
+        release.wait(5)
+        return None
+
+    caches = {key: _quiet_cache(key, 3) for key in ("claude", "codex")}
+    env = Environment(hermes_home=tmp_path, facade_unscoped=True)
+    flights = Flights()
+
+    def tick(seconds: float):
+        return collect_limits_async(
+            env,
+            now=NOW + timedelta(seconds=seconds),
+            resolve=lambda: fetch,
+            timeout_seconds=0.05,
+            flights=flights,
+            caches=caches,
+            interval_seconds=300,
+        )
+
+    async def scenario():
+        first = await tick(0)
+        second = await tick(60)
+        release.set()
+        await until(lambda: not flights.busy("limits"))
+        third = await tick(700)
+        return first[0], second[0], third[0]
+
+    first, second, third = asyncio.run(scenario())
+
+    for capacity, reason in (
+        (first, "timeout: facade did not answer within 0.05s"),
+        (second, "busy: the previous facade call has not returned yet"),
+        (third, _NO_ANSWER),
+    ):
+        assert [(q.kind, q.detail) for q in capacity.quotas] == [("unavailable", reason)] * 2
+    assert caches["claude"]["none_attempts"] >= 4  # the record still counts them
+
+
 def test_claude_on_an_api_key_is_an_answer_and_keeps_its_line(tmp_path: Path) -> None:
     """A snapshot without numbers (Claude on an API key) is an answer: the account is there, the
     line stays "no data" with the engine's reason however often it comes."""
@@ -1915,6 +1966,45 @@ def test_the_cron_path_has_no_memory_and_takes_the_facade_s_none_as_not_configur
         ("Codex", "unavailable", "RuntimeError"),
     ]
     assert source is not None and source.state == "unavailable"
+
+
+def test_on_the_launch_profile_of_a_multiplexing_gateway_silence_is_never_not_configured(
+    tmp_path: Path,
+) -> None:
+    """There the facade runs outside any profile scope: Hermes' secret lookup refuses, the
+    facade turns that into its empty answer whatever the account has, so its silence says
+    nothing about this installation. Claude keeps a "no data" line with the reason, past the
+    threshold of empty answers, past the quiet week, and on the cron path; the record still
+    counts the empty answers."""
+    from telegram_dashboard.limits import NOT_CONFIGURED_AFTER
+
+    env = Environment(hermes_home=tmp_path, facade_unscoped=True)
+
+    def answer(provider: str, now: datetime):
+        return None if provider == "anthropic" else _snapshot(fetched_at=now)
+
+    facade = _Facade(answer)
+    caches: dict = {}
+    for k in range(NOT_CONFIGURED_AFTER + 2):
+        at = NOW + timedelta(seconds=300 * k)
+        facade.now = at
+        capacity, _source, _probe = collect_limits(
+            env, now=at, resolve=lambda: facade, caches=caches, interval_seconds=300
+        )
+        assert (capacity.quotas[0].kind, capacity.quotas[0].detail) == (
+            "unavailable",
+            _NO_ANSWER,
+        )
+    assert caches["claude"]["none_attempts"] == NOT_CONFIGURED_AFTER + 2
+
+    quiet = {"claude": _quiet_cache("claude", 1, answered=NOW - timedelta(days=8))}
+    capacity, _source, _probe = collect_limits(
+        env, now=NOW, resolve=lambda: _Facade(answer), caches=quiet, interval_seconds=300
+    )
+    assert capacity.quotas[0].kind == "unavailable"
+
+    capacity, _source, _probe = collect_limits(env, now=NOW, resolve=lambda: _Facade(answer))
+    assert capacity.quotas[0].kind == "unavailable"
 
 
 def test_no_limits_source_at_all_when_no_facade_provider_has_a_line(tmp_path: Path) -> None:

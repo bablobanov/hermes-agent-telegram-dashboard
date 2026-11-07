@@ -11,8 +11,9 @@ active profile's value; the process environment outside Hermes), and never from 
 variable: the engine's Telegram adapter reads ``TELEGRAM_BOT_TOKEN``, the cron path of this
 dashboard reads ``HERMES_DASHBOARD_BOT_TOKEN``, and any ``*_BOT_TOKEN`` is refused with them. The
 plugin never reads the bot token itself (the catalog review, hermes-agent#122408). A key with
-whitespace or a control character is never sent, and a failed request that carried the key names
-the error's class only: the text of a transport error can hold the header.
+whitespace or a control character is never sent, and a failed request names the error's class
+only, with or without a key: the text of a transport error can quote the URL with its query, and
+the header.
 """
 
 from __future__ import annotations
@@ -272,8 +273,7 @@ def fetch_item(
     try:
         status, body = get(source.url, dict(headers), source.timeout_seconds)
     except Exception as exc:
-        # With the key in the request the error's text may carry the header: the class alone.
-        item["reason"] = f"request failed: {type(exc).__name__ if key else _public(exc)}"
+        item["reason"] = f"request failed: {_failure(exc)}"
         return item
     return _read_answer(status, body, now=now, key=key)
 
@@ -434,5 +434,10 @@ def _empty_item() -> dict[str, Any]:
     }
 
 
-def _public(exc: BaseException) -> str:
-    return sanitize_public_text(str(exc) or type(exc).__name__, limit=60)
+def _failure(exc: BaseException) -> str:
+    """A failed request's error by its class, never its text: the text can quote the source's
+    URL, its query among it (a token an operator put there), and with a key the header.
+    ``URLError`` is named by the error it wraps (``ConnectionRefusedError``: the source is not
+    running), whose class carries nothing of the URL either."""
+    wrapped = getattr(exc, "reason", None) if isinstance(exc, urllib.error.URLError) else None
+    return type(wrapped if isinstance(wrapped, BaseException) else exc).__name__
