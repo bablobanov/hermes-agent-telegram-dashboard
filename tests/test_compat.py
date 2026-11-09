@@ -233,6 +233,16 @@ def test_only_the_rows_the_engine_job_runs_say_executed_on_its_engines() -> None
     assert matrix["floors"]["delivery_plugin"]["minimum_version"] == "0.22.2"
 
 
+def test_the_rich_row_says_the_plugin_makes_that_call_no_more() -> None:
+    """1.1.1: the row keeps where 0.12.0 to 1.1.0 read the raw call, and says first that the
+    plugin no longer makes it and what brings the form back."""
+    row = load_matrix()["sources"]["screen_rich"]
+
+    assert next(iter(row)) == "retired"
+    assert row["retired"].startswith("1.1.1: the plugin makes no rich call")
+    assert "hermes-agent#151881" in row["retired"]
+
+
 def test_the_memory_section_is_a_row_that_names_what_it_never_reads() -> None:
     entry = load_matrix()["sources"]["memory"]
 

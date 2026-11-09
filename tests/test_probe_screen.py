@@ -19,7 +19,6 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,20 +27,17 @@ import pytest
 from probe_fakes import (
     CHAT,
     PLUGIN_DIR,
-    BadRequest,
     FakeAdapter,
     FakeContext,
     KwargsOnlyAdapter,
     PlainOnlyAdapter,
     PublicHtmlAdapter,
     RichAdapter,
-    TimedOut,
     load_plugin,
     until,
 )
 
 from telegram_dashboard.render import TELEGRAM_TEXT_LIMIT
-from telegram_dashboard.schema import CronJob, CronSummary
 from telegram_dashboard.states import all_states
 
 _STATUS_LABELS = {
@@ -475,7 +471,7 @@ def test_with_no_usable_package_the_handler_is_still_registered(
     target = plugin_dir / "telegram_dashboard" / "compat.py"
     text = target.read_text(encoding="utf-8")
     target.write_text(text + '\nraise RuntimeError("secret text")\n', "utf-8")
-    for name in ("", ".collect", ".compat", ".freshness", ".render", ".rich", ".telegram_traffic"):
+    for name in ("", ".collect", ".compat", ".freshness", ".render", ".telegram_traffic"):
         monkeypatch.setitem(sys.modules, f"telegram_dashboard{name}", None)
     plugin = load_plugin("hermes_plugins.no_package_probe", plugin_dir, vendored=True)
     ctx = FakeContext(_settings(monkeypatch, tmp_path, cron_notes={"a1": "Brief"}))
@@ -1599,64 +1595,6 @@ def test_an_html_edit_the_public_verb_held_back_is_deferred_without_a_plain_one(
     assert "screen_format" not in record and "html_verb" not in record
 
 
-def test_a_held_back_plain_edit_after_a_refused_rich_one_draws_no_rich_verdict(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """The rich verdict follows the HTML rule: only when the edit right after it landed. A
-    held-back plain edit did not land: rich is asked again on the next tick."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered_confirmed(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(
-        refuse={"editMessageText": BadRequest("Bad Request: unsupported")},
-        reject_html="Bad Request: can't parse entities",
-        busy=True,
-    )
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.skipped) >= 3)
-
-    _run(runtime, adapter, scenario)
-
-    assert runtime.rich is None and runtime.html is None
-    assert len(adapter.rich_calls) >= len(adapter.skipped)  # rich asked on every tick
-    record = ctx.state.data["probe"]
-    assert record["last_status"] == "deferred" and "rich_error" not in record
-
-
-def test_a_held_back_plain_edit_of_a_rich_message_is_deferred_not_a_failure(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """On a message that is rich, a refused rich edit and a refused HTML one end in the plain
-    edit, which a failure there would answer as ``edit_failed``. Held back, it answered nothing:
-    deferred, and no message is sent."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(
-        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
-        reject_html="Bad Request: message can't be edited",
-        busy=True,
-    )
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.skipped) >= 3)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.sent == [] and [m for m, _ in adapter.rich_calls].count("sendRichMessage") == 0
-    record = ctx.state.data["probe"]
-    assert (record["last_status"], record["last_error"]) == ("deferred", None)
-    assert (record["screen_format"], record["message_id"]) == ("rich", "4242")
-    assert runtime.rich is None
-
-
 def test_a_run_of_held_back_edits_past_the_lagging_threshold_says_one_warning(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1941,15 +1879,17 @@ def test_a_package_copy_from_before_the_cron_line_is_refused_at_load(tmp_path: P
     assert dashboard.origin == "installed"
 
 
-# ----------------------------------------------------------------------------- the rich form
+# ------------------------------------------------------------------------- no rich form (1.1.1)
 #
-# 0.12.0: the rich form first, through the engine bot's raw call (``_bot.do_api_request``), then
-# HTML, then plain, in the same tick; a new message rich from its first second. Only with the
-# setting ``rich`` true: off by default, so these tests turn it on.
+# 1.1.1: no Rich Message. From 0.12.0 to 1.1.0 the screen could go out rich through the engine
+# bot's raw call (``_bot.do_api_request``), a private path the catalog review asked to remove until
+# Hermes has a public way to send a pre-built rich message (NousResearch/hermes-agent#151881). The
+# fake bot of ``RichAdapter`` has that call, and no test here may see it made. A record 1.1.0 wrote
+# for a message it sent rich is edited like any other.
 
 
 def _rich_record(ctx: FakeContext, message_id: str = "4242") -> None:
-    """A record of a message that is rich already."""
+    """A record 1.1.0 wrote for a message it sent rich, the rich form's own keys with it."""
     ctx.state.set(
         "probe",
         {
@@ -1957,406 +1897,209 @@ def _rich_record(ctx: FakeContext, message_id: str = "4242") -> None:
             "chat_id": CHAT,
             "last_status": "edited",
             "screen_format": "rich",
+            "rich_error": None,
+            "rich_render_error": "over Telegram's ceilings",
         },
     )
 
 
-def test_the_screen_is_edited_as_rich_when_the_bot_has_the_call(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize("value", [None, "off", True, "true"])
+def test_the_bot_s_raw_call_is_never_made_whatever_the_setting_says(
+    monkeypatch, tmp_path: Path, value: Any
 ) -> None:
+    """The bot has the call 1.1.0 sent rich messages with: the message is created by the public
+    verb and edited as HTML, the setting ``rich`` on or off, and the record names no rich form."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=value))
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
     adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 3)
-
-    with caplog.at_level("INFO", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    method, payload = adapter.rich_calls[0]
-    assert method == "editMessageText"
-    # As the engine edits rich: the chat as a number, the id as a number, no topic, no text.
-    assert set(payload) == {"chat_id", "message_id", "rich_message"}
-    assert (payload["chat_id"], payload["message_id"]) == (int(CHAT), 4242)
-    assert "<details><summary>" in payload["rich_message"]["html"]
-    assert adapter.html_edits == [] and adapter.edits == [] and adapter.sent == []
-    assert runtime.rich is True
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("rich", None)
-    said = [r.getMessage() for r in caplog.records if "edited as rich" in r.getMessage()]
-    assert said == ["probe: the screen is edited as rich"]
-
-
-def test_a_refused_rich_edit_falls_back_to_html_in_the_same_tick_and_probes_again_later(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Telegram refuses to make the HTML message rich (the engine's own note on a plain one): the
-    same tick edits HTML, the record says why, rich is not asked again for RICH_RETRY_TICKS."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    refusal = BadRequest(f"Bad Request: message can't be edited in chat {CHAT}")
-    adapter = RichAdapter(refuse={"editMessageText": refusal})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2, timeout=10.0)
-
-    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    first, second = adapter._bot.html_before[:2]
-    assert first == 0 and second >= plugin.RICH_RETRY_TICKS
-    assert adapter.texts[0] == adapter.html_edits[0][0]  # the refused tick still landed, as HTML
-    assert adapter.sent == []  # a refused form is no lost message
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("html", "BadRequest")
-    refused = [r.getMessage() for r in caplog.records if "rich refused" in r.getMessage()]
-    assert len(refused) == 1 and "BadRequest" in refused[0] and "-100" not in refused[0]
-
-
-def test_not_modified_from_the_rich_call_is_a_confirmation(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    refusal = BadRequest("Bad Request: message is not modified: specified new message content")
-    adapter = RichAdapter(refuse={"editMessageText": refusal})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.html_edits == [] and adapter.edits == []
-    record = ctx.state.data["probe"]
-    assert (record["last_status"], record["screen_format"]) == ("edited", "rich")
-
-
-def test_a_timeout_on_a_rich_message_waits_for_the_next_tick_instead_of_html(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """The call may have reached Telegram. An HTML or plain edit of a rich message could come
-    back in the words of a lost one and the tick would send a second message: none of that, the
-    tick fails and the next one asks rich again."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(refuse={"editMessageText": TimedOut("Timed out")})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 3)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.html_edits == [] and adapter.edits == [] and adapter.sent == []
-    record = ctx.state.data["probe"]
-    assert record["last_status"] == "edit_failed"
-    assert record["last_error"] == "rich edit: TimedOut"
-    assert record["screen_format"] == "rich" and runtime.rich is None
-
-
-def test_when_html_and_plain_fail_too_there_is_no_rich_verdict(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(
-        refuse={"editMessageText": BadRequest("Bad Request: unsupported")},
-        reject_html="Timed out",
-        fail_plain="Timed out",
-    )
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 3)
-
-    _run(runtime, adapter, scenario)
-
-    assert runtime.rich is None
-    record = ctx.state.data["probe"]
-    assert record["last_status"] == "edit_failed" and "rich_error" not in record
-
-
-def test_a_new_message_is_sent_rich_into_the_topic_and_then_edited(
-    monkeypatch, tmp_path: Path
-) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, thread_id="17"))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    (sent, payload), (edited, edit) = adapter.rich_calls[:2]
-    assert sent == "sendRichMessage" and edited == "editMessageText"
-    assert (payload["chat_id"], payload["message_thread_id"]) == (int(CHAT), 17)
-    assert edit["message_id"] == 501 and "message_thread_id" not in edit
-    assert adapter.sent == []  # never the plain verb
-    record = ctx.state.data["probe"]
-    assert (record["message_id"], record["thread_id"], record["screen_format"]) == (
-        "501",
-        "17",
-        "rich",
-    )
-
-
-@pytest.mark.parametrize("thread", [None, "1"])
-def test_a_rich_message_for_general_or_no_topic_goes_without_a_thread(
-    monkeypatch, tmp_path: Path, thread: str | None
-) -> None:
-    """Telegram rejects ``message_thread_id`` 1 on a send: General is no topic there (the
-    engine's own routing)."""
-    plugin = load_plugin()
-    overrides = {"thread_id": thread} if thread else {}
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, **overrides))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 1)
-
-    _run(runtime, adapter, scenario)
-
-    method, payload = adapter.rich_calls[0]
-    assert method == "sendRichMessage" and "message_thread_id" not in payload
-
-
-def test_a_refused_rich_send_sends_plain_in_the_same_tick(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(refuse={"sendRichMessage": BadRequest("Bad Request: unsupported tag")})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.sent) >= 1)
-
-    _run(runtime, adapter, scenario)
-
-    assert [method for method, _ in adapter.rich_calls[:1]] == ["sendRichMessage"]
-    record = ctx.state.data["probe"]
-    assert (record["message_id"], record["rich_error"]) == ("101", "BadRequest")
-    assert runtime.rich is False
-
-
-def test_a_rich_send_that_may_have_reached_telegram_is_not_followed_by_a_plain_one(
-    monkeypatch, tmp_path: Path
-) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(refuse={"sendRichMessage": TimedOut("Timed out")})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.sent == []  # a second message would be a duplicate if the first arrived
-    record = ctx.state.data["probe"]
-    assert record["last_status"] == "send_failed"
-    assert record["last_error"] == "sendRichMessage: TimedOut"
-    assert runtime.rich is None
-
-
-def test_without_the_bot_call_the_chain_is_as_before_and_the_record_says_why(
-    monkeypatch, tmp_path: Path
-) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = FakeAdapter()
 
     async def scenario() -> None:
         await until(lambda: len(adapter.html_edits) >= 2)
 
     _run(runtime, adapter, scenario)
 
+    assert adapter.rich_calls == []
+    assert len(adapter.sent) == 1
     record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("html", plugin.NO_RICH_CALL)
-    assert runtime.rich is None
+    assert (record["screen_format"], record["html_verb"]) == ("html", "_edit_text")
+    assert not any(key.startswith("rich") for key in record)
 
 
-def test_a_rich_form_that_fails_to_build_leaves_the_html_form(
+@pytest.mark.parametrize(
+    ("value", "said"),
+    [
+        (None, False),
+        ("", False),
+        ("false", False),
+        ("off", False),
+        ("maybe", False),
+        (True, True),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("ON", True),
+    ],
+)
+def test_the_retired_rich_setting_is_named_once_only_when_it_says_yes(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, value: Any, said: bool
+) -> None:
+    """An operator who turned the form on in 1.1.0 learns from the journal why the screen is HTML
+    now; one who did not hears nothing. The settings carry no ``rich`` any more."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=value))
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime = plugin.register(ctx)
+
+    assert runtime is not None
+    assert not hasattr(runtime.settings, "rich")
+    named = [r for r in caplog.records if r.getMessage() == plugin.RICH_RETIRED]
+    assert len(named) == (1 if said else 0)
+    assert "hermes-agent#151881" in plugin.RICH_RETIRED
+
+
+def test_the_retired_rich_setting_is_named_from_the_environment_too(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
+    settings = _settings(monkeypatch, _home(tmp_path))
+    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_RICH", "1")
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime = plugin.register(FakeContext(settings))
+
+    assert runtime is not None
+    assert [r.getMessage() for r in caplog.records].count(plugin.RICH_RETIRED) == 1
+
+
+def test_a_record_from_1_1_0_drops_the_rich_keys_and_its_message_is_edited_as_html(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The rich message 1.1.0 left on the screen keeps its id: the tick edits it as HTML, which
+    Telegram takes here; the rich form's keys leave the record at load, the journal says once
+    which message was rich, and no second message goes out."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
-
-    def boom(*args: Any, **kwargs: Any) -> str:
-        raise ValueError("rich only")
-
-    monkeypatch.setattr(runtime.dashboard.rich, "to_telegram_rich", boom)
     adapter = RichAdapter()
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.html_edits) >= 3)
+        await until(lambda: len(adapter.html_edits) >= 2)
 
     with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
         _run(runtime, adapter, scenario)
 
-    assert adapter.rich_calls == []
-    assert ctx.state.data["probe"]["screen_format"] == "html"
-    assert ctx.state.data["probe"]["last_render_error"] is None
-    tracebacks = [r for r in caplog.records if r.exc_info]
-    assert len(tracebacks) == 1
+    assert adapter.rich_calls == [] and adapter.sent == []
+    assert set(adapter.targets) == {"4242"}
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["message_id"]) == ("edited", "4242")
+    assert (record["screen_format"], record["html_verb"]) == ("html", "_edit_text")
+    assert "rich_error" not in record and "rich_render_error" not in record
+    said = [r.getMessage() for r in caplog.records if "Rich Message" in r.getMessage()]
+    assert len(said) == 1 and "message 4242" in said[0]
 
 
-def test_the_notice_reaches_a_rich_message_as_rich(monkeypatch, tmp_path: Path) -> None:
-    """A rich message may refuse a plain edit: the loud notice goes out as one rich paragraph of
-    the same words first."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-
-    async def boom(now: Any) -> Any:
-        raise RuntimeError("collector down")
-
-    runtime.collector = boom
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 1)
-
-    _run(runtime, adapter, scenario)
-
-    markup = adapter.rich_calls[0][1]["rich_message"]["html"]
-    assert markup.startswith("<p>") and "screen not built: RuntimeError" in markup
-    assert "<details>" not in markup and adapter.edits == []
-
-
-def test_a_package_copy_without_the_rich_form_is_refused_at_load(tmp_path: Path) -> None:
-    """The plugin asks the package for the rich form (0.12.0); a copy from before it is refused
-    at load and the next candidate is taken, like any older copy."""
-    plugin_dir = tmp_path / "telegram_dashboard_probe"
-    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
-    (plugin_dir / "telegram_dashboard" / "rich.py").unlink()
-
-    plugin = load_plugin("hermes_plugins.pre_rich_probe", plugin_dir, vendored=True)
-    dashboard = plugin.import_dashboard()
-
-    assert dashboard is not None
-    assert dashboard.origin == "installed"
-
-
-# Review of 0.12.0: on a rich message only the rich call may say the message is lost; a call that
-# could not be made is a refusal; the record names the form that is on the screen.
-
-
-def test_a_refused_rich_edit_of_a_rich_message_never_sends_a_second_message(
+def test_a_rich_message_telegram_will_not_edit_as_html_or_plain_is_replaced(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The rich edit of the rich message is refused, its plain words as one rich paragraph too,
-    and the HTML and plain edits come back in the words of a lost message: the tick fails and no
-    message is sent. A frozen screen, which the watchdog reports, over a second pinned message."""
+    """Telegram may refuse an HTML and a plain edit of a message sent rich, in the words of a lost
+    one ("message can't be edited"). With no rich path left, a new message is the way out: the
+    tick sends one, as for a lost message, and never through the bot's raw call."""
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
-    gone = "Bad Request: message can't be edited"
-    adapter = RichAdapter(
-        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
-        reject_html=gone,
-        fail_plain=gone,
-    )
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 3)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.sent == [] and [m for m, _ in adapter.rich_calls].count("sendRichMessage") == 0
-    record = ctx.state.data["probe"]
-    assert record["last_status"] == "edit_failed" and "lost_at" not in record
-    assert record["last_error"] == "edit of a rich message failed (BadRequest)"
-    assert record["message_id"] == "4242"
-
-
-def test_a_rich_message_the_rich_call_finds_gone_is_sent_anew(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    gone = BadRequest("Bad Request: message to edit not found")
-    adapter = RichAdapter(refuse={"editMessageText": gone})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    assert [method for method, _ in adapter.rich_calls[:2]] == [
-        "editMessageText",
-        "sendRichMessage",
-    ]
-    assert adapter.html_edits == [] and adapter.edits == [] and adapter.sent == []
-    record = ctx.state.data["probe"]
-    assert record["message_id"] == "501" and record["lost_at"] and record["recreated_at"]
-
-
-def test_a_rich_call_that_could_not_be_made_is_a_refusal_and_plain_follows(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """A call the library or the Bot API server cannot make never reached Telegram: the same
-    tick sends plain, the message is created (the engine's own capability errors)."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(refuse={"sendRichMessage": TypeError("unexpected keyword argument")})
+    refused = "Bad Request: message can't be edited"
+    adapter = RichAdapter(reject_html=refused, fail_plain=refused)
 
     async def scenario() -> None:
         await until(lambda: len(adapter.sent) >= 1)
 
     _run(runtime, adapter, scenario)
 
+    assert adapter.rich_calls == []
+    assert adapter.targets[:2] == ["4242", "4242"]  # HTML, then plain, on the rich message
     record = ctx.state.data["probe"]
-    assert (record["message_id"], record["rich_error"]) == ("101", "TypeError")
+    assert record["message_id"] == "101" and record["lost_at"] and record["recreated_at"]
+
+
+def test_a_rich_message_whose_edit_fails_otherwise_keeps_its_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A failure that does not say the message is lost or can't be edited (a timeout, the network)
+    is no reason for a second message: ``edit_failed``, the id kept, the next tick edits again."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(reject_html="Timed out", fail_plain="Timed out")
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.targets) >= 4)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.sent == [] and adapter.rich_calls == []
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_error"]) == ("edit_failed", "Timed out")
+    assert record["message_id"] == "4242" and "lost_at" not in record
+
+
+def test_a_held_back_plain_edit_of_a_rich_message_is_deferred_not_a_loss(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The HTML edit of the rich message is refused in the words of a lost one and the plain edit
+    after it is held back by the engine: nothing answered for the message, so deferred, no
+    message sent, and the record keeps the form it had until an edit lands."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+    _static(runtime)
+    adapter = RichAdapter(reject_html="Bad Request: message can't be edited", busy=True)
+
+    async def scenario() -> None:
+        await until(lambda: len(adapter.skipped) >= 3)
+
+    _run(runtime, adapter, scenario)
+
+    assert adapter.sent == [] and adapter.rich_calls == []
+    record = ctx.state.data["probe"]
+    assert (record["last_status"], record["last_error"]) == ("deferred", None)
+    assert (record["screen_format"], record["message_id"]) == ("rich", "4242")
+
+
+def test_a_package_copy_without_the_rich_renderer_is_taken(tmp_path: Path) -> None:
+    """The tick no longer asks the package for the rich form: a copy without ``rich.py`` is a
+    whole copy, taken beside the plugin as any other."""
+    plugin_dir = tmp_path / "telegram_dashboard_probe"
+    shutil.copytree(PLUGIN_DIR, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    (plugin_dir / "telegram_dashboard" / "rich.py").unlink()
+
+    plugin = load_plugin("hermes_plugins.no_rich_probe", plugin_dir, vendored=True)
+    dashboard = plugin.import_dashboard()
+
+    assert dashboard is not None
+    assert dashboard.origin == "vendored"
+    assert "rich" not in plugin.DASHBOARD_MODULES and "rich" not in plugin.REQUIRED_API
 
 
 def test_a_plain_creation_says_plain_whatever_the_record_said_before(
     monkeypatch, tmp_path: Path
 ) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, period_seconds=60))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
     ctx.state.set("probe", {"chat_id": CHAT, "message_id": None, "screen_format": "rich"})
     runtime = plugin.register(ctx)
     assert runtime is not None
@@ -2375,7 +2118,7 @@ def test_a_plain_creation_says_plain_whatever_the_record_said_before(
 
 def test_a_plain_notice_on_an_html_message_says_plain(monkeypatch, tmp_path: Path) -> None:
     plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True, period_seconds=60))
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), period_seconds=60))
     ctx.state.set(
         "probe",
         {"message_id": "4242", "chat_id": CHAT, "screen_format": "html", "html_verb": "_edit_text"},
@@ -2396,283 +2139,3 @@ def test_a_plain_notice_on_an_html_message_says_plain(monkeypatch, tmp_path: Pat
 
     record = ctx.state.data["probe"]
     assert (record["screen_format"], record["html_verb"]) == ("plain", None)
-
-
-def test_a_screen_over_the_ceilings_goes_to_a_rich_message_as_plain_words(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    monkeypatch.setattr(runtime.dashboard.rich, "to_telegram_rich", lambda *a, **k: None)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 3)
-
-    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    markup = adapter.rich_calls[0][1]["rich_message"]["html"]
-    assert markup.startswith("<p>") and "<details>" not in markup and "🧠 LIMITS USED" in markup
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_render_error"]) == (
-        "rich",
-        plugin.RICH_CEILINGS,
-    )
-    said = [r for r in caplog.records if "ceilings" in r.getMessage()]
-    assert len(said) == 1, "once per reason, not once per tick"
-
-
-def test_a_cron_list_over_the_ceilings_leaves_the_html_form(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """1.0.0, review of Task 3: names full of ``&`` and ``"`` grow under escaping until the rich
-    form passes Telegram's ceilings. The real builder answers ``None``, and the tick edits the
-    HTML form without asking rich: the intended answer, said once in the journal."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _remembered(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    name = '&"' * 40
-    jobs = tuple(CronJob(f"a{i}", name, "active") for i in range(60))
-    jobs += tuple(CronJob(f"p{i}", name, "paused") for i in range(30))
-    jobs += tuple(CronJob(f"d{i}", name, "done") for i in range(20))
-    big = replace(STATES[0].snapshot, cron=CronSummary("ok", active=60, paused=30, jobs=jobs))
-
-    async def snapshot(now: Any) -> Any:
-        return big
-
-    runtime.collector = snapshot
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.html_edits) >= 3)
-
-    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    assert adapter.rich_calls == []
-    assert adapter.html_edits[-1][1] == "HTML"
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_render_error"]) == (
-        "html",
-        plugin.RICH_CEILINGS,
-    )
-    said = [r for r in caplog.records if "ceilings" in r.getMessage()]
-    assert len(said) == 1
-
-
-def test_the_rich_setting_off_keeps_the_html_chain(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich="off"))
-    _remembered(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.html_edits) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.rich_calls == []
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("html", plugin.RICH_OFF)
-
-
-@pytest.mark.parametrize(
-    ("value", "on"),
-    [
-        (None, False),
-        ("", False),
-        ("false", False),
-        ("off", False),
-        ("maybe", False),
-        (True, True),
-        ("true", True),
-        ("1", True),
-        ("yes", True),
-        ("ON", True),
-    ],
-)
-def test_the_rich_form_is_off_unless_the_setting_says_true(
-    monkeypatch, tmp_path: Path, value: Any, on: bool
-) -> None:
-    """A rich message carries no fallback text (``InputRichMessage`` has no field for one): an app
-    without Rich Messages may not show the screen at all, so the form waits for an explicit yes."""
-    plugin = load_plugin()
-    runtime = plugin.register(FakeContext(_settings(monkeypatch, _home(tmp_path), rich=value)))
-    assert runtime is not None
-    assert runtime.settings.rich is on
-
-
-def test_the_rich_form_turns_on_from_the_environment_too(monkeypatch, tmp_path: Path) -> None:
-    plugin = load_plugin()
-    settings = _settings(monkeypatch, _home(tmp_path))
-    monkeypatch.setenv("HERMES_DASHBOARD_PROBE_RICH", "1")
-    runtime = plugin.register(FakeContext(settings))
-    assert runtime is not None
-    assert runtime.settings.rich is True
-
-
-def test_by_default_a_new_message_is_plain_then_html_and_rich_is_never_asked(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """The bot has the rich call, the setting says nothing: the message is created by the public
-    verb and edited as HTML, as before 0.12.0."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.html_edits) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    assert adapter.rich_calls == []
-    assert len(adapter.sent) == 1
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("html", plugin.RICH_OFF)
-
-
-def test_the_rich_message_asks_telegram_to_find_no_entity(monkeypatch, tmp_path: Path) -> None:
-    """``skip_entity_detection`` (``InputRichMessage``, Bot API 10.1+): the second line behind
-    ``<code>`` for a word Telegram would make a link, a command, a mention or a hashtag."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    for _method, payload in adapter.rich_calls[:2]:
-        assert payload["rich_message"]["skip_entity_detection"] is True
-        assert set(payload["rich_message"]) == {"html", "skip_entity_detection"}
-
-
-def test_a_rich_message_gone_is_sent_anew_even_without_the_rich_call(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """An HTML or plain answer that says the message is not there at all is a loss on a rich
-    message too; "can't be edited" would not be (the test above)."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    gone = "Bad Request: message to edit not found"
-    adapter = RichAdapter(reject_html=gone, fail_plain=gone)
-    adapter._bot = None  # type: ignore[assignment]
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.sent) >= 1)
-
-    _run(runtime, adapter, scenario)
-
-    record = ctx.state.data["probe"]
-    assert record["message_id"] == "101" and record["lost_at"] and record["recreated_at"]
-    assert record["rich_error"] == plugin.NO_RICH_CALL
-
-
-def test_a_refused_full_form_on_a_rich_message_sends_its_plain_words_in_the_same_tick(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Review of 0.12.0: the full form refused for its content keeps the screen alive with the
-    plain words as one rich paragraph; the record says why, the journal once."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-
-    def full_form(payload: dict[str, Any]) -> BaseException | None:
-        markup = payload["rich_message"]["html"]
-        return (
-            BadRequest("Bad Request: can't parse rich message") if "<details>" in markup else None
-        )
-
-    adapter = RichAdapter(refuse={"editMessageText": full_form})
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 4)
-
-    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    first, second = (payload["rich_message"]["html"] for _, payload in adapter.rich_calls[:2])
-    assert "<details>" in first and second.startswith("<p>") and "<details>" not in second
-    assert adapter.html_edits == [] and adapter.edits == [] and adapter.sent == []
-    record = ctx.state.data["probe"]
-    assert (record["last_status"], record["screen_format"], record["rich_error"]) == (
-        "edited",
-        "rich",
-        "BadRequest",
-    )
-    said = [r for r in caplog.records if "plain words instead" in r.getMessage()]
-    assert len(said) == 1, "once per reason, not once per tick"
-
-
-def test_the_rich_setting_off_keeps_a_rich_message_alive_with_its_plain_words(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """An HTML or plain edit of a rich message may be refused for good: with the setting off a
-    message that is rich already gets its plain words as one rich paragraph; new ones are plain."""
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich="off"))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter()
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 2)
-
-    _run(runtime, adapter, scenario)
-
-    markup = adapter.rich_calls[0][1]["rich_message"]["html"]
-    assert markup.startswith("<p>") and "<details>" not in markup
-    assert adapter.html_edits == [] and adapter.sent == []
-    record = ctx.state.data["probe"]
-    assert (record["screen_format"], record["rich_error"]) == ("rich", plugin.RICH_OFF)
-
-
-def test_a_full_form_refused_with_its_plain_words_too_is_said_once(
-    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    plugin = load_plugin()
-    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path), rich=True))
-    _rich_record(ctx)
-    runtime = plugin.register(ctx)
-    assert runtime is not None
-    _static(runtime)
-    adapter = RichAdapter(
-        refuse={"editMessageText": BadRequest("Bad Request: can't parse rich message")},
-        reject_html="Timed out",
-        fail_plain="Timed out",
-    )
-
-    async def scenario() -> None:
-        await until(lambda: len(adapter.rich_calls) >= 8)
-
-    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
-        _run(runtime, adapter, scenario)
-
-    said = [r for r in caplog.records if "plain words instead" in r.getMessage()]
-    assert len(said) == 1

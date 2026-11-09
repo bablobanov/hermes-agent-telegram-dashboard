@@ -451,10 +451,23 @@ def test_the_plugin_keeps_to_the_engine_s_pacing_of_the_chat() -> None:
     adapter, #116312) and holds back an interim ``edit_message`` while a reply in the same chat
     has it; the plugin takes that as a deferred edit and tries again on its next tick. Its plain
     edits never get past the slot: no ``finalize`` (the engine never holds back a final edit)
-    and nothing of the slot itself, read or written. ``_edit_text`` and the rich call are not
-    gated by the slot: they neither wait for it nor arm it."""
+    and nothing of the slot itself, read or written. ``_edit_text`` is not gated by the slot:
+    it neither waits for it nor arms it."""
     entry = ENTRY.read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(entry)):
         if isinstance(node, ast.Call):
             assert all(kw.arg != "finalize" for kw in node.keywords), ast.unparse(node)
     assert not re.search(r"outbound_slot|_slot_secs|_slot_until", _code_only(entry))
+
+
+# ------------------------------------------------------------------- 1.1.1, no raw Bot API call
+
+
+def test_the_plugin_makes_no_raw_bot_api_call() -> None:
+    """16. The review of the catalog entry asked to remove the engine bot's raw call
+    (``_bot.do_api_request``), which goes past the adapter's per-chat slot and flood handling.
+    The entry's code names neither that call nor a Bot API method by its wire name: every send
+    and edit goes through the adapter's verbs. The prose may still say what 1.1.0 did."""
+    code = _code_only(ENTRY.read_text(encoding="utf-8"))
+    for name in ("do_api_request", "sendRichMessage", "editMessageText", "rich_message"):
+        assert name not in code, name
