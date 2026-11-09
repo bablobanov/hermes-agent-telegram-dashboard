@@ -16,6 +16,8 @@ Authority = Literal["official", "local", "derived", "unknown"]
 QuotaKind = Literal["official", "local", "unavailable", "unsupported", "expired", "not_configured"]
 DriftState = Literal["clean", "drift", "unknown", "unsupported"]
 BackupState = Literal["ok", "failed", "unknown", "unsupported"]
+# ``low``: the free space is under a floor (``disk.py``); ``unknown``: the partition was not read.
+DiskState = Literal["ok", "low", "unknown"]
 GatewayProcessState = Literal["running", "stopped", "unknown", "unsupported"]
 PlatformState = Literal["connected", "degraded", "disconnected", "unknown", "unsupported"]
 # The cron ticker and its jobs as the engine's own records say (``cron_jobs.py``): ``failing``
@@ -364,6 +366,19 @@ class BackupSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class DiskSummary:
+    """The partition the profile home lies on, as the system reports it to the gateway's user:
+    the bytes it may still write (``free_bytes``) and the partition's size. ``low`` is under
+    either floor of the owner's settings; ``unknown`` is a partition that could not be read
+    (``detail`` says why)."""
+
+    state: DiskState = "unknown"
+    free_bytes: int | None = None
+    total_bytes: int | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GatewaySummary:
     process: GatewayProcessState = "unknown"
     telegram: PlatformState = "unknown"
@@ -416,3 +431,6 @@ class DashboardSnapshot:
     rules: RulesSummary | None = None
     # Whether the agent's memory works; ``None`` when not collected.
     memory: MemorySummary | None = None
+    # The free space of the profile home's partition; ``None`` when not collected (a demo state
+    # without it).
+    disk: DiskSummary | None = None

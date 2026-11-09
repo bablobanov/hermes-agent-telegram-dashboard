@@ -87,8 +87,9 @@ DETAILS                                 a collapsed quote in HTML, in full in pl
                                         between two (the plans, logins, providers
                                         not configured and Gemini refusals; the
                                         agent's rules; its memory; the Telegram
-                                        channel; backup, drift and cron; the Hermes
-                                        version; every "no data" with its reason)
+                                        channel; backup, drift, the disk and cron;
+                                        the Hermes version; every "no data" with
+                                        its reason)
 Gemini refusals seen by Hermes: none
 
 ✓ Telegram last update seen Sep 26 20:30 · polling ok 20:58
@@ -96,6 +97,8 @@ Telegram send errors: none in the log
 
 ✓ Backup Sep 26 11:00 · 10 h ago · integrity ok
 ✓ Drift 0 of 481 · checked 08:00
+Disk: 61 GB free of 80                  the partition HERMES_HOME lies on; under
+                                        10% of it or 2 GB, ⚠️ here and an event
 Cron 27 active · 3 paused · ticker 20:58
 
 Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24
@@ -128,8 +131,8 @@ Cron ⚠️ 1 of 27 failing                 is not well, even one an event alrea
 ```
 
 The limits are a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
-`Claude · no data` with its reason in the details). The cron lines sit in the details with backup
-and drift, and no table of the jobs is drawn: the rich view of 1.1.0 had one ("Rich view: retired
+`Claude · no data` with its reason in the details). The cron lines sit in the details with backup,
+drift and the disk, and no table of the jobs is drawn: the rich view of 1.1.0 had one ("Rich view: retired
 in 1.1.1" under "The plugin"). In HTML the top line and the headings are bold and the details are
 one collapsed quote; in plain text the headings are upper case and the details are shown in full.
 Both forms come from the same snapshot.
@@ -456,6 +459,9 @@ state file, else the `HERMES_HOME` variable, else `~/.hermes`), only read:
   and times of every `pending/memory/*.json` and `pending/skills/*.json`, and of the first 2,000
   memory ones (up to 256 KB each) the action, target and length of each add; the time of
   `skills/.curator_ledger.jsonl` ("The memory section").
+- The partition `HERMES_HOME` lies on: its size and the space the gateway's user may still
+  write, one `shutil.disk_usage` call (`statvfs`) every tick; no file is opened ("The disk
+  line").
 
 Outside `HERMES_HOME`:
 
@@ -724,6 +730,8 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `limits_sources` | (config only, a list) | up to 4 local sources of limits: `url` on loopback, optional `key_env` and `timeout_seconds`; see "External limit sources" |
    | `limits_providers` | (config only, a list) | optional: the built-in limit providers to ask, `claude`, `codex`, `gemini` in any case. Unset, every one is asked and one with no sign of an account here has no line. Set, exactly the listed ones are asked and each always keeps its line (`Claude · no data` with the reason, Gemini's line with no refusal too); one left out is never asked (the facade is not called for it, the Gemini log is not read: no source, no event) and the details say `Off in the dashboard settings: Gemini`. An empty list, written as `[]`, asks none of them. An unknown name is skipped with a warning in the log that names its place in the list; a list in which no name is known (a typo such as `[codx]`) is ignored as if unset, so the automatic rule holds, with that warning; anything but a list is ignored with a warning. `limits_sources` are not subject to it. The fallback tick reads the same list from its JSON config; see "Limits: three kinds that never mix" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
+   | `disk_low_percent` | `HERMES_DASHBOARD_PROBE_DISK_LOW_PERCENT` | default 10; the disk is low when its free space is under this share of the partition `HERMES_HOME` lies on; from 0 (off) to below 100, anything else is the default with a warning in the log; see "The disk line" |
+   | `disk_low_gb` | `HERMES_DASHBOARD_PROBE_DISK_LOW_GB` | default 2; the disk is low when its free space is under this many GB (10^9 bytes), whichever floor comes first; from 0 (off), anything else is the default with a warning in the log; the fallback tick reads both floors from its JSON config |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | does nothing since 1.1.1: the rich view is retired ("Rich view: retired in 1.1.1" under "The plugin"). Set to `1`/`true`/`yes`/`on`, it is named once in the journal at start; the screen is HTML or plain either way |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
@@ -1177,6 +1185,28 @@ event; no `backup_status` configured is `backup (not on this installation)` ther
 the one our own timer writes (`state_db_publish.py` in the operator repository); any writer that
 produces the same keys works.
 
+### The disk line
+
+Since 1.1.1 the details carry the free space of the partition `HERMES_HOME` lies on in every
+state, after backup and drift: `Disk: 61 GB free of 80`. The number is what the gateway's user
+may still write, not the blocks only root may take; GB is 10^9 bytes, one decimal under 10. It is
+one `shutil.disk_usage` call per tick; nothing is opened, written or run. When the free space is
+under either floor, 10% of the partition or 2 GB by default (`disk_low_percent`, `disk_low_gb`;
+0 turns one off), the details line takes ⚠️ and an event goes under "Needs attention", which
+turns the status yellow (the state `--demo 30`):
+
+```
+🛠 NEEDS ATTENTION
+- Disk: 1.6 GB free of 80 (2%)
+```
+
+The disk has no item in the ✓ row and no place in the coverage: it is the host's, not a source of
+Hermes. Like the rules and the memory, its event keeps a place among the five shown when more
+events are up. A partition the system refuses to report says why in the details (`Disk: not read
+(PermissionError)`), never a zero and never an event; a failure nobody foresaw is the usual
+`Collector disk crashed` event. The free figure is rounded down, so a disk shown with 2.0 GB free
+is never under the 2 GB floor.
+
 ### The Hermes version line
 
 `🤖 Hermes 0.21.3 → 0.21.5` sits after the limits: the version the running gateway serves, then
@@ -1595,6 +1625,8 @@ lives there, not in code:
   "limits_enabled": true,
   "context_files": true,
   "memory": true,
+  "disk_low_percent": 10,
+  "disk_low_gb": 2,
   "gateway_dir": "/path/the/gateway/runs/in",
   "recreate_on_loss": true
 }
@@ -1628,7 +1660,7 @@ importable; to run it, use an interpreter with the engine and `python-telegram-b
 (for example `uv sync --extra messaging` in an engine checkout with `UV_PROJECT_ENVIRONMENT`
 pointing outside the checkout, then that venv's `python -m pytest tests/test_probe_plugin.py`).
 
-`tests/test_invariants.py` reads the plugin's own source and pins fifteen properties a later change
+`tests/test_invariants.py` reads the plugin's own source and pins seventeen properties a later change
 cannot undo quietly: the bot token is never read, no port is listened on, the drift command
 runs without a shell, state goes through the engine's plugin state only, the one task is
 spawned through `ctx.spawn_task`, the run history and `state.db` are opened read-only and
@@ -1645,7 +1677,9 @@ catalog validator warns on one), and no word of any demo screen, in the HTML for
 form `rich.py` still builds, becomes a
 link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a
-list. The plain fallback has no code: there Telegram may still link a file name and make `/new`
+list. Since 1.1.1, the entry makes no raw Bot API call and reads the engine's bot for its `id`
+only, and the disk line's module makes one call, `shutil.disk_usage`, and opens, writes, runs
+and logs nothing. The plain fallback has no code: there Telegram may still link a file name and make `/new`
 a command a tap would send to the dashboard's own chat.
 
 ## License

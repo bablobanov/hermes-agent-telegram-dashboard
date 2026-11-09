@@ -134,6 +134,8 @@ ENV_BACKUP_STATUS = "HERMES_DASHBOARD_PROBE_BACKUP_STATUS"
 ENV_CONTEXT_FILES = "HERMES_DASHBOARD_PROBE_CONTEXT_FILES"
 ENV_MEMORY = "HERMES_DASHBOARD_PROBE_MEMORY"
 ENV_RICH = "HERMES_DASHBOARD_PROBE_RICH"
+ENV_DISK_LOW_PERCENT = "HERMES_DASHBOARD_PROBE_DISK_LOW_PERCENT"
+ENV_DISK_LOW_GB = "HERMES_DASHBOARD_PROBE_DISK_LOW_GB"
 ENV_TERMINAL_CWD = "TERMINAL_CWD"  # the engine's own variable, read for the rules line
 # The external limit sources are asked at most once per this many seconds each, not every
 # tick: a weekly number does not move faster.
@@ -145,6 +147,11 @@ MIN_LIMITS_REFRESH_SECONDS = 60.0
 # and a 60 s period).
 DEFAULT_FACADE_REFRESH_SECONDS = 300.0
 MIN_FACADE_REFRESH_SECONDS = 60.0
+# The free-space floors of the profile home's partition (1.1.1): the disk is low under 10 % of
+# it or under 2 GB, whichever comes first; the package's own defaults, here for a settings read
+# with no package to parse them (there is no tick then).
+DEFAULT_DISK_LOW_PERCENT = 10.0
+DEFAULT_DISK_LOW_GB = 2.0
 # The record's key for the caches of the providers read by the dashboard itself before 1.1.0
 # (a plan, windows, the time of an attempt; no token): dropped on load, so the next save leaves
 # it out of the state file.
@@ -196,6 +203,8 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
     # an older copy read by itself: that copy would ask them on every tick.
     # FACADE_DEFAULT_INTERVAL_SECONDS came with ``facade_caches`` (issue #16): a copy without it
     # would reject that argument, or call the facade on every tick.
+    # compat's DISK_LOW_PERCENT, DISK_LOW_GB and their parsers came with the ``Environment``
+    # fields of the disk line (1.1.1), ``collect_all_async`` reading it with them.
     "collect": (
         "collect_all_async",
         "SubprocessRunner",
@@ -217,6 +226,10 @@ REQUIRED_API: dict[str, tuple[str, ...]] = {
         "LIMITS_PROVIDERS",
         "parse_limits_providers",
         "FACADE_UNSCOPED",
+        "DISK_LOW_PERCENT",
+        "parse_disk_low_percent",
+        "DISK_LOW_GB",
+        "parse_disk_low_gb",
     ),
     # classify_message_freshness: the screen's own lagging rule, which a run of edits the engine
     # holds back is measured against (``_defer``); in the module since 0.3.0, the first release.
@@ -328,6 +341,10 @@ class Settings:
     # ``None`` when not set (every one asked, one with no sign of an account without a line);
     # a tuple, empty or not, asks exactly those and always shows them.
     limits_providers: tuple[str, ...] | None = None
+    # The free-space floors of the profile home's partition (``disk_low_percent``, ``disk_low_gb``),
+    # read by the package's own parsers.
+    disk_low_percent: float = DEFAULT_DISK_LOW_PERCENT
+    disk_low_gb: float = DEFAULT_DISK_LOW_GB
 
 
 @dataclass(frozen=True)
@@ -397,6 +414,18 @@ def read_settings(ctx: Any) -> Settings | None:
         memory=_setting(ctx, "memory", ENV_MEMORY).lower() not in _FALSE_WORDS,
         cron_notes=_notes(_raw_setting(ctx, "cron_notes")),
         limits_providers=_providers(_raw_setting(ctx, "limits_providers")),
+        disk_low_percent=_parsed(
+            "disk_low_percent",
+            "parse_disk_low_percent",
+            _setting(ctx, "disk_low_percent", ENV_DISK_LOW_PERCENT),
+            DEFAULT_DISK_LOW_PERCENT,
+        ),
+        disk_low_gb=_parsed(
+            "disk_low_gb",
+            "parse_disk_low_gb",
+            _setting(ctx, "disk_low_gb", ENV_DISK_LOW_GB),
+            DEFAULT_DISK_LOW_GB,
+        ),
     )
 
 
@@ -1442,6 +1471,8 @@ class ProbeRuntime:
             gateway_dir=_working_dir(),
             terminal_cwd=_terminal_cwd(),
             process_started_at=self.started_at,
+            disk_low_percent=self.settings.disk_low_percent,
+            disk_low_gb=self.settings.disk_low_gb,
         )
         runner = dashboard.collect.SubprocessRunner()
         return await dashboard.collect.collect_all_async(

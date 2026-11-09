@@ -8,8 +8,9 @@ description: >-
   whether the connected Telegram channel is deaf, whether the agent sees its rules (the
   context files in the saved system prompt of each platform, read-only from state.db),
   whether its memory works (the notebooks against their limits, the writes waiting for
-  approval, a configured provider's errors; numbers only), the Hermes version against the
-  latest upstream release with a new release marked for a day, up to five events on one phone
-  screen, the reasons and stamps in a collapsed details block. HTML when the adapter takes it,
-  else plain text; a tick that cannot build the screen still edits the message.
+  approval, a configured provider's errors; numbers only), the free space of the disk the
+  profile lies on, the Hermes version against the latest upstream release with a new release
+  marked for a day, up to five events on one phone screen, the reasons and stamps in a
+  collapsed details block. HTML when the adapter takes it, else plain text; a tick that cannot
+  build the screen still edits the message.
 author: Ilya Balobanov

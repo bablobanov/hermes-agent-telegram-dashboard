@@ -35,6 +35,7 @@ from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .context_files import platform_label
 from .cron_jobs import NAME_LIMIT as CRON_NAME_LIMIT
+from .disk import space_words
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
 from .gemini_log import hit_words, is_active
 from .policy import sanitize_public_text
@@ -43,6 +44,7 @@ from .schema import (
     CronFailure,
     CronSummary,
     DashboardSnapshot,
+    DiskSummary,
     DriftSummary,
     GatewaySummary,
     MemoryNotebook,
@@ -235,7 +237,7 @@ class _Details:
     version: str | None = None
     # A blank line between the sources (Ilya, 09.10, 0.11.0), in the order of the rich form's
     # Details (1.0.0): the plans, logins and refusals; the rules; the memory; Telegram; backup,
-    # drift and cron; the Hermes version. A source writes into the last group.
+    # drift, the disk (1.1.1) and cron; the Hermes version. A source writes into the last group.
     groups: list[_Group] = field(default_factory=lambda: [_Group("limits")])
     missing: list[str] = field(default_factory=list)
 
@@ -509,7 +511,7 @@ def _items(
 ) -> list[_Item]:
     """Gateway, Telegram, backup, drift and cron in the order of the ✓ row; a summary that is
     absent adds nothing. Their times, ages and counts go to the details: Telegram's group, then
-    one with backup and drift, then cron's."""
+    one with backup, drift and the disk (1.1.1, no item of the row), then cron's."""
     unchecked = _unchecked_sources(snapshot)
     details.section("telegram")
     items = _gateway_items(snapshot.gateway, snapshot.traffic, unchecked)
@@ -521,7 +523,9 @@ def _items(
         items.append(_backup_item(snapshot.backup, reference, zone, details, unchecked))
     if snapshot.drift is not None:
         items.append(_drift_item(snapshot.drift, zone, details, unchecked))
-    # A fold of its own in the rich form; one group with backup and drift in the text.
+    if snapshot.disk is not None:
+        details.state.append(_disk_words(snapshot.disk))
+    # A fold of its own in the rich form; one group with backup, drift and the disk in the text.
     details.section("cron", joined=True)
     if snapshot.cron is not None:
         line = _cron_line(snapshot.cron, reference, zone, details)
@@ -927,6 +931,17 @@ def _backup_age(backup: BackupSummary, reference: datetime | None) -> tuple[floa
     if age is None or is_from_the_future(age):
         return age, "age unknown"
     return age, describe_age(max(age, 0.0))
+
+
+def _disk_words(disk: DiskSummary) -> str:
+    """``Disk: 61 GB free of 80``, always in the details (1.1.1); the warning mark in front when
+    the disk is low, whose event says it under "Needs attention"; the reason when it was not
+    read."""
+    if disk.free_bytes is None or disk.total_bytes is None:
+        reason = sanitize_public_text(disk.detail or "not read", limit=60)
+        return f"Disk: {reason}"
+    mark = f"{WARN_MARK} " if disk.state == "low" else ""
+    return f"{mark}Disk: {space_words(disk.free_bytes, disk.total_bytes)}"
 
 
 def _drift_item(drift: DriftSummary, zone: tzinfo, details: _Details, unchecked: Set[str]) -> _Item:
