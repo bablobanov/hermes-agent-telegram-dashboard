@@ -451,10 +451,63 @@ def test_the_plugin_keeps_to_the_engine_s_pacing_of_the_chat() -> None:
     adapter, #116312) and holds back an interim ``edit_message`` while a reply in the same chat
     has it; the plugin takes that as a deferred edit and tries again on its next tick. Its plain
     edits never get past the slot: no ``finalize`` (the engine never holds back a final edit)
-    and nothing of the slot itself, read or written. ``_edit_text`` and the rich call are not
-    gated by the slot: they neither wait for it nor arm it."""
+    and nothing of the slot itself, read or written. ``_edit_text`` is not gated by the slot:
+    it neither waits for it nor arms it."""
     entry = ENTRY.read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(entry)):
         if isinstance(node, ast.Call):
             assert all(kw.arg != "finalize" for kw in node.keywords), ast.unparse(node)
     assert not re.search(r"outbound_slot|_slot_secs|_slot_until", _code_only(entry))
+
+
+# ------------------------------------------------------------------- 1.1.1, no raw Bot API call
+
+
+def test_the_plugin_makes_no_raw_bot_api_call() -> None:
+    """16. The review of the catalog entry asked to remove the engine bot's raw call
+    (``_bot.do_api_request``), which goes past the adapter's per-chat slot and flood handling.
+    The entry's code names neither that call nor a Bot API method by its wire name: every send
+    and edit goes through the adapter's verbs. The prose may still say what 1.1.0 did."""
+    code = _code_only(ENTRY.read_text(encoding="utf-8"))
+    for name in ("do_api_request", "sendRichMessage", "editMessageText", "rich_message"):
+        assert name not in code, name
+
+
+def test_the_engine_s_bot_is_read_for_its_id_only() -> None:
+    """16, the rest of it. The adapter's private ``_bot`` is named once, as ``BOT_ATTRIBUTE``,
+    and used only in ``_bot_id``, which reads ``BOT_ID_ATTRIBUTE`` (``id``) off it: no method of
+    the bot is reached, typed (``send_message``, ``pin_chat_message``) or raw. No module of the
+    package the tick imports names the bot or the raw call."""
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"))
+    named = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "_bot"]
+    assigned = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and [getattr(target, "id", None) for target in n.targets] == ["BOT_ATTRIBUTE"]
+    ]
+    assert len(named) == 1 and len(assigned) == 1 and assigned[0].value is named[0]
+    assert not any(isinstance(n, ast.Attribute) and n.attr == "_bot" for n in ast.walk(tree))
+    users = {
+        function.name
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+        and any(isinstance(n, ast.Name) and n.id == "BOT_ATTRIBUTE" for n in ast.walk(function))
+    }
+    assert users == {"_bot_id"}
+    bot_id = next(
+        f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "_bot_id"
+    )
+    reads = [
+        ast.unparse(n)
+        for n in ast.walk(bot_id)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "getattr"
+    ]
+    assert reads == [
+        "getattr(getattr(live, BOT_ATTRIBUTE, None), BOT_ID_ATTRIBUTE, None)",
+        "getattr(live, BOT_ATTRIBUTE, None)",
+    ]
+    modules = ("collect", "compat", "freshness", "render", "telegram_traffic")
+    for name in modules:
+        source = _code_only((PACKAGE / f"{name}.py").read_text(encoding="utf-8"))
+        assert "do_api_request" not in source and "_bot" not in source, name

@@ -6,6 +6,9 @@
 
 ![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](../../docs/hero-1.1.0.jpg)
 
+*The rich view of 1.1.0. 1.1.1 sends the same data as HTML text, the limits as lines and no table of
+the cron jobs ("What the message shows"; "Rich view: retired in 1.1.1").*
+
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call.
 
@@ -46,10 +49,11 @@ the plugin folder, so `sha256sum -c SHA256SUMS` run from `plugin/` (or from the 
 
 ## What the message shows
 
-One phone screen in blocks, a thin line between two, then two folds that Telegram shows
-collapsed. The example is the rich view (`rich: true`) as 1.1.0 draws it for the showcase state
-(`python -m telegram_dashboard --demo 14` prints its plain form); the classic view, the default,
-says the same in text (below). The width is a guide, not a law: a phone sets a proportional
+One phone screen in blocks, a blank line between two, then the details, which Telegram shows as
+a collapsed quote. The example is the showcase state as `python -m telegram_dashboard --demo 14`
+prints it, the plain form; the message is the HTML form of the same text, where the top line and
+the headings are bold, the headings keep their case (`🧠 Limits used`) and the details stay
+folded until tapped. The width is a guide, not a law: a phone sets a proportional
 font, so a line fits or wraps by what is on it (an emoji or a Cyrillic letter is wider than a
 Latin one). An event names a cron job by its label in full and a long one wraps; the time of a
 limit is never rounded for the width:
@@ -60,32 +64,49 @@ limit is never rounded for the width:
                                         freshness banner when that is up), and
                                         Telegram may say "3 minutes ago" instead of
                                         the date
+
 ✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron
                                         what works, in one row: the gateway process,
                                         the Telegram channel, the last state.db backup,
                                         config drift, the cron ticker and its jobs
-🧠 Limits used                           a table: the spent share and the time to its
-Provider  Used · resets in              reset of every window, in the provider's own
-Claude    42% · 2h10m    67% · 3d       order; ⚠️ from 90% spent; a provider without
-Codex     ⚠️ 93% · 1h20m 58% · 5d       a number never shows a zero, the reason is in
-                                        Details; one not set up here has no row, and
-                                        Gemini has one only while Google's last
-                                        refusal is recent
+
+🧠 LIMITS USED                           a line per provider: the spent share and the
+Claude 42% (2h10m) · 67% (3d)           time to its reset of every window, in the
+⚠️ Codex 93% (1h20m) · 58% (5d)          provider's own order; ⚠️ from 90% spent; a
+                                        provider without a number never shows a zero,
+                                        the reason is in the details; one not set up
+                                        here has no line, and Gemini has one only
+                                        while Google's last refusal is recent
+
 🤖 Hermes 0.21.3 → 0.21.5                the version the gateway runs → the latest
                                         upstream release; 🆕 and its age for a day
                                         after a release came out
-▸ 🕒 Cron · 27 active · 3 paused · 2 done
-                                        collapsed: every job in one table, by how
-                                        often it runs (see "The cron line")
-▸ Details                               collapsed, a section per source: the plans,
-                                        logins, providers not configured and Gemini
-                                        refusals; the agent's rules;
-                                        its memory; the Telegram channel; backup and
-                                        drift; the Hermes version; every "no data"
-                                        with its reason; then the screen's time, the
-                                        confirmation, the odd data minute, the period,
-                                        the coverage, and
-  Dashboard 1.1.0                       the dashboard's own version, last
+
+DETAILS                                 a collapsed quote in HTML, in full in plain
+                                        text: a group per source, a blank line
+                                        between two (the plans, logins, providers
+                                        not configured and Gemini refusals; the
+                                        agent's rules; its memory; the Telegram
+                                        channel; backup, drift and cron; the Hermes
+                                        version; every "no data" with its reason)
+Gemini refusals seen by Hermes: none
+
+✓ Telegram last update seen Sep 26 20:30 · polling ok 20:58
+Telegram send errors: none in the log
+
+✓ Backup Sep 26 11:00 · 10 h ago · integrity ok
+✓ Drift 0 of 481 · checked 08:00
+Cron 27 active · 3 paused · ticker 20:58
+
+Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24
+2 releases behind · checked Sep 26 21:00
+
+Screen Sep 26 21:00 UTC                 the screen's time, the confirmation, the odd
+Confirmed 20:58                         data minute, the period, the coverage
+Period 5 min
+Profiles 1/1 · sources 8/8
+
+Dashboard 1.1.1                         the dashboard's own version, last
 ```
 
 When something is off, 🛠 Needs attention comes between the top line and the ✓ row, and
@@ -94,9 +115,11 @@ on the installation and the cron history not answering):
 
 ```
 🟡 Warning · updated Sep 26 21:00 UTC
-🛠 Needs attention                       up to five events in the collectors' order,
+
+🛠 NEEDS ATTENTION                       up to five events in the collectors' order,
 - Cron run failed: daily-digest         then the line of every item of the row that
 Cron ⚠️ 1 of 27 failing                 is not well, even one an event already names
+
 ✓ Gateway ✓ Telegram ✓ Backup ✓ Drift   the row keeps what is well
 ❔ Not checked: Gemini log (not on this installation), cron history (unavailable)
                                         what the screen could not check: a source not
@@ -104,13 +127,12 @@ Cron ⚠️ 1 of 27 failing                 is not well, even one an event alrea
                                         or is stale, profiles not seen
 ```
 
-The classic view (`rich: false`, the default) is the same blocks as text, a blank line between
-two: the limits a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
-`Claude · no data` with its reason in the details), no fold for the cron jobs (their lines sit
-in the details with backup and drift, the job table is the one part this view does not carry),
-and the details one collapsed quote. In HTML the top line and the headings are bold; in plain
-text the headings are upper case (`🧠 LIMITS USED`) and the details are shown in full. Both views
-come from the same snapshot.
+The limits are a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
+`Claude · no data` with its reason in the details). The cron lines sit in the details with backup
+and drift, and no table of the jobs is drawn: the rich view of 1.1.0 had one ("Rich view: retired
+in 1.1.1" under "The plugin"). In HTML the top line and the headings are bold and the details are
+one collapsed quote; in plain text the headings are upper case and the details are shown in full.
+Both forms come from the same snapshot.
 
 The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
@@ -127,7 +149,8 @@ on the reader's side, no second bot, no LLM call: it is there every time the cha
 
 <img src="../../docs/screenshots/110-01-healthy.jpg" width="360" alt="The healthy screen on Telegram for Android: status line, the row of what works, the limits table, the Hermes version, the cron jobs and the details folded">
 
-The rich view on Telegram for Android, as 1.1.0 renders a demo state; more screens are in the
+The rich view of 1.1.0 on Telegram for Android, a demo state. 1.1.1 sends the HTML form above
+instead ("Rich view: retired in 1.1.1" under "The plugin"); more screens of 1.1.0 are in the
 [repository's README](../../README.md#screenshots).
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
@@ -156,17 +179,11 @@ line, no place on the ❔ line or in the coverage; when neither Claude nor Codex
 `limits` source itself is gone, so an installation without either does not stay grey (on the
 launch profile of a gateway that multiplexes profiles, where no silence is judged,
 `limits_providers` says which to leave out). The
-details close with the dashboard's own version (`Dashboard 1.1.0`), so the installed copy can be
+details close with the dashboard's own version (`Dashboard 1.1.1`), so the installed copy can be
 told from the pinned message at a glance.
 
-**Rich view:** needs the setting `rich: true` (off by default), the engine's bot with the raw Bot
-API call (read on Hermes v0.21.6 and v0.22.2) and a Telegram app that shows Rich Messages; remove
-the setting or set `rich: false` to turn it off. Telegram documents no fallback text for a rich
-message, so an app without Rich Messages may not show the screen at all.
-
-With it on, where Telegram takes Rich Messages (Bot API 10.1+), the message is the rich view
-above. How the plugin sends each view, and when it falls back to the classic one, is in "The
-plugin" below.
+**Rich view:** retired in 1.1.1; the setting `rich` does nothing ("Rich view: retired in 1.1.1"
+under "The plugin").
 
 ## Freshness is a load-bearing requirement
 
@@ -299,11 +316,9 @@ carry the full story.
 - Telegram, through the engine's adapter only. The message is created with the adapter's public
   `send` and edited with its public `edit_message`; HTML goes through
   `edit_message(..., parse_mode="HTML")` when its signature has that parameter, else through the
-  adapter's private `_edit_text`. With `rich: true` the message is sent and edited as a Rich
-  Message through the raw Bot API call of the adapter's private `_bot`
-  (`_bot.do_api_request("sendRichMessage" | "editMessageText", ...)`, 30 s deadline); a message
-  that is rich already is edited that way, with its plain words, even with `rich` off. The other
-  calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
+  adapter's private `_edit_text`. Nothing goes past the adapter's verbs: no Rich Message and no
+  raw Bot API call since 1.1.1 (1.1.0 sent the rich view through `_bot.do_api_request`; "Rich
+  view: retired in 1.1.1"). These calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
   (`raw_response` `{"skipped": true}`) is recorded as `deferred` and made again on the next
   tick. The record keeps the id of the bot that sent the message, and a bot with another id does
   not edit it: a new message is sent. A record from before 1.1.0 names no sender: on a gateway
@@ -396,8 +411,9 @@ carry the full story.
   private `hermes_cli.version_info._cached_version_info` (its `source` and
   `base_version`, and the module's `__file__`), and the signature, never a call, of the private
   `agent.prompt_builder._read_text_with_timeout`.
-- On the live Telegram adapter: the private method `_edit_text` and the private attribute
-  `_bot` (called as above; `_bot.id` read for the sender), four private counters read as
+- On the live Telegram adapter: the private method `_edit_text` (called as above), the private
+  attribute `_bot` (only `_bot.id` read, for the sender; nothing of it called), four private
+  counters read as
   attributes (`_updates_received_total`, `_polling_generation`,
   `_polling_last_progress_monotonic`, `_polling_generation_started_monotonic`), and the public
   `send`, `edit_message` (its signature too), `send_path_degraded`, `is_connected`, `platform`
@@ -478,7 +494,9 @@ cut; never the text of a prompt, a context file, a notebook, a pending write or 
   out of `limits_providers` gets no new entry.
 - The gateway's journal gets the adapter's error text of a failed edit or send (WARNING; a lost
   message at ERROR with its id), the record's path at start (INFO) and, for an unforeseen failure
-  of a tick, a collector or the render, a traceback.
+  of a tick, a collector or the render, a traceback. Since 1.1.1, at start: one WARNING when the
+  setting `rich` is true, and one with the message id when the record says 1.1.0 sent that message
+  rich ("Rich view: retired in 1.1.1").
 - Hermes' auth code behind the limits facade may write a refreshed login back where it came
   from: Claude Code's `~/.claude/.credentials.json` (mode 0600, with a `.credentials.lock` beside
   it) and, on macOS, its Keychain item (through `security`), or Hermes' own `auth.json`, whose
@@ -528,15 +546,12 @@ register(ctx) → ctx.register_platform_handler("telegram", wire)
              → ctx.spawn_task(tick loop)            (one per profile; reconnects and reloads
                                                      do not add loops)
              → each tick: the traffic counters read off the adapter as attributes, then
-               collect_all_async → render_dashboard → to_telegram_html,
-               to_telegram_plain and to_telegram_rich, then adapter =
+               collect_all_async → render_dashboard → to_telegram_html and
+               to_telegram_plain, then adapter =
                runner.adapters["telegram"] if connected and handed to wire (the launch
                profile also takes up one it was not handed), else the adapter wire was
-               handed last, the message created once
-               (with rich: true sendRichMessage through the engine's bot, else
-               adapter.send(plain)), then every tick, with rich: true, the rich form
-               (_bot.do_api_request("editMessageText", ...)), and without it or on a
-               refusal the HTML form through the verb the adapter has for it:
+               handed last, the message created once by adapter.send(plain), then every
+               tick the HTML form through the verb the adapter has for it:
                edit_message(html, parse_mode="HTML") when its signature takes a parse mode,
                else the adapter's own _edit_text(html, "HTML"), and
                adapter.edit_message(plain) in the same tick when the HTML edit is refused
@@ -602,18 +617,12 @@ its record names no sender, so the new bot is kept as the sender and edits that 
 in a private chat the number may name one of the new bot's own messages, which the edit
 overwrites.
 
-**Two views of one screen.** Every form is built from the same blocks (`render_parts`) of one
-snapshot. The rich view (`rich: true`, `rich.py`) is a Rich Message in sections: the top line,
-Needs attention, the ✓ row, Not checked, the limits as a table and the Hermes version, a thin line
-between two, then two collapsed `<details>`: the cron jobs as one table by how often they run, and
-Details with a titled section per source (the plans, logins and Gemini refusals, the agent's
-rules, its memory, the Telegram channel, backup and drift, the Hermes version, every "no data"),
-the screen's own stamps and the dashboard's version closing it. The classic view (`rich: false`,
-the default) is the same blocks as text: HTML when the adapter has a verb for it (bold headings,
-the details in one `<blockquote expandable>`), else plain (upper-case headings, the details in
-full); the limits are a line per provider, the cron lines sit in the details with backup and
-drift, and no job table is drawn. The top line is bold in the HTML and the rich forms and carries
-its time as `<tg-time unix="…" format="r">Sep 26 21:00 UTC</tg-time>`: Telegram shows "18 minutes
+**One view, two forms.** The screen is built from blocks (`render_parts`) of one snapshot, as
+text: HTML when the adapter has a verb for it (bold headings, the details in one
+`<blockquote expandable>`), else plain (upper-case headings, the details in full); the limits are
+a line per provider, the cron lines sit in the details with backup and drift, and no job table is
+drawn. The rich view of 0.12.0 to 1.1.0 is retired (below). The top line is bold in the HTML form
+and carries its time as `<tg-time unix="…" format="r">Sep 26 21:00 UTC</tg-time>`: Telegram shows "18 minutes
 ago" where the client supports it (Telegram Desktop) and the words inside otherwise (Android), so
 the words are the full date with the zone; the plain form writes them as they are.
 
@@ -649,48 +658,34 @@ draws no verdict on the form and edits again on the next tick, never asking for 
 get past the slot. The record also names the verb that carries
 the HTML while it does (`html_verb: edit_message` or `_edit_text`, `null` while plain). The
 private method is a capability, never a promise (`compat_matrix.json`, row `screen_html`).
-Without the rich form (below: off by default), the one `send` that creates the message (and a
-recreation after a loss) goes through the adapter's own markdown conversion as plain text; the
-next tick edits it into the HTML form. The cron path sends the HTML form with its own bot, rich
-or not.
+The one `send` that creates the message (and a recreation after a loss) goes through the
+adapter's own markdown conversion as plain text; the next tick edits it into the HTML form. The
+cron path sends the HTML form with its own bot.
 
-**Before HTML, the rich form** (since 0.12.0, only with `rich: true`). Where the engine's bot has the
-raw Bot API call the engine sends its own rich messages with (`adapter._bot.do_api_request`, a
-coroutine function: the engine's own test, `_bot_supports_rich`), every tick edits the message as
-a Rich Message first: `editMessageText` with `rich_message: {html}`, the chat and the id as numbers, no topic,
-no text and no parse mode, a 30 s deadline; "not modified" confirms. No verb of the adapter
-carries it, and the public `edit_message(finalize=True)` splits into new messages, so the call is
-the engine's bot itself: the bot token stays inside the engine and the plugin passes no
-credential. The message asks Telegram to find no entity in it (`skip_entity_detection`), a second
-line behind `<code>`. A private attribute, read as a capability on every tick, never a promise
-(`compat_matrix.json`, row `screen_rich`). Any other answer: the same tick edits HTML, then
-plain, as above, and the verdict follows the HTML rule. The next edit landed, so rich was
-refused: `screen_format` names the form that landed, `rich_error` the exception class, one
-warning goes to the journal, and rich is asked again twelve ticks later; without the call the
-record says `rich_error: no rich call (adapter without _bot.do_api_request)`. A call that could
-not be made (a method the Bot API server or the library lacks, a wrong argument) never reached
-Telegram and counts as a refusal, as the engine counts it. Two rules keep the message single. On
-a message the record says is rich, only the rich call's own answer may say the message is lost:
-an edit of a rich message in another form may be refused in the words of a lost one, so an HTML
-or plain answer counts as a loss only when it says the message is not there at all
-(`message to edit not found`), and any other failure ends the tick as `edit_failed`. And a timeout
-or a network error of the rich edit there ends the tick without an HTML or plain edit; the next
-tick asks rich again. A new message is sent rich (`sendRichMessage` into the topic, none for
-General, as the engine routes a send), since the engine notes that Telegram refuses a rich edit
-of a plain message (its streamed previews in private topics): Telegram's refusal sends plain in
-the same tick, a timeout sends nothing more in this tick; the next tick sends again, the same risk of
-a second message as after a plain send that timed out. A message created before 0.12.0 is
-therefore likely to stay HTML, with `rich_error` saying why; a new one, after a loss or in a new
-chat, is rich. Over Telegram's ceilings for one rich message (32,768 characters, 500 blocks), or
-when the rich form fails to build, the tick edits the HTML form, and a message that is rich
-already gets the plain words as one rich paragraph, the loud notice too; the record says why
-(`rich_render_error`), the journal once. A full form Telegram refuses on a rich message is followed
-in the same tick by its plain words as one rich paragraph (`rich_error` says why, the journal
-once), since an HTML or plain edit of a rich message may be refused for good. Without
-`rich: true` (the default) the form is off: new messages are plain, then HTML, and a message that
-is rich already keeps getting its plain words as one rich paragraph (delete it, and the next one
-is HTML). A rich message carries no fallback text (`InputRichMessage` has no field for one), so
-the form waits for an explicit yes.
+**Rich view: retired in 1.1.1.** From 0.12.0 to 1.1.0, with `rich: true`, the message could be a
+Rich Message (Bot API 10.1+): the limits as a table, the cron jobs in a fold grouped by how often
+they run, a titled section per source. No verb of the adapter carries a pre-built rich message,
+so 1.1.0 sent it through the raw Bot API call of the adapter's private `_bot`
+(`_bot.do_api_request`), past the adapter's per-chat outbound slot and flood handling. The review
+of the catalog entry asked to remove that call. The public `edit_message(..., finalize=True)`
+sends rich only as markdown and only when the operator turned `rich_messages` on; markdown has no
+spanning cell, no section row inside a table, no `<tg-time>` and no switch for Telegram's own
+entity detection, and a finalize edit the engine does not send rich goes out as MarkdownV2,
+which splits an over-long payload into new messages. So 1.1.1 sends no Rich Message. The view
+comes back once Hermes has a public way to send a pre-built one
+([NousResearch/hermes-agent#151881](https://github.com/NousResearch/hermes-agent/issues/151881)).
+Its renderer, `telegram_dashboard/rich.py`, stays in the package with its tests; the plugin neither
+imports nor sends it (`compat_matrix.json`, row `screen_rich`, says where 1.1.0 read the call).
+
+- the setting `rich` does nothing; set to true it is named once in the journal at start
+  (`the setting rich does nothing since 1.1.1 ...`), any other value says nothing
+- the record's `rich_error` and `rich_render_error` are dropped when 1.1.1 loads it
+- a message 1.1.0 sent rich keeps its id and is edited like any other, HTML, then plain, with one
+  warning at start naming it. Telegram may refuse that for a rich message, in words this release
+  has not seen yet: when it says the message can't be edited, the tick takes it as lost and sends
+  a new one, which you pin, and you unpin the old one (the plugin pins nothing). Any other
+  failure is `edit_failed` and the id is kept, which `--check` reports as the screen goes stale;
+  deleting the old message makes the next tick send a new one
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -730,9 +725,9 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `limits_providers` | (config only, a list) | optional: the built-in limit providers to ask, `claude`, `codex`, `gemini` in any case. Unset, every one is asked and one with no sign of an account here has no line. Set, exactly the listed ones are asked and each always keeps its line (`Claude · no data` with the reason, Gemini's line with no refusal too); one left out is never asked (the facade is not called for it, the Gemini log is not read: no source, no event) and the details say `Off in the dashboard settings: Gemini`. An empty list, written as `[]`, asks none of them. An unknown name is skipped with a warning in the log that names its place in the list; a list in which no name is known (a typo such as `[codx]`) is ignored as if unset, so the automatic rule holds, with that warning; anything but a list is ignored with a warning. `limits_sources` are not subject to it. The fallback tick reads the same list from its JSON config; see "Limits: three kinds that never mix" |
    | `backup_status` | `HERMES_DASHBOARD_PROBE_BACKUP_STATUS` | JSON status of the last `state.db` backup (see "The backup line"); unset = the ❔ line says `backup (not on this installation)` |
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
-   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | default off; `1`/`true`/`yes`/`on` turns the rich form on (Telegram documents no fallback text for a rich message: an app without Rich Messages may not show it). Off, the screen is the classic view, HTML or plain, and a message that is rich already gets its plain words as one rich paragraph (the record says `rich_error: off in the dashboard settings`); see "The plugin" |
+   | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | does nothing since 1.1.1: the rich view is retired ("Rich view: retired in 1.1.1" under "The plugin"). Set to `1`/`true`/`yes`/`on`, it is named once in the journal at start; the screen is HTML or plain either way |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
-   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name in the cron table, under "Needs attention" and in the details. Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
+   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name under "Needs attention" and in the details (and in the cron table of the rich view, retired in 1.1.1). Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
 
    `cron_notes` takes the job's `id` from `cron/jobs.json`; quote an id YAML would read as a
    number:
@@ -873,7 +868,7 @@ Severity: a failed run, an undelivered result, a blocked or an overdue job is a 
 ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
 three cron events on the screen; the line carries the full count; the details name every job
 with its time, its streak and the kind of its error. An event names the job by its label in
-full, as the details and the cron table do: whole up to 80 characters, a long one wraps on the
+full, as the details do (and the cron table of the rich view did): whole up to 80 characters, a long one wraps on the
 phone (accepted on 23.10). The thresholds are the engine's own: 200 s
 for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
@@ -896,8 +891,9 @@ expression (a job shown as "every monday 6am" runs `0 6 * * 1`; `cron_frequency.
 - anything else is `Other`: a step that does not divide its cycle (`*/45` fires at :00 and
   :45), another shape, a malformed or a missing schedule
 
-**The cron fold of the rich screen** (1.0.0) comes collapsed after the main screen, titled with
-the counts (`🕒 Cron · 27 active · 3 paused · 2 done`; `done` only when a job completed). It
+**The cron fold of the rich screen** (1.0.0 to 1.1.0; retired with the rich view in 1.1.1, its
+renderer kept in `rich.py` for the release that sends it again) comes collapsed after the main
+screen, titled with the counts (`🕒 Cron · 27 active · 3 paused · 2 done`; `done` only when a job completed). It
 opens with the cron lines of the details (the counts and the ticker, every failure), then one
 table in the look of the limits table:
 
@@ -922,8 +918,8 @@ says why that is no alarm: a paused job does not fire, its date is the one set b
 named by its label from `cron_notes`, else by its name; both pass the shared sanitizer and are
 whole up to 80 characters, a schedule up to 24, and a word where Telegram would find a mention,
 a hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>`. A long list is cut
-with how many are left out (`… 5 more`; 60 active, 30 paused, 20 done). The classic view draws
-no job table: its details carry the cron lines with backup and drift.
+with how many are left out (`… 5 more`; 60 active, 30 paused, 20 done). The HTML and plain forms
+draw no job table: their details carry the cron lines with backup and drift.
 
 ### Connected but deaf: the Telegram line
 
@@ -1287,9 +1283,10 @@ a line of its own under the account's line, `Claude Fable 9%`, without the time 
 together with the account's window of the same label (see "External limit sources"). A state the provider reports in words is never
 turned into a number or a zero (`Claude · login expired`). The plans the providers name are
 one details line, `Plans: Claude Max 5x · Codex Prolite`; a plan nobody
-reports is not guessed. The rich view writes the same lines as a table (`Provider`,
+reports is not guessed. The rich view of 1.1.0 wrote the same lines as a table (`Provider`,
 `Used · resets in`): a row per line, a cell per window (`⚠️ 93% · 1h20m`), a state in words
-across the row (`no data`), and a model's own limit in a row of its own with its reset spelled.
+across the row (`no data`), and a model's own limit in a row of its own with its reset spelled
+(retired in 1.1.1, "Rich view: retired in 1.1.1").
 There is no bar: Telegram draws the block glyphs from a fallback font, and a bar by fifths says
 less than the number after it; Telegram has no text colour either, so the mark is the only
 emphasis. The countdown counts from the data time on the first line: a message that stopped
@@ -1644,7 +1641,8 @@ imports no network client and logs nothing, the usage facade's answer is read fi
 identity, its raw answer, its details and an exception's text never reach the record), the entry
 never asks for `finalize` and touches nothing of the engine's per-chat outbound slot, no file of
 the plugin folder carries an invisible character (the
-catalog validator warns on one), and no word of any demo screen, sent as HTML or rich, becomes a
+catalog validator warns on one), and no word of any demo screen, in the HTML form or in the rich
+form `rich.py` still builds, becomes a
 link, a command, a mention, a hashtag or a cashtag outside `<code>`: a word that looks like a file name
 (`name.ext`, the extension starting with a letter) or a `/command` is code by its form, not by a
 list. The plain fallback has no code: there Telegram may still link a file name and make `/new`

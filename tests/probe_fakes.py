@@ -205,51 +205,40 @@ class KwargsOnlyAdapter(FakeAdapter):
         return await super().edit_message(chat, message_id, text)
 
 
-class BadRequest(Exception):
-    """PTB's ``telegram.error.BadRequest`` by its name: Telegram answered no and sent nothing."""
-
-
-class TimedOut(Exception):
-    """PTB's ``telegram.error.TimedOut`` by its name: the request may have reached Telegram."""
-
-
 class FakeBot:
-    """The engine bot's raw Bot API call as PTB 22 has it (``do_api_request``, a coroutine): the
-    method's name and ``api_kwargs`` in, the raw answer out. ``refuse`` maps a method to what it
-    raises on every call, or to a rule that picks it from the payload (``None`` passes). Every call
-    is kept with the number of HTML edits made before it."""
+    """The engine's bot as the plugin could reach it through the adapter's private ``_bot``: any
+    method of it, the raw Bot API call ``do_api_request`` that 0.12.0 to 1.1.0 sent the rich form
+    through among them, or PTB's typed ones (``send_message``, ``pin_chat_message``). 1.1.1 reads
+    nothing of it but ``id``, which this bot does not have, as a bot before getMe: every other
+    attribute asked of it is kept in ``touched``, every call in ``calls``, and the tests that use
+    this bot assert both are empty. A call answers success, so a call made by mistake would land
+    and show nowhere else."""
 
-    def __init__(self, adapter: FakeAdapter, refuse: dict[str, Any] | None) -> None:
+    def __init__(self, adapter: FakeAdapter) -> None:
         self.adapter = adapter
-        self.refuse = refuse or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.html_before: list[int] = []
-        self.next_id = 500
+        self.touched: list[str] = []
 
-    async def do_api_request(
-        self, endpoint: str, api_kwargs: dict[str, Any] | None = None, **_: Any
-    ) -> Any:
-        payload = dict(api_kwargs or {})
-        self.calls.append((endpoint, payload))
-        self.html_before.append(len(self.adapter.html_edits))
-        refusal = self.refuse.get(endpoint)
-        if callable(refusal):  # a rule on the payload; an exception instance is not callable
-            refusal = refusal(payload)
-        if refusal is not None:
-            raise refusal
-        self.adapter.texts.append(payload["rich_message"]["html"])
-        if endpoint == "sendRichMessage":
-            self.next_id += 1
-            return {"message_id": self.next_id, "chat": {"id": payload["chat_id"]}}
-        return True
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") or name == "id":
+            raise AttributeError(name)
+        self.touched.append(name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            self.calls.append((name, dict(kwargs)))
+            self.adapter.texts.append(repr((args, kwargs)))
+            return True
+
+        return call
 
 
 class RichAdapter(FakeAdapter):
-    """An adapter whose bot has the raw call the engine sends its rich messages with."""
+    """An adapter whose bot has the raw call the engine sends its own rich messages with, and
+    every other method of a bot (``FakeBot``)."""
 
-    def __init__(self, *, refuse: dict[str, Any] | None = None, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._bot = FakeBot(self, refuse)
+        self._bot = FakeBot(self)
 
     @property
     def rich_calls(self) -> list[tuple[str, dict[str, Any]]]:
