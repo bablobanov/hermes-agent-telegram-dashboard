@@ -206,28 +206,35 @@ class KwargsOnlyAdapter(FakeAdapter):
 
 
 class FakeBot:
-    """The engine bot's raw Bot API call as PTB 22 has it (``do_api_request``, a coroutine), which
-    0.12.0 to 1.1.0 sent the rich form through. 1.1.1 must never make it: every call is kept, and
-    the tests that use this bot assert there is none. It answers as Telegram would, so a call made
-    by mistake would land and show nowhere else."""
+    """The engine's bot as the plugin could reach it through the adapter's private ``_bot``: any
+    method of it, the raw Bot API call ``do_api_request`` that 0.12.0 to 1.1.0 sent the rich form
+    through among them, or PTB's typed ones (``send_message``, ``pin_chat_message``). 1.1.1 reads
+    nothing of it but ``id``, which this bot does not have, as a bot before getMe: every other
+    attribute asked of it is kept in ``touched``, every call in ``calls``, and the tests that use
+    this bot assert both are empty. A call answers success, so a call made by mistake would land
+    and show nowhere else."""
 
     def __init__(self, adapter: FakeAdapter) -> None:
         self.adapter = adapter
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.touched: list[str] = []
 
-    async def do_api_request(
-        self, endpoint: str, api_kwargs: dict[str, Any] | None = None, **_: Any
-    ) -> Any:
-        payload = dict(api_kwargs or {})
-        self.calls.append((endpoint, payload))
-        self.adapter.texts.append(str(payload.get("rich_message")))
-        if endpoint == "sendRichMessage":
-            return {"message_id": 501, "chat": {"id": payload.get("chat_id")}}
-        return True
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") or name == "id":
+            raise AttributeError(name)
+        self.touched.append(name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            self.calls.append((name, dict(kwargs)))
+            self.adapter.texts.append(repr((args, kwargs)))
+            return True
+
+        return call
 
 
 class RichAdapter(FakeAdapter):
-    """An adapter whose bot has the raw call the engine sends its own rich messages with."""
+    """An adapter whose bot has the raw call the engine sends its own rich messages with, and
+    every other method of a bot (``FakeBot``)."""
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

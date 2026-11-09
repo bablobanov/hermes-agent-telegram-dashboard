@@ -1921,7 +1921,7 @@ def test_the_bot_s_raw_call_is_never_made_whatever_the_setting_says(
 
     _run(runtime, adapter, scenario)
 
-    assert adapter.rich_calls == []
+    assert adapter.rich_calls == [] and adapter._bot.touched == []
     assert len(adapter.sent) == 1
     record = ctx.state.data["probe"]
     assert (record["screen_format"], record["html_verb"]) == ("html", "_edit_text")
@@ -1995,40 +1995,83 @@ def test_a_record_from_1_1_0_drops_the_rich_keys_and_its_message_is_edited_as_ht
     with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
         _run(runtime, adapter, scenario)
 
-    assert adapter.rich_calls == [] and adapter.sent == []
+    assert adapter.rich_calls == [] and adapter._bot.touched == [] and adapter.sent == []
     assert set(adapter.targets) == {"4242"}
     record = ctx.state.data["probe"]
     assert (record["last_status"], record["message_id"]) == ("edited", "4242")
     assert (record["screen_format"], record["html_verb"]) == ("html", "_edit_text")
     assert "rich_error" not in record and "rich_render_error" not in record
     said = [r.getMessage() for r in caplog.records if "Rich Message" in r.getMessage()]
-    assert len(said) == 1 and "message 4242" in said[0]
+    assert len(said) == 1 and "message 4242" in said[0] and "delete the old message" in said[0]
 
 
-def test_a_rich_message_telegram_will_not_edit_as_html_or_plain_is_replaced(
+def test_a_rich_record_of_another_chat_says_nothing_at_load(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The record names a rich message in another chat than the configured one: that message is
+    not edited (a new one goes to this chat), so the journal does not announce its edit."""
+    plugin = load_plugin()
+    ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
+    _rich_record(ctx)
+    ctx.state.data["probe"]["chat_id"] = "-1001000000002"
+    runtime = plugin.register(ctx)
+    assert runtime is not None
+
+    with caplog.at_level("WARNING", logger="hermes.plugins.telegram_dashboard_probe"):
+        runtime._load_record()
+
+    assert not [r for r in caplog.records if "Rich Message" in r.getMessage()]
+    assert "rich_error" not in runtime.record and "rich_render_error" not in runtime.record
+
+
+class _RefusesTheRichMessage(RichAdapter):
+    """Telegram refuses an HTML and a plain edit of the message 1.1.0 sent rich (``RICH_ID``) in
+    the words of a lost one, and takes every edit of any other message."""
+
+    RICH_ID = "4242"
+    REFUSED = "Bad Request: message can't be edited"
+
+    async def _edit_text(
+        self, chat_id: str, message_id: str, text: str, parse_mode: Any = None
+    ) -> None:
+        if message_id == self.RICH_ID:
+            self.targets.append(message_id)
+            raise RuntimeError(self.REFUSED)
+        await super()._edit_text(chat_id, message_id, text, parse_mode)
+
+    async def edit_message(self, chat: str, message_id: str, text: str) -> Any:
+        if message_id == self.RICH_ID:
+            self.targets.append(message_id)
+            return type("Refused", (), {"success": False, "error": self.REFUSED})()
+        return await super().edit_message(chat, message_id, text)
+
+
+def test_a_rich_message_telegram_will_not_edit_as_html_or_plain_is_replaced_once(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Telegram may refuse an HTML and a plain edit of a message sent rich, in the words of a lost
     one ("message can't be edited"). With no rich path left, a new message is the way out: the
-    tick sends one, as for a lost message, and never through the bot's raw call."""
+    tick sends one, as for a lost message, never through the bot, and the ticks after it edit
+    the new message as HTML; one message sent, not one per tick."""
     plugin = load_plugin()
     ctx = FakeContext(_settings(monkeypatch, _home(tmp_path)))
     _rich_record(ctx)
     runtime = plugin.register(ctx)
     assert runtime is not None
     _static(runtime)
-    refused = "Bad Request: message can't be edited"
-    adapter = RichAdapter(reject_html=refused, fail_plain=refused)
+    adapter = _RefusesTheRichMessage()
 
     async def scenario() -> None:
-        await until(lambda: len(adapter.sent) >= 1)
+        await until(lambda: adapter.targets.count("101") >= 3)
 
     _run(runtime, adapter, scenario)
 
-    assert adapter.rich_calls == []
+    assert adapter.rich_calls == [] and adapter._bot.touched == []
     assert adapter.targets[:2] == ["4242", "4242"]  # HTML, then plain, on the rich message
+    assert len(adapter.sent) == 1 and set(adapter.targets[2:]) == {"101"}
     record = ctx.state.data["probe"]
     assert record["message_id"] == "101" and record["lost_at"] and record["recreated_at"]
+    assert (record["screen_format"], record["html_verb"]) == ("html", "_edit_text")
 
 
 def test_a_rich_message_whose_edit_fails_otherwise_keeps_its_id(

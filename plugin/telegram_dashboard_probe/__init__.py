@@ -1555,11 +1555,19 @@ class ProbeRuntime:
         self.record = dict(stored) if isinstance(stored, dict) else {}
         for key in (RETIRED_LIMITS_CACHE_KEY, *RETIRED_RICH_KEYS):
             self.record.pop(key, None)
-        if self.record.get("screen_format") == RICH_FORMAT and self.record.get("message_id"):
+        if (
+            self.record.get("screen_format") == RICH_FORMAT
+            and self.record.get("message_id")
+            and self.record.get("chat_id") == self.settings.chat_id
+        ):
+            # Telegram's wording for a refused text edit of a rich message is not documented: a
+            # refusal in other words than LOST_MARKERS leaves the id and fails loudly, so the
+            # journal says what the operator does then.
             logger.warning(
                 "probe: message %s was sent as a Rich Message by an earlier release; it is edited "
-                "as HTML, then plain, and a new message goes out if Telegram says it can't be "
-                "edited",
+                "as HTML, then plain. If Telegram says it can't be edited, a new message goes "
+                "out: pin it and unpin the old one. If the edits keep failing in other words, "
+                "delete the old message: the next tick sends a new one",
                 self.record["message_id"],
             )
 

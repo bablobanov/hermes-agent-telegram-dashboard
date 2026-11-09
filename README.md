@@ -6,7 +6,8 @@
 
 ![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](docs/hero-1.1.0.jpg)
 
-*The rich view of 1.1.0. 1.1.1 sends the same screen as HTML text (see [Screenshots](#screenshots)).*
+*The rich view of 1.1.0. 1.1.1 sends the same data as HTML text, the limits as lines and no table of
+the cron jobs (see [Screenshots](#screenshots)).*
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place by a plugin inside the gateway. No Mini App, no LLM call,
@@ -27,13 +28,13 @@ settings, compatibility and the tests. The catalog page shows the same file.
   Hermes usage facade, others from a local source of your own)
 - the Hermes version the gateway runs against the latest upstream release
 - folded, the details: whether the agent sees its rules, whether its memory keeps what it
-  writes, the cron jobs and their failures, the reasons and the times
+  writes, the cron counts, the ticker and every failing job, the reasons and the times
 
 ## Screenshots
 
 Demo data, rendered by the plugin's own code at 1.1.0 and sent to a test topic; Telegram for Android,
-the details on Telegram Desktop. These are the rich view of 1.1.0. 1.1.1 sends the same screen as
-HTML text, the details in one collapsed quote and no table of the cron jobs: 1.1.0 sent the rich
+the details on Telegram Desktop. These are the rich view of 1.1.0. 1.1.1 sends the same data as
+HTML text: the limits as lines, the details in one collapsed quote and no table of the cron jobs: 1.1.0 sent the rich
 view through a private call of the engine's Telegram adapter, which the catalog review asked to
 remove, and it comes back once Hermes has a public way to send a pre-built rich message
 ([NousResearch/hermes-agent#151881](https://github.com/NousResearch/hermes-agent/issues/151881)).

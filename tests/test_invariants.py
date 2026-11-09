@@ -471,3 +471,43 @@ def test_the_plugin_makes_no_raw_bot_api_call() -> None:
     code = _code_only(ENTRY.read_text(encoding="utf-8"))
     for name in ("do_api_request", "sendRichMessage", "editMessageText", "rich_message"):
         assert name not in code, name
+
+
+def test_the_engine_s_bot_is_read_for_its_id_only() -> None:
+    """16, the rest of it. The adapter's private ``_bot`` is named once, as ``BOT_ATTRIBUTE``,
+    and used only in ``_bot_id``, which reads ``BOT_ID_ATTRIBUTE`` (``id``) off it: no method of
+    the bot is reached, typed (``send_message``, ``pin_chat_message``) or raw. No module of the
+    package the tick imports names the bot or the raw call."""
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"))
+    named = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "_bot"]
+    assigned = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and [getattr(target, "id", None) for target in n.targets] == ["BOT_ATTRIBUTE"]
+    ]
+    assert len(named) == 1 and len(assigned) == 1 and assigned[0].value is named[0]
+    assert not any(isinstance(n, ast.Attribute) and n.attr == "_bot" for n in ast.walk(tree))
+    users = {
+        function.name
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+        and any(isinstance(n, ast.Name) and n.id == "BOT_ATTRIBUTE" for n in ast.walk(function))
+    }
+    assert users == {"_bot_id"}
+    bot_id = next(
+        f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "_bot_id"
+    )
+    reads = [
+        ast.unparse(n)
+        for n in ast.walk(bot_id)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "getattr"
+    ]
+    assert reads == [
+        "getattr(getattr(live, BOT_ATTRIBUTE, None), BOT_ID_ATTRIBUTE, None)",
+        "getattr(live, BOT_ATTRIBUTE, None)",
+    ]
+    modules = ("collect", "compat", "freshness", "render", "telegram_traffic")
+    for name in modules:
+        source = _code_only((PACKAGE / f"{name}.py").read_text(encoding="utf-8"))
+        assert "do_api_request" not in source and "_bot" not in source, name

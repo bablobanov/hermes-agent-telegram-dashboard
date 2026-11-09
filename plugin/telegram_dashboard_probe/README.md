@@ -6,7 +6,8 @@
 
 ![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](../../docs/hero-1.1.0.jpg)
 
-*The rich view of 1.1.0. 1.1.1 sends the same screen as HTML text ("What the message shows"; "Rich view: retired in 1.1.1").*
+*The rich view of 1.1.0. 1.1.1 sends the same data as HTML text, the limits as lines and no table of
+the cron jobs ("What the message shows"; "Rich view: retired in 1.1.1").*
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call.
@@ -493,7 +494,9 @@ cut; never the text of a prompt, a context file, a notebook, a pending write or 
   out of `limits_providers` gets no new entry.
 - The gateway's journal gets the adapter's error text of a failed edit or send (WARNING; a lost
   message at ERROR with its id), the record's path at start (INFO) and, for an unforeseen failure
-  of a tick, a collector or the render, a traceback.
+  of a tick, a collector or the render, a traceback. Since 1.1.1, at start: one WARNING when the
+  setting `rich` is true, and one with the message id when the record says 1.1.0 sent that message
+  rich ("Rich view: retired in 1.1.1").
 - Hermes' auth code behind the limits facade may write a refreshed login back where it came
   from: Claude Code's `~/.claude/.credentials.json` (mode 0600, with a `.credentials.lock` beside
   it) and, on macOS, its Keychain item (through `security`), or Hermes' own `auth.json`, whose
@@ -678,10 +681,11 @@ imports nor sends it (`compat_matrix.json`, row `screen_rich`, says where 1.1.0 
   (`the setting rich does nothing since 1.1.1 ...`), any other value says nothing
 - the record's `rich_error` and `rich_render_error` are dropped when 1.1.1 loads it
 - a message 1.1.0 sent rich keeps its id and is edited like any other, HTML, then plain, with one
-  warning at start naming it. Telegram may refuse that for a rich message; when it says the
-  message can't be edited, the tick takes it as lost and sends a new one, which you pin (the
-  plugin pins nothing). Any other failure is `edit_failed` and the id is kept; deleting the old
-  message makes the next tick send a new one
+  warning at start naming it. Telegram may refuse that for a rich message, in words this release
+  has not seen yet: when it says the message can't be edited, the tick takes it as lost and sends
+  a new one, which you pin, and you unpin the old one (the plugin pins nothing). Any other
+  failure is `edit_failed` and the id is kept, which `--check` reports as the screen goes stale;
+  deleting the old message makes the next tick send a new one
 
 **A tick that cannot build the screen still edits the message.** Whatever fails while composing
 (a collector, the render, the package import), the message gets a loud one-screen notice with
@@ -723,7 +727,7 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | does nothing since 1.1.1: the rich view is retired ("Rich view: retired in 1.1.1" under "The plugin"). Set to `1`/`true`/`yes`/`on`, it is named once in the journal at start; the screen is HTML or plain either way |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
-   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name in the cron table, under "Needs attention" and in the details. Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
+   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name under "Needs attention" and in the details (and in the cron table of the rich view, retired in 1.1.1). Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
 
    `cron_notes` takes the job's `id` from `cron/jobs.json`; quote an id YAML would read as a
    number:
@@ -864,7 +868,7 @@ Severity: a failed run, an undelivered result, a blocked or an overdue job is a 
 ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
 three cron events on the screen; the line carries the full count; the details name every job
 with its time, its streak and the kind of its error. An event names the job by its label in
-full, as the details and the cron table do: whole up to 80 characters, a long one wraps on the
+full, as the details do (and the cron table of the rich view did): whole up to 80 characters, a long one wraps on the
 phone (accepted on 23.10). The thresholds are the engine's own: 200 s
 for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
