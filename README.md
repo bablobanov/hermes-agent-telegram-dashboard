@@ -4,10 +4,10 @@
 
 [![CI](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml)
 
-![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](docs/hero-1.1.0.jpg)
+![Two screens of the dashboard 1.1.1: a healthy installation, and one whose disk runs low](docs/hero-1.1.1.jpg)
 
-*The rich view of 1.1.0. 1.1.1 sends the same data as HTML text, the limits as lines and no table of
-the cron jobs (see [Screenshots](#screenshots)).*
+*1.1.1 on Telegram for Android, demo data. The time in the top line is Telegram's own, written in
+the language of the client (see [Screenshots](#screenshots)).*
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place by a plugin inside the gateway. No Mini App, no LLM call,
@@ -33,19 +33,20 @@ settings, compatibility and the tests. The catalog page shows the same file.
 
 ## Screenshots
 
-Demo data, rendered by the plugin's own code at 1.1.0 and sent to a test topic; Telegram for Android,
-the details on Telegram Desktop. These are the rich view of 1.1.0. 1.1.1 sends the same data as
-HTML text: the limits as lines, the details in one collapsed quote and no table of the cron jobs: 1.1.0 sent the rich
-view through a private call of the engine's Telegram adapter, which the catalog review asked to
-remove, and it comes back once Hermes has a public way to send a pre-built rich message
+Demo data, rendered by the plugin's own code at 1.1.1 and sent to a test topic; Telegram for Android,
+the details open on Telegram Desktop. The time in the top line is a Telegram time entity: each client
+writes it itself, in its own language (Russian here). 1.1.0 also drew the limits as a table and the
+cron jobs in a section of their own (the rich view): it sent that through a private call of the
+engine's Telegram adapter, which the catalog review asked to remove, and it comes back once Hermes
+has a public way to send a pre-built rich message
 ([NousResearch/hermes-agent#151881](https://github.com/NousResearch/hermes-agent/issues/151881)).
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/110-01-healthy.jpg" width="260" alt="A healthy installation, the cron jobs and the details folded"> | <img src="docs/screenshots/110-02-cron-open.jpg" width="260" alt="The same screen with the cron table open"> | <img src="docs/screenshots/110-03-details-open.jpg" width="260" alt="The details open: rules, memory, Telegram channel, backup, drift, version"> |
-| A healthy installation | The cron jobs by how often they run | The details |
-| <img src="docs/screenshots/110-04-cron-failed.jpg" width="260" alt="A cron run failed three times in a row"> | <img src="docs/screenshots/110-05-memory.jpg" width="260" alt="Memory and skills writes wait for approval"> | <img src="docs/screenshots/110-06-rules.jpg" width="260" alt="The agent's rules file changed after its session started"> |
-| A cron run failed three times in a row | Memory writes stuck waiting for approval | The rules changed after the session started |
+| <img src="docs/screenshots/111-01-healthy.jpg" width="260" alt="A healthy installation, the details folded"> | <img src="docs/screenshots/111-02-details-open.jpg" width="260" alt="The details open: rules, memory, Telegram channel, backup, drift, the free space of the disk, cron, version"> | <img src="docs/screenshots/111-03-cron-failed.jpg" width="260" alt="A cron run failed three times in a row"> |
+| A healthy installation | The details, the disk among them | A cron run failed three times in a row |
+| <img src="docs/screenshots/111-04-memory.jpg" width="260" alt="Memory and skills writes wait for approval"> | <img src="docs/screenshots/111-05-rules.jpg" width="260" alt="The agent's rules file changed after its session started"> | <img src="docs/screenshots/111-06-disk-low.jpg" width="260" alt="The disk HERMES_HOME lies on has 1.6 GB free of 80"> |
+| Memory writes stuck waiting for approval | The rules changed after the session started | The disk under its floor |
 
 ## Install
 

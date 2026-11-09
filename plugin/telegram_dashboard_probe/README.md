@@ -4,10 +4,10 @@
 
 [![CI](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/bablobanov/hermes-agent-telegram-dashboard/actions/workflows/ci.yml)
 
-![Two screens of the dashboard 1.1.0: a healthy installation, and one where a cron run failed](../../docs/hero-1.1.0.jpg)
+![Two screens of the dashboard 1.1.1: a healthy installation, and one whose disk runs low](../../docs/hero-1.1.1.jpg)
 
-*The rich view of 1.1.0. 1.1.1 sends the same data as HTML text, the limits as lines and no table of
-the cron jobs ("What the message shows"; "Rich view: retired in 1.1.1").*
+*1.1.1 on Telegram for Android, demo data. The time in the top line is Telegram's own, written in
+the language of the client ("What the message shows").*
 
 Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent) as one
 pinned Telegram message, edited in place on a schedule. No Mini App, no LLM call.
@@ -150,10 +150,9 @@ Hermes version the gateway runs next to the latest upstream release, and a colla
 block with the reasons and the timestamps. Nothing to open, nothing to install
 on the reader's side, no second bot, no LLM call: it is there every time the chat is opened.
 
-<img src="../../docs/screenshots/110-01-healthy.jpg" width="360" alt="The healthy screen on Telegram for Android: status line, the row of what works, the limits table, the Hermes version, the cron jobs and the details folded">
+<img src="../../docs/screenshots/111-01-healthy.jpg" width="360" alt="The healthy screen on Telegram for Android: status line, the row of what works, the limits, the Hermes version and the details folded">
 
-The rich view of 1.1.0 on Telegram for Android, a demo state. 1.1.1 sends the HTML form above
-instead ("Rich view: retired in 1.1.1" under "The plugin"); more screens of 1.1.0 are in the
+1.1.1 on Telegram for Android, a demo state; more screens, the details open among them, are in the
 [repository's README](../../README.md#screenshots).
 
 Up to five events that need attention come right after the top line, under 🛠 Needs attention.
