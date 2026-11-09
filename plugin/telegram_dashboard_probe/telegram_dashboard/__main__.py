@@ -18,9 +18,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .collect import SubprocessRunner, collect_all
 from .compat import (
     CRON_NOTES,
+    DISK_LOW_GB,
+    DISK_LOW_PERCENT,
     LIMITS_PROVIDERS,
     Environment,
     parse_cron_notes,
+    parse_disk_low_gb,
+    parse_disk_low_percent,
     parse_limits_providers,
 )
 from .delivery import DeliveryStore, deliver
@@ -67,6 +71,8 @@ def _environment(config: dict[str, object]) -> Environment:
         gateway_dir=Path(str(gateway_dir)).expanduser()
         if isinstance(gateway_dir, str) and gateway_dir
         else None,
+        disk_low_percent=parse_disk_low_percent(config.get(DISK_LOW_PERCENT), logger),
+        disk_low_gb=parse_disk_low_gb(config.get(DISK_LOW_GB), logger),
     )
 
 

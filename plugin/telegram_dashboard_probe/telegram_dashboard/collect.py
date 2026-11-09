@@ -37,6 +37,8 @@ from .cron_jobs import CronPart, Scan, assemble_cron, scan_cron
 from .cron_runs import LOOKBACK_SECONDS as RUNS_LOOKBACK_SECONDS
 from .cron_runs import SOURCE_NAME as CRON_RUNS
 from .cron_runs import Runs, RunsPart, read_runs
+from .disk import DiskPart, read_disk
+from .disk import Usage as DiskUsage
 from .external import TICK_TIMEOUT_SECONDS as EXTERNAL_TICK_TIMEOUT_SECONDS
 from .external import Source as ExternalSource
 from .external import fetch_item as external_fetch_item
@@ -77,6 +79,7 @@ from .schema import (
     Coverage,
     CronSummary,
     DashboardSnapshot,
+    DiskSummary,
     DriftSummary,
     GatewaySummary,
     Incident,
@@ -900,6 +903,7 @@ def build_snapshot(
     traffic: TrafficSummary | None = None,
     rules: RulesSummary | None = None,
     memory: MemorySummary | None = None,
+    disk: DiskSummary | None = None,
 ) -> DashboardSnapshot:
     ordered = _screen_incidents(incidents)
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
@@ -920,15 +924,17 @@ def build_snapshot(
         traffic=traffic,
         rules=rules,
         memory=memory,
+        disk=disk,
     )
 
 
 def _screen_incidents(incidents: tuple[Incident, ...]) -> tuple[Incident, ...]:
     """Up to five events, the most severe first. Every source but the rules and the memory has
-    a line of its own on the screen; those two have only their events (0.10.1, 0.11.0). Each
-    keeps a place: when the cut leaves out every event of one, its first takes the place of
-    the last event shown that is neither's, so an agent that does not see its rules or cannot
-    keep its memory never sinks into the collapsed details behind five other events."""
+    a line of its own on the screen; those two have only their events (0.10.1, 0.11.0), and so
+    has the disk (1.1.1). Each keeps a place: when the cut leaves out every event of one, its
+    first takes the place of the last event shown that is none of theirs, so an agent that does
+    not see its rules, cannot keep its memory or runs out of disk never sinks into the collapsed
+    details behind five other events."""
     ordered = sorted(incidents, key=lambda item: _SEVERITY_RANK.get(item.severity, 9))
     shown = ordered[:5]
     for prefix in _LINELESS:
@@ -941,8 +947,9 @@ def _screen_incidents(incidents: tuple[Incident, ...]) -> tuple[Incident, ...]:
     return tuple(shown)
 
 
-# The sources with no line of their own on the screen, only events.
-_LINELESS = ("rules:", "memory:")
+# The sources with no line of their own on the screen, only events; the disk is no source but
+# has none either.
+_LINELESS = ("rules:", "memory:", "disk:")
 
 
 def collect_all(
@@ -960,10 +967,11 @@ def collect_all(
     cron_cache: dict[str, Any] | None = None,
     traffic_probe: TrafficProbe | None = None,
     traffic_cache: dict[str, Any] | None = None,
+    disk_usage: DiskUsage | None = None,
 ) -> DashboardSnapshot:
     """The snapshot in one synchronous pass (the cron/CLI path). Without ``facade_caches``
     (``__main__`` passes none) every run asks the usage facade, as it asks every external
-    source."""
+    source. ``disk_usage`` stands in for ``shutil.disk_usage`` (the tests)."""
     externals = _externals_sync(
         env,
         external_caches,
@@ -974,6 +982,7 @@ def collect_all(
     gateway, gateway_source, gateway_incidents = collect_gateway(env, now=now)
     drift, drift_source, drift_incidents = collect_drift(env, runner, now=now)
     backup, backup_source, backup_incidents = collect_backup(env, now=now)
+    disk, disk_incidents = _disk_guarded(env, disk_usage)
     cron_store = cron_cache if cron_cache is not None else {}
     scan = scan_cron(env, now=now)
     runs, runs_source = read_runs(
@@ -1009,6 +1018,7 @@ def collect_all(
         traffic=traffic,
         rules=rules,
         memory=memory,
+        disk=disk,
         capacity=_limits_block(env, capacity, gemini, metrics),
         sources=(
             gateway_source,
@@ -1027,6 +1037,7 @@ def collect_all(
             *gateway_incidents,
             *drift_incidents,
             *backup_incidents,
+            *disk_incidents,
             *gemini_incidents,
             *cron_incidents,
             *traffic_incidents,
@@ -1173,6 +1184,7 @@ async def collect_all_async(
     traffic_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     rules_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
     memory_timeout_seconds: float = EXTERNAL_TICK_TIMEOUT_SECONDS,
+    disk_usage: DiskUsage | None = None,
 ) -> DashboardSnapshot:
     """``collect_all`` for a tick that runs on the gateway's event loop. Never raises.
 
@@ -1197,7 +1209,9 @@ async def collect_all_async(
     the live adapter before the tick (``telegram_traffic.probe_adapter``; ``None`` on the cron
     path), ``traffic_cache`` the record of the channel; the send errors come from the engine's
     log, read in a worker under ``traffic_timeout_seconds``. The rules line reads the engine's
-    ``state.db`` and the context files in a worker under ``rules_timeout_seconds``.
+    ``state.db`` and the context files in a worker under ``rules_timeout_seconds``. The free
+    space of the profile home's partition is one system call on the loop, like the backup's
+    small file; ``disk_usage`` stands in for ``shutil.disk_usage`` (the tests).
     """
     flights = flights or Flights()
     cron_store = cron_cache if cron_cache is not None else {}
@@ -1270,6 +1284,7 @@ async def collect_all_async(
     try:
         gateway, gateway_source, gateway_incidents = _gateway_guarded(env, now=now)
         backup, backup_source, backup_incidents = _backup_guarded(env, now=now)
+        disk, disk_incidents = _disk_guarded(env, disk_usage)
         (
             (drift, drift_source, drift_incidents),
             (capacity, limits_source, limits_incidents),
@@ -1311,6 +1326,7 @@ async def collect_all_async(
             traffic=traffic,
             rules=rules,
             memory=memory,
+            disk=disk,
             capacity=_limits_block(env, capacity, gemini, metrics),
             sources=(
                 gateway_source,
@@ -1329,6 +1345,7 @@ async def collect_all_async(
                 *gateway_incidents,
                 *drift_incidents,
                 *backup_incidents,
+                *disk_incidents,
                 *limits_incidents,
                 *gemini_incidents,
                 *cron_incidents,
@@ -1371,6 +1388,18 @@ def _backup_guarded(env: Environment, *, now: datetime) -> BackupPart:
     except BaseException as exc:
         source, incident = _collector_crashed("backup", "derived", exc)
         return BackupSummary("unknown", detail=source.detail), source, (incident,)
+
+
+def _disk_guarded(env: Environment, usage: DiskUsage | None) -> DiskPart:
+    """One system call; a surprise while making it is a reason in the details and one event, not
+    a dead tick."""
+    try:
+        return read_disk(env) if usage is None else read_disk(env, usage=usage)
+    except _UNGUARDED:
+        raise
+    except BaseException as exc:
+        source, incident = _collector_crashed("disk", "derived", exc)
+        return DiskSummary("unknown", detail=source.detail), (incident,)
 
 
 def _scan_guarded(env: Environment, *, now: datetime) -> Scan:

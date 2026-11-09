@@ -65,8 +65,8 @@ def _held_to_width(main: list[str]) -> list[str]:
     return [line for line in main if not line.startswith(("#@", f"✓{NBSP}", *_CRON_EVENTS))]
 
 
-def test_twenty_nine_states_are_defined_and_numbered() -> None:
-    assert [state.number for state in STATES] == list(range(1, 30))
+def test_thirty_states_are_defined_and_numbered() -> None:
+    assert [state.number for state in STATES] == list(range(1, 31))
 
 
 @pytest.mark.parametrize("state", STATES, ids=[f"{s.number:02d}" for s in STATES])
@@ -324,6 +324,7 @@ def test_state_14_showcase_shows_every_line_of_a_healthy_screen_on_one_phone_scr
     assert "> Telegram send errors: none in the log" in lines
     assert "> ✓ Backup Sep 26 11:00 · 10 h ago · integrity ok" in lines
     assert "> ✓ Drift 0 of 481 · checked 08:00" in lines
+    assert "> Disk: 61 GB free of 80" in lines
     assert "> Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24" in lines
     assert "> 2 releases behind · checked Sep 26 21:00" in lines
     assert "> Gemini refusals seen by Hermes: none" in lines
@@ -764,7 +765,7 @@ def test_the_details_read_by_source_with_a_blank_line_between() -> None:
         "Screen",
         "Dashboard",
     ]
-    assert [len(group) for group in groups[1:5]] == [1, 4, 2, 3]
+    assert [len(group) for group in groups[1:5]] == [1, 4, 2, 4]
     # State 1 has neither Telegram, nor rules, nor memory, nor plans; no state doubles a blank
     # line, opens the block with one or closes it with one.
     for each in STATES:
@@ -859,3 +860,36 @@ def test_state_29_codex_only_names_claude_once_and_leaves_no_no_data() -> None:
     assert "Claude" not in "\n".join(main)
     assert "> Profiles 1/1 · sources 8/8" in lines
     assert "Not checked" not in text
+
+
+def test_state_30_a_disk_under_the_floor_is_an_event_on_the_healthy_screen() -> None:
+    """1.1.1: the showcase installation with 1.6 GB left of 80 GB. The disk has no line of its
+    own on the screen: its event under "Needs attention" turns the status yellow, the ✓ row
+    stays whole and the details line takes the mark. The event is what the collector builds.
+    More lines than the healthy form, so the one-screen budget is not asserted."""
+    from collections import namedtuple
+    from pathlib import Path
+
+    from telegram_dashboard import disk
+    from telegram_dashboard.compat import Environment
+
+    state = STATES[29]
+    text = _render(state)
+    main = _main_part(text)
+    lines = text.splitlines()
+
+    assert state.title == "Disk: the free space under the floor"
+    assert main == [
+        _top("🟡 Warning", state),
+        "",
+        "## 🛠 Needs attention",
+        "- Disk: 1.6 GB free of 80 (2%)",
+        "",
+        *SHOWCASE_HEALTHY[2:],
+    ]
+    assert max(len(line) for line in _held_to_width(main)) <= PHONE_COLUMNS
+    assert text.count("⚠") == 2  # the details line and the spent limit
+    assert "> ⚠️ Disk: 1.6 GB free of 80" in lines
+    usage = namedtuple("usage", "total used free")(80 * 10**9, 78_400_000_000, 1_600_000_000)
+    built = disk.read_disk(Environment(hermes_home=Path("/home/hermes")), usage=lambda _: usage)
+    assert built == (state.snapshot.disk, state.snapshot.incidents)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +36,14 @@ LIMITS_PROVIDERS = "limits_providers"
 # multiplexes profiles (1.1.0, the launch profile's dashboard). The plugin requires the name
 # (``REQUIRED_API``), as for ``CRON_NOTES``.
 FACADE_UNSCOPED = "facade_unscoped"
+# The settings and the ``Environment`` fields of the free-space floors (1.1.1, ``disk.py``): the
+# disk is low when its free space is under either, a share of the partition in percent or an
+# amount in GB (10^9 bytes); 0 turns a floor off. The plugin requires the names
+# (``REQUIRED_API``), as for ``CRON_NOTES``.
+DISK_LOW_PERCENT = "disk_low_percent"
+DISK_LOW_GB = "disk_low_gb"
+DEFAULT_DISK_LOW_PERCENT = 10.0
+DEFAULT_DISK_LOW_GB = 2.0
 # The providers the list may name: the facade's two and Gemini from the engine's log. An external
 # source (``limits_sources``) is no built-in provider and is never subject to the list.
 BUILT_IN_PROVIDERS = ("claude", "codex", "gemini")
@@ -108,6 +117,42 @@ def parse_limits_providers(
     return tuple(name for name in BUILT_IN_PROVIDERS if name in named)
 
 
+def parse_disk_low_percent(raw: object, log: logging.Logger, prefix: str = "") -> float:
+    """``disk_low_percent``: the share of the partition under which the disk is low, at least 0
+    (off) and below 100; anything else is the default with one warning."""
+    return _disk_floor(raw, DISK_LOW_PERCENT, DEFAULT_DISK_LOW_PERCENT, 100.0, log, prefix)
+
+
+def parse_disk_low_gb(raw: object, log: logging.Logger, prefix: str = "") -> float:
+    """``disk_low_gb``: the free space in GB (10^9 bytes) under which the disk is low, at least 0
+    (off); anything else is the default with one warning."""
+    return _disk_floor(raw, DISK_LOW_GB, DEFAULT_DISK_LOW_GB, math.inf, log, prefix)
+
+
+def _disk_floor(
+    raw: object, name: str, default: float, ceiling: float, log: logging.Logger, prefix: str
+) -> float:
+    """A number from the config (YAML reads ``10`` as a number) or the environment (a string),
+    finite, at least 0 and below ``ceiling``; empty is the default without a word. The plugin
+    and the package's own tick both read the floors with this."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    value = math.nan
+    try:
+        if isinstance(raw, int | float) and not isinstance(raw, bool):
+            value = float(raw)
+        elif isinstance(raw, str):
+            value = float(raw.strip())
+    except (ValueError, OverflowError):  # a word, or an integer past a float (JSON)
+        value = math.nan
+    if math.isfinite(value) and 0 <= value < ceiling:
+        return value
+    # A number or a short word is shown; anything else by its type, as the other parsers do.
+    shown = raw if isinstance(raw, int | float | str) and len(str(raw)) <= 40 else type(raw)
+    log.warning("%s%s %r unusable; using %g", prefix, name, shown, default)
+    return default
+
+
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
     source: str
@@ -150,6 +195,10 @@ class Environment:
     # When the plugin came up in the gateway process (the plugin path only): the engine says
     # some things once per process, and they stand until the next start (``memory.py``).
     process_started_at: datetime | None = None
+    # The free-space floors of the profile home's partition (``DISK_LOW_PERCENT``,
+    # ``DISK_LOW_GB``), as ``parse_disk_low_percent`` and ``parse_disk_low_gb`` read them.
+    disk_low_percent: float = DEFAULT_DISK_LOW_PERCENT
+    disk_low_gb: float = DEFAULT_DISK_LOW_GB
 
 
 def probe_gateway_state(env: Environment) -> ProbeResult:

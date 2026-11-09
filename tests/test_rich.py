@@ -211,7 +211,7 @@ def test_details_is_a_section_per_source_a_thin_line_between_and_the_stamps_last
     ]
     assert sections[2] == (
         "<p><b>💾 Backup · Drift</b><br>✓ Backup Sep 26 11:00 · 10 h ago · integrity ok<br>"
-        "✓ Drift 0 of 481 · checked 08:00</p>"
+        "✓ Drift 0 of 481 · checked 08:00<br>Disk: 61 GB free of 80</p>"
     )
     assert sections[-1] == (
         "<p>Screen Sep 26 21:00 UTC<br>Confirmed 20:58<br>Period 5 min<br>"

@@ -13,7 +13,8 @@ invisible character), 12 in 0.10.1 (no word of the screen becomes a link or a co
 0.11.0 (the memory section reads the notebooks, the queue and the log, and writes nothing), 14
 in 1.1.0 (issue #16: the usage facade's answers kept in the record are read field by field) and
 15 (the plain edits keep to the engine's pacing of the chat: no ``finalize``, nothing of its
-slot touched).
+slot touched), 16 in 1.1.1 (no raw Bot API call; the engine's bot read for its id only) and 17
+(``disk.py`` makes one call, ``shutil.disk_usage``, and opens, writes, runs and logs nothing).
 
 These read the plugin's source. The live behaviour behind each is exercised elsewhere:
 ``test_probe_screen.py`` and ``test_probe_plugin.py`` (delivery through the adapter, the record
@@ -511,3 +512,37 @@ def test_the_engine_s_bot_is_read_for_its_id_only() -> None:
     for name in modules:
         source = _code_only((PACKAGE / f"{name}.py").read_text(encoding="utf-8"))
         assert "do_api_request" not in source and "_bot" not in source, name
+
+
+def test_the_disk_line_makes_one_read_only_call_and_nothing_else() -> None:
+    """17. The disk line's module (1.1.1) asks the system one thing, the free space of the
+    partition the profile home lies on (``shutil.disk_usage``): no file is opened, nothing is
+    written, renamed or removed, no command runs, no network client is imported and the module
+    logs nothing (a failure it does not foresee is the collector's, ``collect._disk_guarded``)."""
+    source = (PACKAGE / "disk.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported = {
+        alias.name if isinstance(node, ast.Import) else node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        for alias in node.names
+    }
+    assert imported == {
+        "__future__",
+        "math",
+        "shutil",
+        "collections.abc",
+        "pathlib",
+        "typing",
+        "compat",
+        "schema",
+    }
+    attributes = {
+        f"{node.value.id}.{node.attr}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+        if node.value.id in ("shutil", "os", "Path", "subprocess")
+    }
+    assert attributes == {"shutil.disk_usage"}
+    code = _code_only(source)
+    assert not re.search(r"open\(|write_|mkdir|unlink|rename|subprocess|logg(er|ing)", code)

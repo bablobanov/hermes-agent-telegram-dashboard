@@ -2,9 +2,9 @@
 for the pinned message itself, one for the Hermes version line, three showcase states for the
 catalog screenshots, two for an external limits source, two for Gemini's 429 from the
 engine's log, three for the cron line and the deaf channel, one for the narrow phone, two
-for the rules line, one for the memory, one for a new Hermes release, and one for a provider
-that is not configured (issue #14). No real Hermes is touched: every state is a snapshot
-literal.
+for the rules line, one for the memory, one for a new Hermes release, one for a provider that
+is not configured (issue #14), and one for a disk under its floor (1.1.1). No real Hermes is
+touched: every state is a snapshot literal.
 
 Used by tests (``tests/test_states.py``) and by ``python -m telegram_dashboard --demo N`` so the
 same text can be looked at in Telegram during the pilot.
@@ -27,6 +27,7 @@ from .schema import (
     CronJob,
     CronSummary,
     DashboardSnapshot,
+    DiskSummary,
     DriftSummary,
     GatewaySummary,
     Incident,
@@ -292,6 +293,7 @@ def _showcase_snapshot(
     traffic: TrafficSummary | None = None,
     rules: RulesSummary | None = None,
     memory: MemorySummary | None = None,
+    disk: DiskSummary | None = None,
 ) -> DashboardSnapshot:
     rules_source = (
         (SourceObservation("context_files", "official", "fresh", observed_at=_S),)
@@ -344,7 +346,12 @@ def _showcase_snapshot(
         or TrafficSummary("ok", last_update_seen_at=_S_LAST_UPDATE, polling_at=_S_MINUS_2M),
         rules=rules,
         memory=memory,
+        disk=disk or _SHOWCASE_DISK,
     )
+
+
+# The showcase's partition (1.1.1): 61.4 GB free of 80, far above both floors.
+_SHOWCASE_DISK = DiskSummary("ok", free_bytes=61_400_000_000, total_bytes=80_000_000_000)
 
 
 def _showcase_states() -> tuple[State, ...]:
@@ -828,6 +835,25 @@ def _not_configured_states() -> tuple[State, ...]:
     )
 
 
+# The disk state (30; 1.1.1): the showcase installation with 1.6 GB left of 80 GB, under both
+# floors. The event is a literal; ``test_states`` holds it to what ``disk.read_disk`` builds.
+def _disk_states() -> tuple[State, ...]:
+    return (
+        State(
+            30,
+            "Disk: the free space under the floor",
+            _showcase_snapshot(
+                "warning",
+                incidents=(Incident("disk:low", "warning", "Disk: 1.6 GB free of 80 (2%)"),),
+                disk=DiskSummary("low", free_bytes=1_600_000_000, total_bytes=80_000_000_000),
+            ),
+            _delivery_ok(_S_MINUS_2M),
+            "warning",
+            now=SHOWCASE_NOW,
+        ),
+    )
+
+
 def all_states() -> tuple[State, ...]:
     return (
         State(
@@ -1011,4 +1037,5 @@ def all_states() -> tuple[State, ...]:
         *_memory_states(),
         *_release_states(),
         *_not_configured_states(),
+        *_disk_states(),
     )

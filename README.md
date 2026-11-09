@@ -28,7 +28,8 @@ settings, compatibility and the tests. The catalog page shows the same file.
   Hermes usage facade, others from a local source of your own)
 - the Hermes version the gateway runs against the latest upstream release
 - folded, the details: whether the agent sees its rules, whether its memory keeps what it
-  writes, the cron counts, the ticker and every failing job, the reasons and the times
+  writes, the cron counts, the ticker and every failing job, the free space on the disk
+  `HERMES_HOME` lies on (an event when it runs low), the reasons and the times
 
 ## Screenshots
 
@@ -69,8 +70,9 @@ are in the plugin's README.
 
 ## In short, before you install
 
-- reads Hermes' own files without changing them, and the agent's context files wherever its
-  working directory is; writes only its own record through the engine's plugin state
+- reads Hermes' own files without changing them, the agent's context files wherever its
+  working directory is, and the free space of the disk `HERMES_HOME` lies on; writes only its
+  own record through the engine's plugin state
 - sends and edits the one message through the engine's Telegram adapter; the plugin never reads
   the bot token
 - asks the Hermes usage facade for Claude and Codex limits every 5 minutes by default; to answer,
