@@ -42,6 +42,12 @@ ENGINE_JOB_SKIPS: dict[tuple[str, str], str | None] = {
     ("tests/test_context_files.py", "symlinks not permitted here"): "win32",
     ("tests/test_context_files_engine.py", "directory links not permitted here"): "win32",
     ("tests/test_gemini_log.py", "time.tzset is POSIX only"): "win32",
+    # The released engines the job pins have no widget verbs yet: their public path is tested
+    # against the branch of NousResearch/hermes-agent#152186 locally, and once it is released.
+    (
+        "tests/test_widget_engine.py",
+        "the engine has no widget verbs (NousResearch/hermes-agent#152186)",
+    ): None,
 }
 
 

@@ -109,7 +109,7 @@ Confirmed 20:58                         data minute, the period, the coverage
 Period 5 min
 Profiles 1/1 · sources 8/8
 
-Dashboard 1.1.1                         the dashboard's own version, last
+Dashboard 1.2.0-beta.1                  the dashboard's own version, last
 ```
 
 When something is off, 🛠 Needs attention comes between the top line and the ✓ row, and
@@ -181,7 +181,7 @@ line, no place on the ❔ line or in the coverage; when neither Claude nor Codex
 `limits` source itself is gone, so an installation without either does not stay grey (on the
 launch profile of a gateway that multiplexes profiles, where no silence is judged,
 `limits_providers` says which to leave out). The
-details close with the dashboard's own version (`Dashboard 1.1.1`), so the installed copy can be
+details close with the dashboard's own version (`Dashboard 1.2.0-beta.1`), so the installed copy can be
 told from the pinned message at a glance.
 
 **Rich view:** retired in 1.1.1; the setting `rich` does nothing ("Rich view: retired in 1.1.1"
@@ -295,10 +295,14 @@ carry the full story.
 **How it runs**
 
 - `register()` registers one Telegram handler factory and an unload callback (`ctx.on_unload`),
-  nothing else: no tool, hook, middleware or command.
+  nothing else: no tool, hook, middleware or command. With the widget mode on (`widget`, a
+  preview: "The widget (preview, 1.2.0-beta.1)") on an engine that has the widget verbs, also one
+  hook, `gateway_platform_event`, through which the widget's taps arrive.
 - When the engine's Telegram adapter connects, the factory starts one task through
   `ctx.spawn_task`, one per profile, until the gateway stops or unloads the plugin; a reconnect
-  adds none. The native SDK client handed to the factory is not used.
+  adds none. The native SDK client handed to the factory is not used, unless the widget mode is
+  on and the engine has no widget verbs: then the widget's calls go through it (below). With the
+  widget mode on, a second task beside the tick, the same way: the widget's loop.
 - A reload of plugins registers the plugin again, and the new registration takes the loop over:
   it cancels the earlier task and starts its own through `ctx.spawn_task`. What it takes over
   lives in a registry of the plugin's own in `sys.modules`, `_telegram_dashboard_probe_live`, a
@@ -319,8 +323,9 @@ carry the full story.
   `send` and edited with its public `edit_message`; HTML goes through
   `edit_message(..., parse_mode="HTML")` when its signature has that parameter, else through the
   adapter's private `_edit_text`. Nothing goes past the adapter's verbs: no Rich Message and no
-  raw Bot API call since 1.1.1 (1.1.0 sent the rich view through `_bot.do_api_request`; "Rich
-  view: retired in 1.1.1"). These calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
+  raw Bot API call for the topic's message since 1.1.1 (1.1.0 sent the rich view through
+  `_bot.do_api_request`; "Rich view: retired in 1.1.1"). The widget mode's fallback path is the
+  one exception, in the next item. These calls have no deadline of the plugin's own. An edit the engine held back for a busy chat
   (`raw_response` `{"skipped": true}`) is recorded as `deferred` and made again on the next
   tick. The record keeps the id of the bot that sent the message, and a bot with another id does
   not edit it: a new message is sent. A record from before 1.1.0 names no sender: on a gateway
@@ -328,8 +333,25 @@ carry the full story.
   the launch profile's message is edited the same way, a served profile's (1.0.0 sent it
   through the launch profile's bot) is replaced, and while the runner cannot tell yet which
   profile it is, the tick waits, at most five minutes from the start, then replaces it. A
-  replaced message stays in the chat; the plugin pins and unpins nothing ("The plugin",
+  replaced message stays in the chat; the plugin never pins or unpins the topic's message ("The plugin",
   "Updating from 1.0.0").
+- Telegram for the widget mode (off unless `widget.enabled`; a preview outside the catalog): one
+  widget message in the owner's private chat (`widget.chat_id`), sent once per release (its HTML
+  and caption fixed), then only its data edited on each of its ticks (`widget.period_seconds`,
+  default 300 s) and on a tap, and the answer to each tap. On an engine that has the widget verbs
+  (NousResearch/hermes-agent#152186) the engine makes these calls (`ctx.platform_actions`:
+  `send_widget`, `edit_widget_data`, `answer_widget_query`, behind the capability
+  `gateway.platform_actions`, which the owner grants with
+  `plugins.entries.telegram_dashboard_probe.allow_platform_actions: true`); the verbs have no
+  pin, so the owner pins the widget by hand. On an engine without them (every release up to
+  0.23.1), a private path: the python-telegram-bot `Application` the adapter hands the factory
+  sends raw `do_api_request` calls (`sendWidget`, `editMessageWidgetData`, `answerWidgetQuery`,
+  which PTB 22.8 does not have) and its own `pin_chat_message` and `unpin_chat_message`; the
+  factory appends `widget_query` to PTB's `Update.ALL_TYPES` in the gateway process (the adapter
+  polls with that list; the unload takes it out again) and adds one PTB handler in group -17 that
+  matches only an update carrying `widget_query`. That is the kind of call the catalog review
+  asked to remove from the topic's path, and the reason the widget mode is a preview outside the
+  catalog: once the engine releases the verbs, the private path is dropped.
 - Account limits, through Hermes. While `limits_enabled` is on (the default),
   `agent.account_usage.fetch_account_usage("anthropic")` and `("openai-codex")` are called in one
   worker thread with a 45 s deadline, each provider once per `facade_refresh_seconds`
@@ -604,7 +626,7 @@ a standalone profile) the dashboard keeps its message: the first tick edits it a
 bot's id, with no wait. On a gateway that serves several profiles, 1.0.0 sent a secondary
 profile's screen through the launch profile's bot, and 1.1.0 sends it through the profile's own
 bot: that profile's dashboard starts a new message, from its own bot (in a private chat, in the
-conversation with that bot). The gateway plugin pins and unpins nothing: pin the new one and
+conversation with that bot). The gateway plugin pins and unpins nothing in the topic: pin the new one and
 unpin the old one, which the launch profile's bot sent; the profile's own bot cannot edit it,
 and nothing edits it any more. The launch profile's dashboard keeps its message. There, while
 the gateway starts, until it has installed the adapters that connected, a record from 1.0.0
@@ -688,7 +710,7 @@ imports nor sends it (`compat_matrix.json`, row `screen_rich`, says where 1.1.0 
 - a message 1.1.0 sent rich keeps its id and is edited like any other, HTML, then plain, with one
   warning at start naming it. Telegram may refuse that for a rich message, in words this release
   has not seen yet: when it says the message can't be edited, the tick takes it as lost and sends
-  a new one, which you pin, and you unpin the old one (the plugin pins nothing). Any other
+  a new one, which you pin, and you unpin the old one (the plugin pins nothing there). Any other
   failure is `edit_failed` and the id is kept, which `--check` reports as the screen goes stale;
   deleting the old message makes the next tick send a new one
 
@@ -734,6 +756,7 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `context_files` | `HERMES_DASHBOARD_PROBE_CONTEXT_FILES` | default on; `0`/`false`/`no`/`off` turns the rules off, no event and no details line per platform (the details then say `Rules: off in the dashboard settings`); see "The rules line" |
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | does nothing since 1.1.1: the rich view is retired ("Rich view: retired in 1.1.1" under "The plugin"). Set to `1`/`true`/`yes`/`on`, it is named once in the journal at start; the screen is HTML or plain either way |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
+   | `widget` | (config only, a mapping) | the widget mode, a preview (1.2.0-beta.1, outside the catalog): off unless `enabled: true`; `chat_id` the owner's user id (widgets live in private chats; not a user id, no widget, said once), `period_seconds` default 300 (60..3600), `theme` `telegram`, `midnight`, `ember`, `mono` or `neon` (default `telegram`; a palette is for Telegram's dark theme); see "The widget (preview, 1.2.0-beta.1)" |
    | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name under "Needs attention" and in the details (and in the cron table of the rich view, retired in 1.1.1). Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
 
    `cron_notes` takes the job's `id` from `cron/jobs.json`; quote an id YAML would read as a
@@ -1595,6 +1618,87 @@ silent, and that silence looks exactly like health. Acceptance therefore needs o
 the scheduler with the alert actually arriving (`hermes cron run` bypasses the scheduler's
 dispatch), not only a manual run that prints.
 
+## The widget (preview, 1.2.0-beta.1)
+
+Off unless turned on. Telegram's Bot API 10.4 (09.11.2026) put HTML widgets into messages: a
+widget is drawn by the client, its HTML is fixed once sent, two data packets of up to 1024 bytes
+each (`chat_data`, `public_data`) are rewritten without a new message, and a tap reaches the bot
+as a `widget_query` it answers within 15 seconds. The widget mode keeps one such message, pinned,
+in the owner's private chat with the bot, beside the message in the topic, which it does not
+touch. Telegram delivers widgets to private chats only.
+
+```yaml
+widget:                          # in plugins.entries.telegram_dashboard_probe.settings
+  enabled: true
+  chat_id: "123456789"           # your user id: the private chat with the bot
+  period_seconds: 300            # 60..3600; Refresh in the widget gives a fresh screen at once
+  theme: telegram                # telegram, midnight, ember, mono or neon (dark theme only)
+```
+
+**The screen** is the dashboard's own: the same collector, the same `render_parts`, words and
+thresholds as the topic's screen; the limits, the disk and the cron jobs come structured from the
+same collection (`telegram_dashboard/widget/view.py`). Three tabs:
+
+- Status: the status and the time of the data, Refresh, the checks that work as ✓ chips, Needs
+  attention, Not checked as a card under it (one line when the screen is tight), a card per
+  provider of limits (the columns are the account's windows under the source's own labels,
+  `Session`, `Weekly`, `Week`; a model's window, `Fable`, under the window of its label; one
+  window takes the full width with its label and reset in the name's line), the disk, the
+  Hermes version, the theme button
+- Cron: the failing jobs, the jobs by frequency as `rich._by_frequency` orders them (`Once`
+  first, `Other` last, each with its schedule), the nearest groups open with whole names, the
+  others folded with their soonest run; a tap opens a group in place and asks the bot for its
+  jobs; Paused and Done the same, with the day of the next or the last run
+- Details: the details' groups but the cron, on a tap
+
+The frame keeps one height, 580 px (Telegram cuts at 600), on every tab, a tap or a tick: tighter
+spacing first, then "+N more" in the growing list. Groups open and fold in place, every height
+read before anything changes (a client paints between the layout queries).
+
+**The path to the engine** is read off the engine itself, never off its version: the three
+widget verbs on `ctx.platform_actions` and the `widget_query` event of the hook
+`gateway_platform_event` where the engine has them (public), else the gateway's own Telegram
+client (private, the fallback); never both. The journal says which at the start: `widget: path
+public` or `widget: path private (no platform actions)`. On the public path a capability not
+granted stops the widget with one WARNING naming the setting to grant; the widget is not pinned
+there (the verbs have no pin). What each path calls is in the Disclosure.
+
+**The message**: sent once and pinned; another release (new HTML or caption) sends a new one,
+pins it, and unpins the old one only once the pin holds (a failed pin is tried again on the next
+tick). The caption names the version: `Hermes dashboard 1.2.0-beta.1 · widget`. The message id and
+the chosen theme live in the plugin's state beside the topic's record (`widget`, `widget_theme`).
+A message deleted by hand is sent again on the next tick.
+
+**Taps**: Refresh (a collection, at most 10 s, then the answer and the edit), Details, a Cron
+group, the theme. Only the owner's taps on the current widget are answered (`forbidden`, `stale`
+otherwise).
+
+**Its collections**: the topic's collector with workers and caches of the widget's own, in
+memory; the external limit sources and the usage facade are asked at most every 15 minutes (or
+the settings' longer interval), so the widget does not double the topic's calls.
+
+**The bytes**: Telegram takes at most 4096 bytes of the HTML after zlib level 9. The sent HTML is
+4033 (zlib 1.3) and 4040 (zlib-ng, the engine's Python 3.14): the margin is about 60 bytes, the
+owner's decision of 13.11 for a preview after which the Telegram screen pauses; a test holds 50.
+The interface's words ride in the Cron packet to save HTML bytes. The packets on every demo state:
+Status up to 758 bytes, Cron up to 769, Details up to 724, none cut.
+
+Known limits:
+
+- a list drawn whole and then cut ("+N more") can show one frame with the whole list inside the
+  frame on a native client (a long Needs attention, a Daily group opened at 320-380 px)
+- on the tightest screens (three lines of attention, Not checked, three providers one of them with
+  a 5h window, a low disk) Needs attention keeps what fits and says "+N more"
+- the jobs of a group opened by a tap are those of the moment of the tap
+- Telegram Desktop draws the widget with its own engine, not a web view; the bench is headless
+  Edge with a stand-in for the widget API, so the look on Desktop, Android and iOS is confirmed by
+  eye
+- the engine's widget verbs (NousResearch/hermes-agent#152186) were not merged when this preview
+  was made; the public path is tested against that branch
+
+Turn it off with `widget.enabled: false` (or remove `widget`) and restart the gateway; the old
+message stays, delete it by hand.
+
 ## Running the fallback tick
 
 The package runs from the plugin folder; point Python at it (or at a deployed copy):
@@ -1680,6 +1784,16 @@ list. Since 1.1.1, the entry makes no raw Bot API call and reads the engine's bo
 only, and the disk line's module makes one call, `shutil.disk_usage`, and opens, writes, runs
 and logs nothing. The plain fallback has no code: there Telegram may still link a file name and make `/new`
 a command a tap would send to the dashboard's own chat.
+
+The widget mode has tests of its own: `tests/test_widget_view.py`, `test_widget_packets.py` and
+`test_widget_html.py` (the screen from the demo states, every packet within 1024 bytes uncut, the
+sent HTML within its byte margin), `test_widget_mode.py` (the message, the pin, the taps on a fake
+transport), `test_widget_paths.py` and `test_widget_plugin.py` (the two paths, the choice between
+them, the second task, the takeover), and `test_widget_engine.py`, which needs the engine: a tap
+through the engine's update admission and PTB's real polling on the private path, the choice of
+the path on the engine's own `PlatformActions`, and, on an engine with the widget verbs, the
+public path through them and their event. The invariants above read the widget's modules too
+(no port, no shell); the hook and the raw calls of the widget mode are in the Disclosure.
 
 ## License
 
