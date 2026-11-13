@@ -1,0 +1,270 @@
+<style>
+/* Colours inside widget profile 1 (no color-mix): the chat's theme with light-dark() and rgba() in Telegram's
+   own theme (#rrggbbaa is rgba); a palette (dark theme only) comes from the bot as ready colours on the body. */
+:root{--ink:var(--tg-theme-text-color);--card:var(--tg-theme-secondary-bg-color);--acc:var(--tg-theme-button-color);--on:var(--tg-theme-button-text-color);--mut:light-dark(#0000009e,#ffffffad);--line:light-dark(#0000001a,#ffffff1a);--trk:light-dark(#0000000f,#0000004d);--warn:light-dark(#996c0f,#ecbf62);--crit:light-dark(#973033,#ea8386);--alw:#e8a31733;--alc:#e5484d33;--bar:var(--acc);--val:var(--ink);--dkc:light-dark(#0b7f8c,#48dce6);--dkt:light-dark(#0b7f8c1f,#48dce62e)}
+/* No card outline in the palettes (the owner, 12.11: the first to go when the HTML needs room). */
+.pal{background:var(--bg)}
+body{margin:0;padding:12px 12px max(12px,env(safe-area-inset-bottom));font-size:15px;line-height:20px;color:var(--ink)}
+button{font:inherit;border:0;background:var(--card);color:var(--acc)}
+/* 13 px muted words: the notes, a meter's label word, a group's header, a job's row. */
+.c13,.k i,.gh,.tr{font-size:13px;line-height:16px}
+.c13,.k i,.c12,.gh,.off{color:var(--mut)}
+i,em{font-style:normal}
+.c12{font-size:12px;line-height:16px}
+.top,.k,.ft,.tr,.gh{display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--acc);flex:none}
+.warning .dot{background:var(--warn)}
+.critical .dot{background:var(--crit)}
+.unknown .dot{background:var(--mut)}
+#hl{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ht{white-space:nowrap}
+#go,#th{margin-left:auto;padding:4px 12px;border-radius:14px;font-size:13px;font-weight:600}
+/* The theme button sits in the footer's 16 px line: it adds no height. */
+#th{padding:0 8px;line-height:16px}
+.tabs{display:flex;gap:2px;margin:8px 0 12px;padding:2px;border-radius:10px;background:var(--card)}
+.tabs button{flex:1;padding:6px 0;border-radius:8px;font-size:13px;font-weight:600;background:none;color:var(--mut)}
+.tabs .on{background:var(--acc);color:var(--on)}
+.card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:8px}
+.al{background:linear-gradient(var(--alw),var(--alw)),var(--card)}
+.al.critical,.x{background:linear-gradient(var(--alc),var(--alc)),var(--card)}
+/* The disk: its own cool tint and bar, apart from the limits (11.11); yellow or red still on a problem. */
+.dk{background:linear-gradient(var(--dkt),var(--dkt)),var(--card);--bar:var(--dkc);--bar2:var(--dkc)}
+.hd{font-weight:600;margin-bottom:4px}
+.li{padding:2px 0 2px 16px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.chip{font-size:13px;line-height:24px;padding:0 6px;border-radius:12px;background:var(--card)}
+.chip b{color:var(--acc)}
+.pv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.k b{margin-left:auto;font-weight:600;white-space:nowrap;color:var(--val)}
+.al b{color:var(--ink)}
+.k+.k{margin-top:4px}
+.bar+.k{margin-top:8px}
+.bar{height:8px;border-radius:4px;margin-top:4px;background:var(--trk)}
+.bar i{display:block;height:100%;border-radius:4px;background:var(--bar);background:linear-gradient(90deg,var(--bar),var(--bar2,var(--bar)))}
+.s1{--bar:var(--warn);--bar2:var(--warn)}
+.s2{--bar:var(--crit);--bar2:var(--crit)}
+.rs{text-align:right;margin-top:4px}
+.off{padding:8px 12px}
+.ft{margin-top:12px}
+.sub{margin:0 0 8px}
+/* The frame clips (fit gives it its height); a tab's last card keeps its bottom margin inside the tab, so the
+   tab's measured bottom is what it takes. */
+#pp{overflow:hidden}
+#pp>*{padding-bottom:1px}
+/* A group's body clips its lines: 0 folded, open its lines' height in px (fit, a tap), none till measured. A
+   client's animator runs only from a number to a number. */
+.gb{overflow:hidden;max-height:0;transition:max-height .2s}
+.o>.gb{max-height:none}
+.gh{font-weight:600;padding:8px 0}
+.gh:before{content:'▸';width:8px}
+.o>.gh:before{content:'▾'}
+.hd i,.gh em{margin-left:auto;font-weight:400}
+.o>.gh em{display:none}
+.tb{padding:4px 12px}
+.tb>*+*{border-top:1px solid var(--line)}
+/* A job's row: 13 px, so a whole name rarely wraps (11.11: "the name must read whole"). */
+.tr{padding:4px 0 4px 16px}
+.tr span{margin-left:auto;white-space:nowrap;color:var(--val)}
+.t1 .card{padding:8px 12px}
+.t1 .tabs{margin:8px 0}
+.t1 .rs,.t1 .bar{margin-top:2px}
+.t1 .ft{margin-top:8px}
+.t2 .bar{height:6px}
+.t2 .bar+.k{margin-top:4px}
+.t2 .gh{padding:2px 0}
+.t2 .tr{padding:2px 0 2px 16px}
+.t2 .li{padding:0 0 0 16px}
+.t2 .k+.k{margin-top:0}
+.t2 .card{padding:6px 12px;margin-bottom:4px}
+.t2 .chip{background:none;padding:0 4px 0 0;line-height:20px;font-size:12px}
+.t2 .hd{margin-bottom:2px}
+.t2 .tabs{margin:4px 0}
+.t2 .sub,.t2 .chips{margin-bottom:4px}
+.t2 .ft{margin-top:4px}
+.t2 #go{padding:2px 12px}
+/* "Not checked" in the tightest spacing: one line, its title first (2A, 11.11). */
+.t2 .un>*{display:inline;padding:0 6px 0 0}
+</style>
+<div class="top" id="hd"><span class="dot"></span><span id="hl"></span><span class="c13" id="ht"></span><button id="go"></button></div>
+<div class="tabs"><button data-t="s"></button><button data-t="c"></button><button data-t="d"></button></div>
+<div id="pp"><div id="ps"></div><div id="pc"></div><div id="pd"></div></div>
+<script>
+const W = window.TelegramWidget, $ = (i) => document.getElementById(i), Y = document.body;
+// Bad JSON or none is undefined: every reader asks only whether there is a value.
+const J = (s) => { try { return JSON.parse(s); } catch (e) {} };
+// The bot's words as text, also inside an attribute (data-q); the quote as \x22: htmlmin reads no regex.
+const E = (s) => String(s).replace(/[&<>\x22]/g, (c) => '&#' + c.charCodeAt(0) + ';');
+const M = (a, f) => a.map(f).join('');
+const div = (c, s) => '<div class="' + c + '">' + s + '</div>', CUT = () => div('c12', X[4]);
+const T = (e, s) => { e.textContent = s; };
+// A request from a tap (the only place a widget may ask the bot): ok gets the bot's answer, bad the words
+// for a refusal ("Bot: stale") or a request that did not go ("Not sent: TIMEOUT").
+const req = (data, ok, bad) => W.request(data).then((a) => { const r = J(a?.result) || { e: 'empty' }; r.e ? bad(X[6] + r.e) : ok(r); },
+  (e) => bad(X[5] + (e?.code || 'error')));
+// A button's request: the button says how it went.
+const ask = (b, data, ok) => { T(b, X[1]); req(data, ok, (w) => T(b, w)); };
+// A meter: the label left, the value right (⚠ first on a problem), the bar under them; a number is a percent,
+// words take the bar's width from w (the disk).
+const bar = (l, v, s, w) => div('k', l + '<b>' + (s ? '⚠ ' : '') + (typeof v == 'number' ? v + '%' : E(v)) + '</b>')
+  + div('bar s' + s, '<i style="width:' + Math.min(w == null ? +v || 0 : w, 100) + '%"></i>');
+const rs = (r) => r ? div('rs c12', E(r)) : '';
+// A window cell, its words from the bot: the bars, the reset under them; a provider of one cell has its title
+// and reset in the name's line (1A, 11.11).
+const cell = (c) => '<div>' + M(c[0], (b) => bar(E(b[0]), b[1], b[2]) + rs(b[3])) + rs(c[1]) + '</div>';
+// A card of lines: "## " is its title, the rest its points (Needs attention, Not checked).
+const card = (c, l) => l ? div('card ' + c, M(l, (x) => x.startsWith('## ') ? div('hd', E(x.slice(3))) : div('li', '• ' + E(x)))) : '';
+// The widget opens on Status: the tab is not kept between openings (the bytes; 12.11). X: the interface's
+// words, from the Cron packet (the bytes of the HTML; the owner, 13.11).
+let C = J(W?.chatData), P = J(W?.publicData), X = P?.x || [], D = null, tab = 's';
+// A palette is for Telegram's dark theme only; the client answers the query from the chat's theme.
+const dark = () => { try { return matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {} };
+// Keep within 580 px, 20 under Telegram's 600 (another client draws a few px taller than the preview): tighter
+// spacing, then the tightest, by the tallest tab. A tab still past that keeps the lines of its growing list that
+// fit (Needs attention, the last open group) and "+N more": nothing is cut (11.11). The frame (#pp) is always as
+// tall as 580 allows, its overflow hidden: no tab switch, tap or drawing moves the bubble, and lines a drawing has
+// not cut yet stay inside it. Telegram Desktop lays no grid items over one another (12.11), so a tab is measured
+// shown alone, the others hidden with style.display. The sandbox sends the DOM to the client before every layout
+// query and a native client paints on its own clock (widget-sandbox protocol.md; 12.11): only the start goes
+// through the three tabs, under #pp's visibility:hidden; a drawing and a switch measure the tab on screen, a tier
+// is only added. Each measure is a layout query (past 128 in one task, or 1000 ms of them, the client stops the
+// widget; one is about 1.3 ms on Desktop): the start about 12, a switch 6, a tap a group's body and 2 or 3 more,
+// and a cut reads every line of its list (a 1024-byte packet keeps it under 128).
+const one = (e) => { for (const o of $('pp').children) o.style.display = o == e ? '' : 'none'; };
+const H = (e) => e.getBoundingClientRect(), Q = (e, s) => [...e.querySelectorAll(s)], tabs = Q(document, '.tabs button');
+// Drops the last lines of list a until o px are gone, "+N more" (about a line) in their place, every height read
+// first: the client gets the drop in one go. The lines are .li or .tr divs (not a title, not "… trimmed to fit"),
+// "+N more" an <i> (.c13 sets it upright); they go for good, the tab's next drawing brings them back.
+const cut = (a, o) => {
+  const l = Q(a, 'div.li,div.tr'), h = l.map((x) => H(x).height);
+  let f = -h.at(-1), n = 0;
+  while (f < o && l.length > 1) f += h.pop(), l.pop().remove(), n++;
+  if (n) l[0].parentNode.insertAdjacentHTML('beforeend', '<i class="tr c13">+' + n + X[12] + '</i>');
+};
+// A group's body to its lines' height in px.
+const px = (b) => b.style.maxHeight = H(b.firstChild).height + 'px';
+// R: the start is done (a drawing before it does not measure).
+let R;
+const TT = ['t1', 't2'];
+function fit(a) {
+  if (!R) return;
+  const b = Y.classList, s = $('pp').style, p = a ? [...$('pp').children] : [$('p' + tab)];
+  if (a) s.visibility = 'hidden', b.remove(...TT);
+  // 568: 580 less the body's bottom padding. A tab's bottom does not move with #pp's height.
+  for (const c of TT) if (!b.contains(c) && Math.max(...p.map((e) => (one(e), H(e).bottom))) > 568) b.add(c);
+  for (const e of p) {
+    one(e);
+    const g = Q(e, '.al,.o').pop(), y = H(e).bottom;
+    if (g && y > 568) cut(g, y - 568);
+    // An open group's body gets its lines' height in px: a tap folds it from a number.
+    for (const g of Q(e, '.o')) px(g.lastChild);
+  }
+  s.height = 568 - H($('pp')).top + 'px';
+  one($('p' + tab));
+  s.visibility = '';
+}
+function draw() {
+  if (!C) return T($('hl'), 'No data yet');
+  // The bot's custom properties (a palette), or the chat's own colours.
+  const p = dark() && C.pl, B = Object.fromEntries(C.m || []), d = C.dk;
+  Y.classList.toggle('pal', !!p);
+  Y.style.cssText = p || '';
+  $('hd').className = 'top ' + C.st;
+  T($('hl'), C.h);
+  T($('go'), X[0]);
+  tabs.forEach((b, i) => T(b, X[13 + i]));
+  // The bot's clock words; the day too when the collection is not of today (a widget left behind shows it).
+  T($('ht'), (new Date(C.t).toDateString() == new Date().toDateString() ? '' : C.d + ' ') + C.w + X[7] + C.n);
+  // The checks that work above what needs attention; Not checked a card under it (2A, 11.11); a card per
+  // provider (two cells side by side, one full width), the disk, the work, the Hermes version and the theme.
+  $('ps').innerHTML = (B.works ? div('chips', M(B.works, (s) => '<span class="chip"><b>✓</b> ' + E(s) + '</span>')) : '')
+    + card('al ' + C.st, B.attention || B.note) + card('un', B.unchecked)
+    + M(C.q || [], (p) => p[1] ? div('card', div('k hd', E(p[0]) + (p[2] ? '<i>' + E(p[2]) + '</i>' : '')) + div(p[1][1] ? 'pv' : '', M(p[1], cell))) : div('card off', E(p[0]) + ' · ' + E(p[2])))
+    + (d ? div('card dk', bar(X[8], d[0], d[2], d[1])) : '')
+    + (B.work ? div('c13', B.work.map(E).join('<br>')) : '')
+    + div('ft c12', (B.hermes || []).map(E).join(' · ') + '<button id="th">' + X[16] + E(C.th) + '</button>')
+    + (C.cut ? CUT() : '');
+  fit();
+}
+// The theme button asks for the next theme (the bot names it); the answer's colours are drawn at once.
+$('ps').onclick = (e) => { const b = e.target; if (b.id == 'th' && W && C) ask(b, 'theme:' + C.nx, (r) => { Object.assign(C, r); draw(); }); };
+// A group: its header (the bot's words; in Cron a count and, folded, its soonest run) and its body of lines, open
+// (o) when the bot opened it or a tap did. Paused and Done are groups of names with their day.
+const rows = (r) => M(r, (y) => div('tr', E(y[0]) + (y[1] ? '<span>' + E(y[1]) + '</span>' : '')));
+const grp = (q, t, r, o) => '<div class="g' + (o ? ' o' : '') + '" data-q="' + E(q) + '">' + div('gh', t) + div('gb', '<div>' + r + '</div>') + '</div>';
+// O: the group a tap opened, by tab, kept across the ticks; L: a group's last jobs, by group (the bot's packet or
+// its answer; "Loading…" while asked): a group a tap opened keeps them on a tick that does not send them.
+const O = {}, L = {};
+// Cron: the failing jobs, then a group per frequency from the most frequent, the nearest open (the bot opens what
+// fits the screen) or the one a tap opened, paused and done at the bottom.
+function cron() {
+  if (!P) return;
+  const g = (P.g || []).concat(P.p ? [[X[10], P.p, 0, 0, 'paused']] : [], P.d ? [[X[11], P.d, 0, 0, 'done']] : []);
+  // Gone from the packet (run, paused, done), the group a tap opened gives the bot's choice back.
+  if (!g.some((x) => (x[4] || x[0]) == O.pc)) O.pc = 0;
+  $('pc').innerHTML = (P.a && P.a.length ? div('card al x', div('hd', X[9] + P.a.length) + M(P.a, (x) => div('k', E(x[0]) + '<b>' + E(x[1]) + '</b>') + (x[2] ? div('c12', E(x[2])) : ''))) : '')
+    + div('c13 sub', E(P.h))
+    + (g.length ? div('card tb', M(g, (x) => { const q = x[4] || x[0], o = O.pc ? q == O.pc : !!x[3];
+      return grp(q, E(x[0]) + ' · ' + x[1] + (x[2] ? '<em>' + E(x[2]) + '</em>' : ''), x[3] ? L[q] = rows(x[3]) : o && L[q] || '', o); })) : '')
+    + (P.cut ? CUT() : '');
+  fit();
+}
+// A tap on a group's header (Cron and Details) opens it in place and folds the open ones; a second tap folds it.
+// Every height is read first, then every change at once (12.11; the sandbox sends the DOM before each query): the
+// bodies move from a number to a number, folding to 0, the opening one from 0 to its lines' height; what changes
+// before (its "Loading…", its cut lines) is in a folded body, unseen. An opening group past the frame keeps the
+// lines that fit and "+N more" (12.11). A Cron group without its jobs opens on "Loading…" and asks the bot (a
+// widget may ask only from a tap handler), "Loading…" kept in L till the answer; the jobs redraw the tab, the
+// group open with them, not animated (the bytes, 12.11). Details come with every group's lines, so only a Cron
+// group asks.
+$('pc').onclick = $('pd').onclick = (e) => {
+  const g = e.target.closest('.gh')?.parentNode, p = $('p' + tab);
+  if (!g) return;
+  const b = g.lastChild, q = g.dataset.q, op = !g.classList.contains('o'), k = op && W && !g.querySelector('.tr:not(.c12)');
+  const f = op ? Q(p, '.o') : [g];
+  // "Loading…" before the first measure: the tab's bottom and the bodies are read with the same content.
+  if (k) b.firstChild.innerHTML = L[q] = div('tr c12', X[3]);
+  let y = H(p).bottom;
+  // Every body's height off the bottom: one still folding holds its height in it till it ends.
+  for (const o of Q(p, '.gb')) y -= H(o).height;
+  // The opening group's last lines go first if the tab (its bottom y without the folded ones) would pass 568.
+  if (op) (y += H(b.firstChild).height) > 568 && cut(g, y - 568), px(b), g.classList.add('o');
+  for (const o of f) o.classList.remove('o'), o.lastChild.style.maxHeight = 0;
+  O[p.id] = op && q;
+  const got = (x) => (L[q] = x, cron());
+  if (k) req('cron:' + q, (r) => got(rows(r.r) + (r.cut ? CUT() : '')), (w) => got(div('tr c12', E(w))));
+};
+function details() {
+  $('pd').innerHTML = !D ? div('c13', X[3])
+    : D.e ? div('c13', E(D.e))
+    : div('card tb', M(D.d || [], (g) => grp(g[0], E(g[0]), M(g[1], (x) => div('tr c13', E(x))), g[0] == O.pd))) + (D.cut ? CUT() : '');
+  fit();
+}
+function show(t) {
+  tab = t;
+  tabs.forEach((b) => { b.className = b.dataset.t == t ? 'on' : ''; });
+  // fit() shows the tab and measures it: a tick may have drawn it taller while it was hidden.
+  fit();
+}
+// Details come on a tap only (a widget may ask the bot only from a tap handler); the last ones stay while the
+// answer is on its way, so the frame does not jump (11.11).
+tabs.forEach((b) => { b.onclick = () => {
+  show(b.dataset.t);
+  if (b.dataset.t == 'd' && W) req('details', (r) => { D = r; details(); }, (e) => { D = { e }; details(); });
+}; });
+function take(n) {
+  if (!n || n.e || (C && (n.t < C.t || (n.t == C.t && n.n <= C.n)))) return;
+  C = n; draw();
+}
+$('go').onclick = () => {
+  const t0 = C ? C.t : 0;
+  if (W) ask($('go'), 'refresh', (n) => { take(n); T($('go'), X[n.t > t0 ? 0 : 2]); });
+};
+if (W) {
+  W.onEvent('chatDataChanged', () => take(J(W.chatData)));
+  W.onEvent('publicDataChanged', () => { P = J(W.publicData); X = P?.x || X; cron(); });
+  W.onEvent('themeChanged', draw);
+}
+// Every tab drawn, then one fit of the three (the drawings before it do not measure).
+show(tab); cron(); details(); draw(); R = 1; fit(1);
+W?.ready?.();
+</script>

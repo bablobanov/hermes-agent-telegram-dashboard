@@ -111,6 +111,10 @@ logger = logging.getLogger("hermes.plugins.telegram_dashboard_probe")
 
 PLATFORM = "telegram"
 TASK_NAME = "telegram_dashboard_probe:tick"
+WIDGET_TASK_NAME = "telegram_dashboard_probe:widget"
+# The widget's collections ask the external limit sources and the usage facade at most this often
+# (seconds): its own caches beside the topic's, so its period alone would double the calls.
+WIDGET_REFRESH_FLOOR_SECONDS = 900.0
 STATE_KEY = "probe"
 DEFAULT_PERIOD_SECONDS = 60.0
 # float("inf") and float("nan") are valid floats; sleep(inf) parks the loop forever with the
@@ -311,7 +315,16 @@ Collector = Callable[[datetime], Awaitable[Any]]
 # publishes: the launch profile, whose adapter the runner's map holds).
 LIVE_MODULE = "_telegram_dashboard_probe_live"
 LIVE_VERSION = 1
-LIVE_KEYS = ("adapter", "runner", "platform", "loop", "task", "generation", "primary")
+LIVE_KEYS = (
+    "adapter",
+    "runner",
+    "platform",
+    "loop",
+    "task",
+    "generation",
+    "primary",
+    "widget_task",
+)
 
 
 @dataclass(frozen=True)
@@ -345,6 +358,9 @@ class Settings:
     # read by the package's own parsers.
     disk_low_percent: float = DEFAULT_DISK_LOW_PERCENT
     disk_low_gb: float = DEFAULT_DISK_LOW_GB
+    # The widget mode (``widget`` in the settings, 1.2.0-beta.1): the package's ``WidgetSettings``
+    # when it is on, ``None`` otherwise.
+    widget: Any = None
 
 
 @dataclass(frozen=True)
@@ -426,7 +442,30 @@ def read_settings(ctx: Any) -> Settings | None:
             _setting(ctx, "disk_low_gb", ENV_DISK_LOW_GB),
             DEFAULT_DISK_LOW_GB,
         ),
+        widget=_widget_settings(_raw_setting(ctx, "widget")),
     )
+
+
+def _widget_settings(raw: object) -> Any:
+    """``widget`` read by the package's own reader (``widget.read_settings``), the copy beside
+    the plugin first; ``None`` (no widget) when it is absent, off, or no package reads it."""
+    if raw is None:
+        return None
+    for base in _bases():
+        try:
+            return importlib.import_module(f"{base}.widget").read_settings(raw)
+        except ModuleNotFoundError:
+            continue
+        except Exception as exc:
+            logger.warning("probe: widget settings not read by %s: %s", base, type(exc).__name__)
+            continue
+    logger.warning("probe: settings.widget given, but no package has the widget mode; off")
+    return None
+
+
+def _bases() -> list[str]:
+    """Where the package is looked up: beside the plugin first, then in the interpreter."""
+    return [*([f"{__package__}.telegram_dashboard"] if __package__ else []), "telegram_dashboard"]
 
 
 def _retired_rich(ctx: Any) -> None:
@@ -743,6 +782,7 @@ class _Handover:
     primary: bool = False
     runner: Callable[[], Any] | None = None
     platform: Any = None
+    widget_task: Any = None
 
 
 def _live() -> _Live | None:
@@ -844,7 +884,16 @@ def _handover(entry: dict[str, Any]) -> _Handover | None:
     if adapter is None and not (primary and _deref(runner) is not None):
         return None
     generation, task = max(_generation(entry), 1), entry.get("task")
-    return _Handover(loop, adapter, task, generation, primary, runner, entry.get("platform"))
+    return _Handover(
+        loop,
+        adapter,
+        task,
+        generation,
+        primary,
+        runner,
+        entry.get("platform"),
+        entry.get("widget_task"),
+    )
 
 
 class ProbeRuntime:
@@ -889,6 +938,12 @@ class ProbeRuntime:
         self._defer_warned = False
         # The adapter's own counters, read as attributes before each screen is composed.
         self.traffic_probe: Any = None
+        # The widget mode (``WidgetMode``) when the settings turn it on, its task, and the
+        # collector's workers and caches of its own (in memory: the topic's stay in the record).
+        self.widget: Any = None
+        self.widget_task: Any = None
+        self.widget_flights: Any = dashboard.collect.Flights() if dashboard is not None else None
+        self.widget_caches: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ factory (connect-time)
 
@@ -901,6 +956,8 @@ class ProbeRuntime:
             return
         self.generation += 1
         self._hand(adapter)
+        if self.widget is not None:
+            self.widget.wire(native)
         if _alive(self.task):
             self._publish()
             logger.warning(
@@ -922,9 +979,19 @@ class ProbeRuntime:
             self._runner, self._platform = _ref(runner), getattr(adapter, "platform", None)
 
     def _start(self) -> None:
-        """The one place the loop is spawned: through the engine, so an unload cancels it."""
-        self.task = self._ctx.spawn_task(self.run(), name=TASK_NAME)
+        """The one place the loop is spawned: through the engine, so an unload cancels it. The
+        widget's loop beside it, the same way."""
+        self.task = self._spawn(self.run(), TASK_NAME)
+        if self.widget is not None and not _alive(self.widget_task):
+            connected: Callable[[], bool] = lambda: self.live_adapter() is not None  # noqa: E731
+            self.widget_task = self._spawn(
+                self.widget.run(self._still_serves, connected), WIDGET_TASK_NAME
+            )
         self._publish()
+
+    def _spawn(self, loop: Awaitable[None], name: str) -> Any:
+        """Every task of the plugin is the engine's: the tick and the widget's loop."""
+        return self._ctx.spawn_task(loop, name=name)
 
     # ------------------------------------------------------------------ registered again (#12)
 
@@ -969,6 +1036,8 @@ class ProbeRuntime:
             return
         if _alive(handover.task):
             handover.task.cancel()
+        if _alive(handover.widget_task):
+            handover.widget_task.cancel()
         self.generation = handover.generation
         self.primary = self.primary or handover.primary
         if handover.adapter is not None:
@@ -986,6 +1055,8 @@ class ProbeRuntime:
         forced re-discovery). Its factory and a takeover scheduled for it do nothing from now
         on; the registry entry stays for the next registration of the profile."""
         self._retired = True
+        if self.widget is not None:
+            self.widget.retire()
 
     def _owns_profile(self) -> bool:
         """Whether this registration serves its profile: the newest one claimed it. With no
@@ -1023,6 +1094,7 @@ class ProbeRuntime:
             "task": self.task,
             "generation": self.generation,
             "primary": self.primary,
+            "widget_task": self.widget_task,
         }
         with live.lock:
             current = live.profiles.get(self.key)
@@ -1120,6 +1192,10 @@ class ProbeRuntime:
             logger.info("probe: tick loop ends: a newer registration serves this profile")
             return False
         return True
+
+    def _still_serves(self) -> bool:
+        """``_serves`` without its journal line: the widget's loop asks it before every tick."""
+        return not self._retired and self._owns_profile()
 
     def _pause(self) -> float:
         """The whole period after a tick that got to Telegram; a short retry while waiting for
@@ -1454,8 +1530,60 @@ class ProbeRuntime:
         return record
 
     async def _collect(self, now: datetime) -> Any:
+        return await self._collect_with(
+            now,
+            flights=self.flights,
+            version_cache=self.release_cache(),
+            facade_caches=self.facade_cache(),
+            facade_interval_seconds=self.settings.facade_refresh_seconds,
+            external_caches=self.external_cache(),
+            external_interval_seconds=self.settings.limits_refresh_seconds,
+            period_seconds=self.settings.period_seconds,
+            gemini_cache=self.gemini_cache(),
+            cron_cache=self.cron_cache(),
+            traffic_probe=self.traffic_probe,
+            traffic_cache=self.traffic_cache(),
+        )
+
+    async def widget_view(self) -> Any:
+        """One collection for the widget: the topic's collector and screen parts, the widget's own
+        workers and caches, the limits asked at most every ``WIDGET_REFRESH_FLOOR_SECONDS``."""
+        dashboard, widget = self.dashboard, self.widget
+        if dashboard is None or widget is None:
+            raise RuntimeError("package telegram_dashboard not importable")
+        now = datetime.now(UTC)
+        live = self.live_adapter()
+        caches = self.widget_caches
+        for name in ("version", "facade", "external", "gemini", "cron", "traffic"):
+            caches.setdefault(name, {})
+        period = widget.settings.period_seconds
+        snapshot = await self._collect_with(
+            now,
+            flights=self.widget_flights,
+            version_cache=caches["version"],
+            facade_caches=caches["facade"],
+            facade_interval_seconds=max(
+                self.settings.facade_refresh_seconds, WIDGET_REFRESH_FLOOR_SECONDS
+            ),
+            external_caches=caches["external"],
+            external_interval_seconds=max(
+                self.settings.limits_refresh_seconds, WIDGET_REFRESH_FLOOR_SECONDS
+            ),
+            period_seconds=float(period),
+            gemini_cache=caches["gemini"],
+            cron_cache=caches["cron"],
+            traffic_probe=self._probe(live) if live is not None else None,
+            traffic_cache=caches["traffic"],
+        )
+        parts = dashboard.render.render_parts(
+            snapshot, now=now, delivery=None, period_seconds=period, zone=self.zone
+        )
+        return widget.view(snapshot, parts, now, self.zone)
+
+    async def _collect_with(self, now: datetime, **kwargs: Any) -> Any:
+        """The collector on this installation's ``Environment``, with the caches given."""
         dashboard = self.dashboard
-        assert dashboard is not None  # compose() checks before calling
+        assert dashboard is not None  # compose() and widget_view() check before calling
         env = dashboard.compat.Environment(
             hermes_home=self.settings.hermes_home,
             drift_command=self.settings.drift_command,
@@ -1475,22 +1603,7 @@ class ProbeRuntime:
             disk_low_gb=self.settings.disk_low_gb,
         )
         runner = dashboard.collect.SubprocessRunner()
-        return await dashboard.collect.collect_all_async(
-            env,
-            runner,
-            now=now,
-            flights=self.flights,
-            version_cache=self.release_cache(),
-            facade_caches=self.facade_cache(),
-            facade_interval_seconds=self.settings.facade_refresh_seconds,
-            external_caches=self.external_cache(),
-            external_interval_seconds=self.settings.limits_refresh_seconds,
-            period_seconds=self.settings.period_seconds,
-            gemini_cache=self.gemini_cache(),
-            cron_cache=self.cron_cache(),
-            traffic_probe=self.traffic_probe,
-            traffic_cache=self.traffic_cache(),
-        )
+        return await dashboard.collect.collect_all_async(env, runner, now=now, **kwargs)
 
     def release_cache(self) -> dict[str, Any]:
         """The upstream release check's cache inside the record, the same object on every tick
@@ -1644,6 +1757,32 @@ def _announce_sources(runtime: ProbeRuntime) -> None:
     logger.info("probe: %d external limits source(s) configured", len(sources))
 
 
+def _widget_mode(ctx: Any, runtime: ProbeRuntime) -> Any:
+    """The widget mode of this registration (``widget`` in the settings), from the same copy of
+    the package as the screen; ``None`` when it is off or cannot be built (said once)."""
+    settings, dashboard = runtime.settings.widget, runtime.dashboard
+    if settings is None:
+        return None
+    if dashboard is None:
+        logger.warning("probe: package telegram_dashboard not importable; widget off")
+        return None
+    base = dashboard.render.__name__.rpartition(".")[0]
+    try:
+        module = importlib.import_module(f"{base}.widget")
+        version = str(importlib.import_module(base).__version__)
+        return module.WidgetMode(
+            ctx,
+            settings,
+            collect=runtime.widget_view,
+            zone=lambda: runtime.zone,
+            version=version,
+            started=runtime.started_at.timestamp(),
+        )
+    except Exception as exc:
+        logger.warning("probe: widget mode not built: %s", type(exc).__name__)
+        return None
+
+
 def _on_unload(ctx: Any, callback: Callable[[], None]) -> bool:
     """``callback`` at the engine's unload of this registration, through ``ctx.on_unload``
     (0.21.1 on). False when the engine refused it: the method answers ``None`` only once this
@@ -1674,6 +1813,7 @@ def register(ctx: Any) -> ProbeRuntime | None:
         return None
     _retired_rich(ctx)
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
+    runtime.widget = _widget_mode(ctx, runtime)
     _announce_sources(runtime)
     if _on_unload(ctx, runtime.retire):
         runtime.claim_profile()
