@@ -25,7 +25,6 @@ Errors are logged by class only: a network error's text can carry the request UR
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import logging
 import time
@@ -51,6 +50,7 @@ SETTLE_DELAY = 20.0
 WAIT_READY_SECONDS = 1.0
 WAIT_SAID_SECONDS = 60.0  # waiting this long for the path is said once in the journal
 DEFAULT_RETRY_SECONDS = 5.0
+UNPIN_TRIES = 3  # the old message's unpin, once per tick, before it is left to the owner
 LOST_PHRASES = ("message to edit not found", "message_id_invalid", "message not found")
 WAIT_PHRASES = ("retry after", "retry in", "too many requests", "flood control")
 
@@ -249,12 +249,23 @@ class Widget:
         self.unpinned: int | None = None
         self.old: int | None = None
         self._pin_said = False
+        self._unpin_tries = 0
         self.stopped = False
+        # Its registration is unloaded or its loop ended: nothing is written from here on.
+        self.closed = False
 
     def lock(self) -> asyncio.Lock:
         if self._lock is None:
             self._lock = asyncio.Lock()
         return self._lock
+
+    def close(self) -> None:
+        """On the widget's loop, at its end: nothing written from here on, the collection in
+        flight cancelled (a late tap still gets its answer)."""
+        self.closed = True
+        flight = self._flight
+        if flight is not None and not flight.done():
+            flight.cancel()
 
     def now_ms(self) -> int:
         return int(self._clock() * 1000)
@@ -305,6 +316,8 @@ class Widget:
             return None
 
     def _write(self, key: str, value: object) -> None:
+        if self.closed:  # a newer registration's state is not this one's to write
+            return
         try:
             if self.state is not None:
                 self.state.set(key, value)
@@ -359,7 +372,7 @@ class Widget:
                 pending = value.get("unpinned")
                 self.unpinned = pending if pending == self.message_id else None
                 old = value.get("old")
-                self.old = old if isinstance(old, int) and self.unpinned is not None else None
+                self.old = old if isinstance(old, int) and old != self.message_id else None
         return self.message_id
 
     def remember(self, message_id: int | None) -> None:
@@ -377,8 +390,11 @@ class Widget:
 
     async def step(self) -> float | None:
         """One tick: collect (outside the lock: a tap is never held behind a collection), then
-        write; how long to sleep before the next one, ``None`` when the engine refused the mode."""
-        await asyncio.shield(self.collection())
+        write; how long to sleep before the next one, ``None`` when the engine refused the mode or
+        the widget is closed. A tick cancelled while it waits leaves the collection to a tap."""
+        await asyncio.wait({self.collection()})
+        if self.closed:
+            return None
         async with self.lock():
             try:
                 message_id = self.current()
@@ -437,33 +453,57 @@ class Widget:
 
     async def pin_pending(self) -> None:
         """The new message's pin, then the old one's unpin, only after the pin holds; a failed
-        pin is tried again on the next tick. A path that cannot pin says so once."""
-        assert self.transport is not None
-        message_id = self.unpinned
-        if message_id is None or message_id != self.message_id:
+        pin is tried again on the next tick, a failed unpin ``UNPIN_TRIES`` times. A path that
+        cannot pin says so once."""
+        message_id = self.message_id
+        if message_id is None:
             return
+        if self.unpinned == message_id and not await self._pin(message_id):
+            return
+        if self.unpinned is None and self.old is not None:
+            await self._unpin_old(message_id, self.old)
+
+    async def _pin(self, message_id: int) -> bool:
+        """True once the pin holds; the old message stays in the state till its unpin."""
+        assert self.transport is not None
         try:
             pinned = await self.transport.pin(self.chat_id, message_id)
         except Exception as exc:
             if outcome(exc) in ("refused", "gone", "wait"):
                 raise
             logger.warning("widget: pin failed: %s; tried again next tick", type(exc).__name__)
-            return
+            return False
         if not pinned:
             if not self._pin_said:
                 self._pin_said = True
                 logger.info("widget: this engine cannot pin; pin message %s by hand", message_id)
             self.unpinned = self.old = None
             self.remember(message_id)
-            return
-        old, self.unpinned, self.old = self.old, None, None
+            return False
+        self.unpinned = None
         self.remember(message_id)
-        if old is None:
-            return
+        return True
+
+    async def _unpin_old(self, message_id: int, old: int) -> None:
+        assert self.transport is not None
         try:
             await self.transport.unpin(self.chat_id, old)
         except Exception as exc:
-            logger.info("widget: old widget not unpinned: %s", type(exc).__name__)
+            kind, self._unpin_tries = outcome(exc), self._unpin_tries + 1
+            if kind in ("failed", "wait") and self._unpin_tries < UNPIN_TRIES:
+                logger.info(
+                    "widget: old widget not unpinned: %s; tried again next tick",
+                    type(exc).__name__,
+                )
+                return
+            if kind != "gone":
+                logger.warning(
+                    "widget: old widget %s left pinned: %s; unpin it by hand",
+                    old,
+                    type(exc).__name__,
+                )
+        self.old, self._unpin_tries = None, 0
+        self.remember(message_id)
 
     async def edit(self, message_id: int, packet: packets.Packet) -> None:
         """The packet; the Cron tab too when it differs from what the message holds."""
@@ -490,7 +530,7 @@ class Widget:
         waits for a collection at most ``REFRESH_WAIT``, answers with the packet and writes it
         unless a tick wrote a newer one meanwhile; a collection still running is written when it
         ends. The Details, a Cron group and a theme are answered at once."""
-        if self.transport is None or self.stopped:
+        if self.transport is None or self.stopped or self.closed:
             return
         try:
             refusal, message_id, kind = self._check(tap)
@@ -504,8 +544,8 @@ class Widget:
         pending = False
         if refusal is None:
             flight = self.collection()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(asyncio.shield(flight), REFRESH_WAIT)
+            # ``wait`` neither cancels the collection on its timeout nor raises its cancellation
+            await asyncio.wait({flight}, timeout=REFRESH_WAIT)
             pending = not flight.done()  # decided before the answer: it may end while it flies
         reply = refusal or self.packet()
         await self._answer(tap.query_id, reply)
@@ -513,11 +553,13 @@ class Widget:
             return
         written: packets.Packet | None = reply
         if pending:
-            await asyncio.shield(flight)
+            await asyncio.wait({flight})
             written = None  # the answer went out with the screen at hand: write a fresh packet
         async with self.lock():
-            if self.current() != message_id or (
-                written is not None and written.get("n") != self.tick
+            if (
+                self.closed
+                or self.current() != message_id
+                or (written is not None and written.get("n") != self.tick)
             ):
                 return
             try:
@@ -530,6 +572,9 @@ class Widget:
         try:
             await self.transport.answer(query_id, packets.encode(reply))
         except Exception as exc:
+            if outcome(exc) == "refused":  # the mode is off till the owner grants it, said once
+                self._after_failure(exc, "answer")
+                return
             logger.warning("widget: answer failed: %s", type(exc).__name__)
 
     async def _answer_now(self, query_id: str, message_id: int | None, kind: str) -> None:
@@ -549,7 +594,7 @@ class Widget:
         if kind == "details" or kind.startswith("cron:") or message_id is None:
             return
         async with self.lock():
-            if self.current() != message_id:
+            if self.closed or self.current() != message_id:
                 return
             try:
                 await self.edit(message_id, reply if reply.get("n") == self.tick else self.packet())
@@ -582,7 +627,7 @@ class Widget:
         """The tick loop on the gateway's event loop: while its registration serves the profile,
         once the path is ready; ended by the engine's refusal, an unload or a takeover."""
         waited = 0.0
-        while serves():
+        while serves() and not self.stopped and not self.closed:
             if not ready():
                 waited += WAIT_READY_SECONDS
                 if waited == WAIT_SAID_SECONDS:

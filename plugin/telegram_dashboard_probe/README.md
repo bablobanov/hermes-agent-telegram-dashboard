@@ -1665,9 +1665,10 @@ there (the verbs have no pin). What each path calls is in the Disclosure.
 
 **The message**: sent once and pinned; another release (new HTML or caption) sends a new one,
 pins it, and unpins the old one only once the pin holds (a failed pin is tried again on the next
-tick). The caption names the version: `Hermes dashboard 1.2.0-beta.1 · widget`. The message id and
-the chosen theme live in the plugin's state beside the topic's record (`widget`, `widget_theme`).
-A message deleted by hand is sent again on the next tick.
+tick; a failed unpin too, three times, then one WARNING leaves it to you). The caption names the
+version: `Hermes dashboard 1.2.0-beta.1 · widget`. The message id and the chosen theme live in the
+plugin's state beside the topic's record (`widget`, `widget_theme`). A message deleted by hand is
+sent again on the next tick.
 
 **Taps**: Refresh (a collection, at most 10 s, then the answer and the edit), Details, a Cron
 group, the theme. Only the owner's taps on the current widget are answered (`forbidden`, `stale`

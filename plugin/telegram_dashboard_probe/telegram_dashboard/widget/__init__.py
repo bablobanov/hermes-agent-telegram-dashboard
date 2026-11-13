@@ -13,6 +13,7 @@ takes at most 4096 bytes of it after zlib).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, tzinfo
@@ -57,6 +58,7 @@ class WidgetMode:
         self.settings = settings
         self.loop: asyncio.AbstractEventLoop | None = None
         self.retired = False
+        self.running = False  # taps reach the widget only while its loop runs
         self.widget = Widget(
             settings,
             getattr(ctx, "state", None),
@@ -86,7 +88,7 @@ class WidgetMode:
         return screen_of(snapshot, parts, now, zone)
 
     def _entry(self) -> Callable[[Tap], Awaitable[None]] | None:
-        return None if self.retired else self.widget.on_tap
+        return self.widget.on_tap if self.running and not self.retired else None
 
     def _hook(self, ctx: Any) -> None:
         register = getattr(ctx, "register_hook", None)
@@ -110,8 +112,11 @@ class WidgetMode:
 
     async def run(self, serves: Callable[[], bool], connected: Callable[[], bool]) -> None:
         """The widget's loop on the gateway loop, while ``serves()``; it ticks once the adapter is
-        ``connected()`` (and, on the private path, its application runs)."""
+        ``connected()`` (and, on the private path, its application runs). However it ends (a
+        takeover cancels it without an unload), the widget is closed and taps no longer reach it:
+        the private path's entry point goes with it when it is still this widget's."""
         self.loop = asyncio.get_running_loop()
+        self.running = True
         if self.path == private_path.NAME:
             private_path.start(self.widget.on_tap)
 
@@ -120,11 +125,23 @@ class WidgetMode:
 
         else:
             ready = connected
-        await self.widget.run(lambda: serves() and not self.retired, ready)
+        try:
+            await self.widget.run(lambda: serves() and not self.retired, ready)
+        finally:
+            self.running = False
+            self.widget.close()
+            if self.path == private_path.NAME:
+                private_path.stop(self.widget.on_tap)
 
     def retire(self) -> None:
-        """The engine unloaded this registration: no more taps for it; the private path takes its
-        update type out (the next registration puts it back)."""
+        """The engine unloaded this registration (on any thread): no more taps or writes for it;
+        the private path takes its update type out (the next registration puts it back); the
+        collection in flight is cancelled on the widget's loop."""
         self.retired = True
+        self.widget.closed = True  # at once; ``close`` on the loop cancels the collection
         if self.path == private_path.NAME:
             private_path.stop(self.widget.on_tap)
+        loop = self.loop
+        if loop is not None:
+            with contextlib.suppress(RuntimeError):  # a closed loop has nothing in flight
+                loop.call_soon_threadsafe(self.widget.close)

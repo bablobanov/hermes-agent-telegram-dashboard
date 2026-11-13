@@ -7,6 +7,8 @@ test_widget_engine.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import logging
 import sys
 import types
@@ -393,13 +395,38 @@ def test_an_engine_without_the_verbs_takes_the_private_path(
     assert "widget_query" not in fake_ptb.update.ALL_TYPES  # a retired registration wires nothing
 
 
-def test_a_retired_registration_answers_no_taps(fake_ptb: types.SimpleNamespace) -> None:
-    ctx = Ctx(Actions())
-    chosen = widget_mode(ctx)
-    hook = ctx.hooks[0][1]
-    assert hook._entry() is not None
-    chosen.retire()
-    assert hook._entry() is None
+def napping(chosen: WidgetMode) -> asyncio.Event:
+    """The widget's loop sleeps after its first tick till the test ends it; set once it sleeps."""
+    asleep = asyncio.Event()
+
+    async def nap(seconds: float) -> None:
+        asleep.set()
+        await asyncio.Event().wait()
+
+    chosen.widget._sleep = nap
+    return asleep
+
+
+def test_taps_reach_the_widget_only_while_its_loop_runs_and_never_after_the_unload(
+    fake_ptb: types.SimpleNamespace,
+) -> None:
+    async def scenario() -> tuple[bool, bool, bool]:
+        ctx = Ctx(Actions())
+        chosen = widget_mode(ctx)
+        hook = ctx.hooks[0][1]
+        before = hook._entry() is None  # no loop yet
+        asleep = napping(chosen)
+        task = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await asleep.wait()
+        running = hook._entry() is not None
+        chosen.retire()
+        retired = hook._entry() is None
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return before, running, retired
+
+    assert run(scenario()) == (True, True, True)
 
 
 def test_the_loop_runs_on_the_gateway_loop_and_takes_the_taps_there(
@@ -409,21 +436,91 @@ def test_the_loop_runs_on_the_gateway_loop_and_takes_the_taps_there(
         actions = Actions()
         ctx = Ctx(actions)
         chosen = widget_mode(ctx)
-        rounds = iter([True, False])
-
-        async def no_wait(seconds: float) -> None:
-            return None
-
-        chosen.widget._sleep = no_wait
-        await chosen.run(lambda: next(rounds), lambda: True)
+        asleep = napping(chosen)
+        task = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await asleep.wait()
         assert chosen.loop is asyncio.get_running_loop()
         hook = ctx.hooks[0][1]
         payload = {"query_id": "9", "chat_id": str(CHAT), "message_id": "654", "data": "details"}
         await asyncio.to_thread(hook, "telegram", "widget_query", payload)
         await asyncio.sleep(0.05)
+        task.cancel()  # a takeover: the loop ends without an unload
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await asyncio.to_thread(hook, "telegram", "widget_query", {**payload, "query_id": "10"})
+        await asyncio.sleep(0.05)
         return [verb for verb, _, _ in actions.calls]
 
     assert run(scenario()) == ["send_widget", "answer_widget_query"]
+
+
+def test_a_takeover_that_cancels_the_private_loop_takes_its_entry_point_out(
+    fake_ptb: types.SimpleNamespace,
+) -> None:
+    async def scenario() -> tuple[object, bool]:
+        chosen = widget_mode(Ctx())
+        app = App()
+        chosen.wire(app)
+        asleep = napping(chosen)
+        task = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await asleep.wait()
+        assert private_path.marker()["entry"] == chosen.widget.on_tap
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return private_path.marker()["entry"], "widget_query" in fake_ptb.update.ALL_TYPES
+
+    assert run(scenario()) == (None, False)
+
+
+def test_the_end_of_an_earlier_private_loop_leaves_a_newer_entry_point(
+    fake_ptb: types.SimpleNamespace,
+) -> None:
+    async def newer(tap: Tap) -> None:
+        return None
+
+    async def scenario() -> tuple[object, bool]:
+        chosen = widget_mode(Ctx())
+        chosen.wire(App())
+        asleep = napping(chosen)
+        task = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await asleep.wait()
+        private_path.start(newer)  # the next registration's loop started first
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return private_path.marker()["entry"], "widget_query" in fake_ptb.update.ALL_TYPES
+
+    assert run(scenario()) == (newer, True)
+
+
+def test_an_unload_cancels_the_collection_in_flight(fake_ptb: types.SimpleNamespace) -> None:
+    async def scenario() -> tuple[bool, list[str]]:
+        actions = Actions()
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def collect() -> View:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return View("normal", "never")
+
+        chosen = WidgetMode(
+            Ctx(actions), WidgetSettings(CHAT), collect=collect, zone=lambda: UTC, version="1"
+        )
+        task = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await started.wait()
+        await asyncio.to_thread(chosen.retire)  # the engine's thread
+        await asyncio.wait_for(cancelled.wait(), 1)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return chosen.widget.closed, [verb for verb, _, _ in actions.calls]
+
+    assert run(scenario()) == (True, [])
 
 
 def test_a_tap_that_fails_past_its_own_handling_is_logged_by_class(
@@ -466,3 +563,29 @@ def test_a_refused_handler_never_stops_the_factory(
     assert "tap handler not added: RuntimeError" in caplog.text
     private_path.wire(app)  # the next factory call tries again
     assert len(app.handlers) == 1
+
+
+def test_a_tap_not_handed_over_closes_its_coroutine() -> None:
+    made: list[Any] = []
+
+    async def handle(tap: Tap) -> None:
+        return None
+
+    def entry(tap: Tap) -> Any:
+        coroutine = handle(tap)
+        made.append(coroutine)
+        return coroutine
+
+    class Closing:
+        """A loop that closes between the hook's check and the handover."""
+
+        def is_closed(self) -> bool:
+            return False
+
+        def call_soon_threadsafe(self, *args: Any) -> None:
+            raise RuntimeError("Event loop is closed")
+
+    hook = public_path.Hook(lambda: entry, lambda: Closing())  # type: ignore[arg-type,return-value]
+    payload = {"query_id": "9", "chat_id": str(CHAT), "message_id": "654", "data": "details"}
+    hook("telegram", "widget_query", payload)
+    assert len(made) == 1 and inspect.getcoroutinestate(made[0]) == inspect.CORO_CLOSED

@@ -374,10 +374,11 @@ def fit_chat(packet: Packet) -> Packet:
 
 def fit_cron(packet: Packet) -> Packet:
     """Over 1024 bytes with every group folded (a long failing list): the failing jobs' notes go,
-    then the groups from the least frequent, then the failing jobs from the end, with ``cut``; at
-    worst only the summary is left."""
+    then the groups from the least frequent, then the failing jobs from the end, each with
+    ``cut``; at worst only the summary is left."""
     for failing in packet.get("a", []):
-        if size(packet) > PACKET_LIMIT:
+        if size(packet) > PACKET_LIMIT and failing[2]:
+            packet["cut"] = 1
             failing[2] = ""
     groups = packet.get("g", [])
     while size(packet) > PACKET_LIMIT and groups:

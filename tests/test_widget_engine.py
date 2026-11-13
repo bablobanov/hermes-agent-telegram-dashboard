@@ -17,6 +17,7 @@ No network: PTB's requests go to a stub; conftest refuses anything off loopback.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import importlib.util
 import inspect
@@ -294,18 +295,23 @@ def test_the_public_path_goes_through_the_engines_verbs_and_event(
     hook = ctx.hooks[0][1]
 
     async def scenario() -> None:
-        rounds = iter([True, False])
+        asleep = asyncio.Event()
 
-        async def no_wait(seconds: float) -> None:
-            return None
+        async def nap(seconds: float) -> None:  # after the first tick, till the test ends it
+            asleep.set()
+            await asyncio.Event().wait()
 
-        chosen.widget._sleep = no_wait
-        await chosen.run(lambda: next(rounds), lambda: True)
+        chosen.widget._sleep = nap
+        loop = asyncio.ensure_future(chosen.run(lambda: True, lambda: True))
+        await asleep.wait()  # taps reach the widget while its loop runs
         event = widgets.normalize_event(query(88))
         await asyncio.to_thread(hook, **event)
         deadline = time.monotonic() + 5
         while "answerWidgetQuery" not in [m for m, _ in bot.calls] and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
+        loop.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop
 
     asyncio.run(scenario())
     methods = [method for method, _ in bot.calls]

@@ -146,9 +146,11 @@ class Hook:
         tap, entry, loop = tap_of(payload), self._entry(), self._loop()
         if tap is None or entry is None or loop is None or loop.is_closed():
             return
+        coroutine = entry(tap)
         try:
-            future = asyncio.run_coroutine_threadsafe(entry(tap), loop)
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
         except RuntimeError as exc:  # the loop closed after the check
+            coroutine.close()  # never awaited: closed here, not warned about by the collector
             logger.info("widget: tap not handed over: %s", type(exc).__name__)
             return
         future.add_done_callback(_said)

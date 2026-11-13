@@ -581,3 +581,117 @@ def test_outcome_reads_only_the_class_and_telegrams_phrases() -> None:
     assert mode.outcome(RuntimeError("something else")) == "failed"
     assert mode.retry_seconds(RetryAfter(9)) == 9.0
     assert mode.retry_seconds(RuntimeError("no number")) == mode.DEFAULT_RETRY_SECONDS
+
+
+# ----------------------------------------------------------------------------- closed, refused, unpinned
+
+
+def newer_release(transport: Transport) -> tuple[Widget, State]:
+    """A widget of another release over a chat that holds the earlier one's message 501."""
+    widget, _, state = make()
+    run(widget.step())
+    state.data[mode.STATE_MESSAGE]["key"] = "an earlier release"
+    transport.next_id = 900
+    newer, _, _ = make(state=state, transport=transport)
+    return newer, state
+
+
+def test_a_closed_widget_cancels_its_collection_and_writes_nothing() -> None:
+    async def scenario() -> tuple[float | None, bool, list[str], int]:
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def collect() -> View:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return screen()
+
+        widget, transport, state = make(source=collect)
+        tick = asyncio.ensure_future(widget.step())
+        await started.wait()
+        widget.close()
+        delay = await tick
+        return delay, cancelled.is_set(), transport.methods(), state.writes
+
+    assert run(scenario()) == (None, True, [], 0)
+
+
+def test_a_refresh_in_flight_at_the_close_is_answered_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mode, "REFRESH_WAIT", 0.01)
+
+    async def scenario() -> tuple[list[str], int]:
+        slow = False
+
+        async def collect() -> View:
+            if slow:
+                await asyncio.Event().wait()
+            return screen()
+
+        widget, transport, state = make(source=collect)
+        await widget.step()
+        transport.calls.clear()
+        writes, slow = state.writes, True
+        tap = asyncio.ensure_future(widget.on_tap(Tap("q", CHAT, CHAT, 501, "refresh")))
+        await asyncio.sleep(0.05)  # answered with the screen at hand; the collection runs on
+        widget.close()
+        await tap  # ends, never raises the collection's cancellation
+        return transport.methods(), state.writes - writes
+
+    assert run(scenario()) == (["answer"], 0)
+
+
+def test_a_refused_answer_stops_the_widget_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    widget, transport, _ = sent_widget()
+    transport.fail["answer"] = lambda: Refused("grant it")
+    run(widget.on_tap(Tap("q", CHAT, CHAT, 501, "details")))
+    run(widget.on_tap(Tap("q2", CHAT, CHAT, 501, "details")))
+    assert widget.stopped and caplog.text.count("grant it") == 1
+    calls = len(transport.calls)
+    rounds = iter([True, True, False])  # a loop that ignored the stop would tick here
+    run(widget.run(lambda: next(rounds), lambda: True))
+    assert len(transport.calls) == calls
+
+
+def test_a_failed_unpin_keeps_the_old_message_and_is_tried_again_after_a_restart() -> None:
+    transport = Transport()
+    transport.fail["unpin"] = lambda: RuntimeError("Bad Request: timed out")
+    newer, state = newer_release(transport)
+    run(newer.step())
+    assert transport.methods() == ["send", "pin", "unpin"]
+    stored = state.data[mode.STATE_MESSAGE]
+    assert stored["message_id"] == 901 and stored["unpinned"] is None and stored["old"] == 501
+    again, transport2, _ = make(state=state)
+    run(again.step())
+    assert transport2.methods() == ["edit", "unpin"]  # no second pin
+    assert transport2.calls[-1][1]["message_id"] == 501
+    assert state.data[mode.STATE_MESSAGE]["old"] is None
+
+
+def test_an_unpin_that_keeps_failing_is_left_to_the_owner_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = Transport()
+    transport.fail["unpin"] = lambda: RuntimeError("Bad Request: not enough rights")
+    newer, state = newer_release(transport)
+    for _ in range(mode.UNPIN_TRIES + 2):
+        run(newer.step())
+    assert transport.methods().count("unpin") == mode.UNPIN_TRIES
+    assert state.data[mode.STATE_MESSAGE]["old"] is None
+    assert caplog.text.count("old widget 501 left pinned") == 1
+
+
+def test_an_old_message_already_gone_needs_no_unpin() -> None:
+    transport = Transport()
+    transport.fail["unpin"] = lambda: RuntimeError("Bad Request: message not found")
+    newer, state = newer_release(transport)
+    run(newer.step())
+    run(newer.step())
+    assert transport.methods().count("unpin") == 1
+    assert state.data[mode.STATE_MESSAGE]["old"] is None

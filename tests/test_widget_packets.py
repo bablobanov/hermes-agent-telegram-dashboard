@@ -436,6 +436,7 @@ def test_a_long_failing_list_loses_its_notes_first():
     assert len(packet["a"]) == 14
     assert any(row[2] == "" for row in packet["a"])
     assert "g" in packet
+    assert packet["cut"] == 1  # a note gone is a cut too
 
 
 def test_a_long_failing_list_drops_groups_with_a_cut_before_its_own_jobs():
