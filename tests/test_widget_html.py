@@ -242,3 +242,10 @@ def test_the_words_of_the_cron_packet_redraw_the_status_and_label_the_tabs_first
     assert "X = P?.x || X; cron(); draw();" in source
     body = source[source.index("function draw() {") :]
     assert body.index("tabs.forEach((b, i) => T(b, X[13 + i]))") < body.index("if (!C) return")
+
+
+def test_the_theme_answer_is_taken_like_a_tick():
+    """The answer is the whole screen in the theme, numbered: taken as a packet, so a palette it
+    leaves out (the chat's own colours) is gone from the screen too (bench, 13.11)."""
+    assert "ask(b, 'theme:' + C.nx, (r) => (take(r), draw()))" in SOURCE
+    assert "Object.assign(C" not in SOURCE

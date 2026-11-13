@@ -1679,7 +1679,7 @@ minutes (or the settings' longer interval), on top of the topic's own asking: wi
 each external source gets one more call every 15 minutes and the facade one more per provider.
 
 **The bytes**: Telegram takes at most 4096 bytes of the HTML after zlib level 9. The sent HTML is
-4036 (zlib 1.3) and 4043 (zlib-ng, the engine's Python 3.14): the margin is about 60 bytes, the
+4029 (zlib 1.3) and 4034 (zlib-ng, the engine's Python 3.14): the margin is about 65 bytes, the
 owner's decision of 13.11 for a preview after which the Telegram screen pauses; a test holds 50.
 The interface's words ride in the Cron packet to save HTML bytes. The packets on every demo state:
 Status up to 758 bytes, Cron up to 769, Details up to 724, none cut.

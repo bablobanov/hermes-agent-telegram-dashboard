@@ -185,8 +185,9 @@ function draw() {
     + (C.cut ? CUT() : '');
   fit();
 }
-// The theme button asks for the next theme (the bot names it); the answer's colours are drawn at once.
-$('ps').onclick = (e) => { const b = e.target; if (b.id == 'th' && W && C) ask(b, 'theme:' + C.nx, (r) => { Object.assign(C, r); draw(); }); };
+// The theme button asks for the next theme (the bot names it); the answer is the whole screen in it, numbered, taken
+// like a tick's (a palette left out is the chat's own colours again), then drawn: the button is never left on "Sending…".
+$('ps').onclick = (e) => { const b = e.target; if (b.id == 'th' && W && C) ask(b, 'theme:' + C.nx, (r) => (take(r), draw())); };
 // A group: its header (the bot's words; in Cron a count and, folded, its soonest run) and its body of lines, open
 // (o) when the bot opened it or a tap did. Paused and Done are groups of names with their day.
 const rows = (r) => M(r, (y) => div('tr', E(y[0]) + (y[1] ? '<span>' + E(y[1]) + '</span>' : '')));
