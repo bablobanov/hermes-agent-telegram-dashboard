@@ -984,9 +984,12 @@ class ProbeRuntime:
         self.task = self._spawn(self.run(), TASK_NAME)
         if self.widget is not None and not _alive(self.widget_task):
             connected: Callable[[], bool] = lambda: self.live_adapter() is not None  # noqa: E731
-            self.widget_task = self._spawn(
-                self.widget.run(self._still_serves, connected), WIDGET_TASK_NAME
-            )
+            loop = self.widget.run(self._still_serves, connected)
+            try:
+                self.widget_task = self._spawn(loop, WIDGET_TASK_NAME)
+            except Exception as exc:  # the topic's loop runs and the registry must say so
+                loop.close()
+                logger.warning("probe: widget loop not started: %s", type(exc).__name__)
         self._publish()
 
     def _spawn(self, loop: Awaitable[None], name: str) -> Any:

@@ -281,6 +281,18 @@ def test_a_pending_pin_outlives_a_restart() -> None:
     assert transport2.methods() == ["edit", "pin"]
 
 
+def test_flood_control_on_the_pin_waits_and_the_pin_stays_pending() -> None:
+    transport = Transport()
+    transport.fail["pin"] = lambda: RetryAfter(17)
+    widget, _, state = make(transport=transport)
+    assert run(widget.step()) == 17.0
+    assert state.data[mode.STATE_MESSAGE]["unpinned"] == 501
+    del transport.fail["pin"]
+    run(widget.step())
+    assert transport.methods()[-2:] == ["edit", "pin"]
+    assert state.data[mode.STATE_MESSAGE]["unpinned"] is None
+
+
 def test_a_path_that_cannot_pin_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO)
     widget, transport, state = make(transport=Transport(can_pin=False))
@@ -329,7 +341,8 @@ def test_a_refused_capability_stops_the_loop_with_one_warning(
         sleeps.append(seconds)
 
     widget._sleep = sleep
-    run(widget.run(lambda: True, lambda: True))  # returns: the loop ends by itself
+    rounds = iter([True, True, True, False])  # a loop that would go on ends here, not hangs
+    run(widget.run(lambda: next(rounds), lambda: True))
     assert transport.methods() == ["send"] and sleeps == []
     assert caplog.text.count("grant it") == 1
     assert widget.stopped
@@ -454,12 +467,37 @@ def test_a_theme_is_kept_answered_with_its_colours_and_written() -> None:
     run(widget.on_tap(Tap("q1", CHAT, CHAT, 501, "theme:neon")))
     assert transport.methods() == ["answer", "edit"]
     reply = answers(transport)[0]
-    assert reply == {"th": "neon", "pl": packets.palette("neon"), "nx": packets.next_theme("neon")}
-    assert json.loads(transport.calls[1][1]["chat_data"])["th"] == "neon"
+    assert (reply["th"], reply["pl"], reply["nx"]) == (
+        "neon",
+        packets.palette("neon"),
+        packets.next_theme("neon"),
+    )
+    written = json.loads(transport.calls[1][1]["chat_data"])
+    assert written == reply  # the answer is the screen the message gets, numbered
     assert state.data[mode.STATE_THEME] == {"name": "neon", "default": "telegram"}
     again, transport2, _ = make(state=state)
     run(again.step())
     assert json.loads(transport2.calls[0][1]["chat_data"])["th"] == "neon"
+
+
+def test_a_tick_built_before_a_theme_choice_is_older_than_the_answer() -> None:
+    widget, transport, _ = sent_widget()
+    before = widget.packet()  # a tick's packet, built under the old theme
+    run(widget.on_tap(Tap("q1", CHAT, CHAT, 501, "theme:neon")))
+    reply = answers(transport)[0]
+    assert before["th"] == "telegram" and reply["n"] > before["n"]  # the widget keeps the newer
+
+
+def test_waiting_for_the_path_is_said_once_after_a_minute(caplog: pytest.LogCaptureFixture) -> None:
+    widget, _, _ = make()
+    rounds = iter([True] * 130 + [False])
+
+    async def sleep(seconds: float) -> None:
+        return None
+
+    widget._sleep = sleep
+    run(widget.run(lambda: next(rounds), lambda: False))
+    assert caplog.text.count("still waiting for Telegram to connect") == 1
 
 
 def test_a_new_default_theme_in_the_settings_wins_over_an_old_choice() -> None:

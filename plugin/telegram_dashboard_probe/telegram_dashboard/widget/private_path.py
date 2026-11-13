@@ -176,10 +176,12 @@ def start(entry: Entry) -> None:
 
 
 def stop(entry: Entry | None = None) -> None:
-    """At the unload: the entry point off (only this registration's) and the type with it."""
+    """At the unload: the entry point off and the type with it, only when the entry is this
+    registration's (one widget per gateway process on this path: the README says so)."""
     found = marker()
-    if entry is None or found["entry"] == entry:
-        found["entry"] = None
+    if entry is not None and found["entry"] not in (None, entry):
+        return  # a newer registration's entry: its type stays with it
+    found["entry"] = None
     if found["added"]:
         drop_update_type()
         found["added"] = False

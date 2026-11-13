@@ -54,8 +54,12 @@ UI_WORDS = (
     "Details",
     "Theme: ",
 )
-# What goes first when the Status packet is over the limit: the least important block first.
-DROP_ORDER = ("work", "unchecked", "hermes", "works", "note", "attention")
+# What goes when the Status packet is over the limit, the least important first: the palette (the
+# chat's own colours stay), these blocks' lines, the limit cards from the end, and last what needs
+# attention (review 13.11: a screen that says Critical keeps its reason). A block left with its
+# title alone goes too.
+DROP_ORDER = ("work", "unchecked", "hermes", "works")
+LAST_ORDER = ("note", "attention")
 TITLES = {
     "limits": "Limits",
     "telegram": "Telegram",
@@ -337,26 +341,34 @@ def _block(packet: Packet, key: str) -> list[str]:
     return found
 
 
+def _tidy(packet: Packet) -> None:
+    """Off: a block with no lines, or with its title alone."""
+    packet["m"] = [
+        [key, lines]
+        for key, lines in packet["m"]
+        if any(not line.startswith("## ") for line in lines)
+    ]
+
+
 def fit_chat(packet: Packet) -> Packet:
     if size(packet) <= PACKET_LIMIT:
         return packet
     packet["cut"] = 1
     packet["m"] = [[key, [clip(line) for line in lines]] for key, lines in packet["m"]]
-    for key in DROP_ORDER:  # lines go from the end; a card's title stays past the limits
-        lines = _block(packet, key)
-        keep = 1 if key in ("attention", "unchecked") else 0
-        while size(packet) > PACKET_LIMIT and len(lines) > keep:
-            lines.pop()
-    packet["m"] = [[key, lines] for key, lines in packet["m"] if lines]
-    while size(packet) > PACKET_LIMIT and packet["q"]:
-        packet["q"].pop()
-    for _key, lines in packet["m"]:
-        while size(packet) > PACKET_LIMIT and lines:
-            lines.pop()
-    packet["m"] = [[key, lines] for key, lines in packet["m"] if lines]
+    if size(packet) > PACKET_LIMIT:
+        packet.pop("pl", None)
+    for order in (DROP_ORDER, None, LAST_ORDER):
+        if order is None:  # the limit cards, from the end
+            while size(packet) > PACKET_LIMIT and packet["q"]:
+                packet["q"].pop()
+            continue
+        for key in order:  # lines go from the end
+            lines = _block(packet, key)
+            while size(packet) > PACKET_LIMIT and lines:
+                lines.pop()
+            _tidy(packet)
     if size(packet) > PACKET_LIMIT:  # only a headline beyond any screen is left
         packet["h"], packet["m"], packet["q"] = clip(str(packet["h"]), HEADLINE_LIMIT), [], []
-        packet.pop("pl", None)
     return packet
 
 

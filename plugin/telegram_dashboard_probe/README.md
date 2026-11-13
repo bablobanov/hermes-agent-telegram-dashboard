@@ -1674,11 +1674,12 @@ group, the theme. Only the owner's taps on the current widget are answered (`for
 otherwise).
 
 **Its collections**: the topic's collector with workers and caches of the widget's own, in
-memory; the external limit sources and the usage facade are asked at most every 15 minutes (or
-the settings' longer interval), so the widget does not double the topic's calls.
+memory. The external limit sources and the usage facade are asked for the widget at most every 15
+minutes (or the settings' longer interval), on top of the topic's own asking: with the defaults
+each external source gets one more call every 15 minutes and the facade one more per provider.
 
 **The bytes**: Telegram takes at most 4096 bytes of the HTML after zlib level 9. The sent HTML is
-4033 (zlib 1.3) and 4040 (zlib-ng, the engine's Python 3.14): the margin is about 60 bytes, the
+4036 (zlib 1.3) and 4043 (zlib-ng, the engine's Python 3.14): the margin is about 60 bytes, the
 owner's decision of 13.11 for a preview after which the Telegram screen pauses; a test holds 50.
 The interface's words ride in the Cron packet to save HTML bytes. The packets on every demo state:
 Status up to 758 bytes, Cron up to 769, Details up to 724, none cut.
@@ -1695,6 +1696,11 @@ Known limits:
   eye
 - the engine's widget verbs (NousResearch/hermes-agent#152186) were not merged when this preview
   was made; the public path is tested against that branch
+
+- on the private path one widget per gateway process: with the widget on in two profiles of a
+  multiplexing gateway the taps reach one of them only
+- after turning it on, restart the gateway: a plugin reload cannot hand the private path the
+  Telegram client before the next reconnect (the journal says so after a minute)
 
 Turn it off with `widget.enabled: false` (or remove `widget`) and restart the gateway; the old
 message stays, delete it by hand.

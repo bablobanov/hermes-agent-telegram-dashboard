@@ -147,6 +147,17 @@ class Hook:
         if tap is None or entry is None or loop is None or loop.is_closed():
             return
         try:
-            asyncio.run_coroutine_threadsafe(entry(tap), loop)
+            future = asyncio.run_coroutine_threadsafe(entry(tap), loop)
         except RuntimeError as exc:  # the loop closed after the check
             logger.info("widget: tap not handed over: %s", type(exc).__name__)
+            return
+        future.add_done_callback(_said)
+
+
+def _said(future: Any) -> None:
+    """A tap that failed past its own handling: its class in the journal, never its text."""
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("widget: tap failed: %s", type(exc).__name__)

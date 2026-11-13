@@ -163,6 +163,8 @@ function fit(a) {
   s.visibility = '';
 }
 function draw() {
+  T($('go'), X[0]);
+  tabs.forEach((b, i) => T(b, X[13 + i]));
   if (!C) return T($('hl'), 'No data yet');
   // The bot's custom properties (a palette), or the chat's own colours.
   const p = dark() && C.pl, B = Object.fromEntries(C.m || []), d = C.dk;
@@ -170,8 +172,6 @@ function draw() {
   Y.style.cssText = p || '';
   $('hd').className = 'top ' + C.st;
   T($('hl'), C.h);
-  T($('go'), X[0]);
-  tabs.forEach((b, i) => T(b, X[13 + i]));
   // The bot's clock words; the day too when the collection is not of today (a widget left behind shows it).
   T($('ht'), (new Date(C.t).toDateString() == new Date().toDateString() ? '' : C.d + ' ') + C.w + X[7] + C.n);
   // The checks that work above what needs attention; Not checked a card under it (2A, 11.11); a card per
@@ -261,7 +261,7 @@ $('go').onclick = () => {
 };
 if (W) {
   W.onEvent('chatDataChanged', () => take(J(W.chatData)));
-  W.onEvent('publicDataChanged', () => { P = J(W.publicData); X = P?.x || X; cron(); });
+  W.onEvent('publicDataChanged', () => { P = J(W.publicData); X = P?.x || X; cron(); draw(); });
   W.onEvent('themeChanged', draw);
 }
 // Every tab drawn, then one fit of the three (the drawings before it do not measure).

@@ -49,6 +49,7 @@ STATE_THEME = "widget_theme"
 SETTLE_SECONDS = 180.0  # the process's first minutes, while the gateway comes up
 SETTLE_DELAY = 20.0
 WAIT_READY_SECONDS = 1.0
+WAIT_SAID_SECONDS = 60.0  # waiting this long for the path is said once in the journal
 DEFAULT_RETRY_SECONDS = 5.0
 LOST_PHRASES = ("message to edit not found", "message_id_invalid", "message not found")
 WAIT_PHRASES = ("retry after", "retry in", "too many requests", "flood control")
@@ -533,17 +534,17 @@ class Widget:
 
     async def _answer_now(self, query_id: str, message_id: int | None, kind: str) -> None:
         """``details`` and ``cron:…`` from the last collection, nothing written; ``theme:<name>``
-        kept, answered with the colours (empty for the chat's own) and the next theme, then
-        written into the message for every device."""
+        kept, answered with the screen in it, then written into the message for every device."""
         view = self.view or unavailable("")
         if kind == "details":
             reply: packets.Packet = packets.details_packet(view)
         elif kind.startswith("cron:"):
             reply = packets.cron_answer(view, kind[5:])
         else:
-            name = kind.partition(":")[2]
-            self.choose(name)
-            reply = {"th": name, "pl": packets.palette(name) or "", "nx": packets.next_theme(name)}
+            # The whole screen in the new theme, numbered: a tick's packet built before the choice,
+            # landing after the answer, is older than it and the widget keeps the answer.
+            self.choose(kind.partition(":")[2])
+            reply = self.packet()
         await self._answer(query_id, reply)
         if kind == "details" or kind.startswith("cron:") or message_id is None:
             return
@@ -551,7 +552,7 @@ class Widget:
             if self.current() != message_id:
                 return
             try:
-                await self.edit(message_id, self.packet())
+                await self.edit(message_id, reply if reply.get("n") == self.tick else self.packet())
             except Exception as exc:
                 self._after_failure(exc, "theme edit")
 
@@ -580,8 +581,15 @@ class Widget:
     async def run(self, serves: Callable[[], bool], ready: Callable[[], bool]) -> None:
         """The tick loop on the gateway's event loop: while its registration serves the profile,
         once the path is ready; ended by the engine's refusal, an unload or a takeover."""
+        waited = 0.0
         while serves():
             if not ready():
+                waited += WAIT_READY_SECONDS
+                if waited == WAIT_SAID_SECONDS:
+                    logger.warning(
+                        "widget: still waiting for Telegram to connect; turned on by a reload, it "
+                        "starts after the next reconnect or a restart of the gateway"
+                    )
                 await self._sleep(WAIT_READY_SECONDS)
                 continue
             try:

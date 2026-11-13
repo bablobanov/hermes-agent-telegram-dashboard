@@ -236,20 +236,37 @@ def test_unchecked_follows_work_and_keeps_its_title_line():
     assert got["attention"] == blocks["attention"]
 
 
-def test_a_title_only_card_stays_even_when_all_its_points_go():
+def test_a_card_left_with_its_title_alone_goes():
     blocks = {
         "attention": ["## Needs attention", *lines_of(20, size=110, tag="a")],
         "unchecked": ["## Not checked", *lines_of(20, size=110, tag="u")],
     }
     fitted = pk.fit_chat(a_packet(**blocks))
     got = dict(fitted["m"])
-    assert got["unchecked"][0] == "## Not checked"
-    assert got["attention"][0] == "## Needs attention"
+    assert "unchecked" not in got  # its points went before any of the attention's
+    assert got["attention"][0] == "## Needs attention" and len(got["attention"]) > 1
+    assert all(any(not line.startswith("## ") for line in lines) for lines in got.values())
+    assert pk.size(fitted) <= LIMIT
+
+
+def test_the_palette_and_the_limit_cards_go_before_what_needs_attention():
+    """Review 13.11: a critical screen keeps its reason; the chat's own colours and fewer limit
+    cards are the cheaper loss."""
+    packet = pk.chat_packet(1, AT, a_view(blocks=()), theme="neon")
+    attention = ["## Needs attention", *lines_of(4, size=60, tag="a")]
+    packet["m"] = [["attention", attention]]
+    card = ["Provider", [[[["Week", 50, 0]], "resets in 5d"]], "Week · resets in 5d"]
+    packet["q"] = [[f"{card[0]} {i}", *card[1:]] for i in range(12)]
+    assert pk.size(packet) > LIMIT
+    fitted = pk.fit_chat(packet)
+    assert dict(fitted["m"])["attention"] == attention
+    assert "pl" not in fitted and 0 < len(fitted["q"]) < 12
     assert pk.size(fitted) <= LIMIT
 
 
 def test_blocks_go_in_the_drop_order_the_least_important_first():
-    assert pk.DROP_ORDER == ("work", "unchecked", "hermes", "works", "note", "attention")
+    assert pk.DROP_ORDER == ("work", "unchecked", "hermes", "works")
+    assert pk.LAST_ORDER == ("note", "attention")
     blocks = {
         "attention": ["## Needs attention", "keep me"],
         "note": ["a note"],
@@ -608,3 +625,16 @@ def test_the_ember_attention_card_is_warm_amber_not_olive():
     ember = pk.PALETTES["ember"]
     assert oklch(pk.colours("ember")["alw"])[2] < 80
     assert oklch(pk.mix(ember["warn"], ember["card"], 0.2))[2] > 90
+
+
+def test_tidy_drops_a_block_with_no_lines_or_its_title_alone():
+    packet = {
+        "m": [
+            ["unchecked", ["## Not checked"]],
+            ["works", []],
+            ["attention", ["## Needs attention", "Max: rules outdated"]],
+            ["hermes", ["🤖 Hermes 0.23.1"]],
+        ]
+    }
+    pk._tidy(packet)
+    assert [key for key, _ in packet["m"]] == ["attention", "hermes"]

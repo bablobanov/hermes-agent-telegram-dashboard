@@ -138,17 +138,45 @@ def test_a_takeover_ends_the_earlier_registrations_widget_loop(tmp_path: Path) -
 
     async def scenario() -> None:
         first.wire(app, FakeAdapter())
-        await until(lambda: first.widget_task is not None)
+        # The earlier widget sent its message and sleeps its period: only a cancel ends it now.
+        await until(lambda: "pin_chat_message" in [name for name, _ in app.bot.calls])
         entry = sys.modules[LIVE_MODULE].profiles[first.key]
         assert entry["widget_task"] is first.widget_task
         second = plugin.register(ctx)  # no unload in between: the takeover alone
         await until(lambda: second.widget_task is not None and first.widget_task.done())
+        assert first.widget_task.cancelled()  # by the takeover, not by its own next round
         assert tasks(WIDGET_TASK_NAME) == [second.widget_task]
+        await until(lambda: first.task.done())  # the topic's loop, cancelled mid-collection
         assert tasks(TASK_NAME) == [second.task]
         second.task.cancel()
         second.widget_task.cancel()
 
     asyncio.run(scenario())
+
+
+def test_a_widget_loop_the_engine_refuses_leaves_the_topic_and_the_registry(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    plugin = load_plugin()
+
+    class Refusing(FakeContext):
+        def spawn_task(self, coro: Any, name: str | None = None) -> asyncio.Task[None]:
+            if name == WIDGET_TASK_NAME:
+                raise RuntimeError("no more tasks")
+            return super().spawn_task(coro, name)
+
+    ctx = Refusing(settings(tmp_path, enabled=True, chat_id=OWNER))
+    runtime = plugin.register(ctx)
+
+    async def scenario() -> None:
+        runtime.wire(App(), FakeAdapter())
+        await asyncio.sleep(0.02)
+        assert runtime.task is not None and runtime.widget_task is None
+        assert sys.modules[LIVE_MODULE].profiles[runtime.key]["task"] is runtime.task
+        runtime.task.cancel()
+
+    asyncio.run(scenario())
+    assert "widget loop not started: RuntimeError" in caplog.text
 
 
 def test_the_unload_retires_the_widget(tmp_path: Path) -> None:
@@ -211,3 +239,16 @@ def test_a_longer_limits_interval_in_the_settings_is_kept(
     monkeypatch.setattr(runtime.dashboard.collect, "collect_all_async", collect_all_async)
     asyncio.run(runtime.widget_view())
     assert seen[0]["external_interval_seconds"] == 3600
+    shorter = plugin.register(
+        FakeContext(
+            {
+                **settings(tmp_path, enabled=True, chat_id=OWNER),
+                "limits_refresh_seconds": 120,
+                "facade_refresh_seconds": 120,
+            }
+        )
+    )
+    monkeypatch.setattr(shorter.dashboard.collect, "collect_all_async", collect_all_async)
+    asyncio.run(shorter.widget_view())
+    assert seen[1]["external_interval_seconds"] == plugin.WIDGET_REFRESH_FLOOR_SECONDS
+    assert seen[1]["facade_interval_seconds"] == plugin.WIDGET_REFRESH_FLOOR_SECONDS

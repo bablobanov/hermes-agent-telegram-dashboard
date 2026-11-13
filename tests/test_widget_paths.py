@@ -211,11 +211,12 @@ def test_an_unload_takes_off_only_its_own_entry_and_the_type(
     private_path.start(new)
     private_path.stop(old)  # an earlier registration's unload, late
     assert private_path.marker()["entry"] is new
+    assert "widget_query" in fake_ptb.update.ALL_TYPES  # the newer one still needs it
+    private_path.stop(new)
+    assert private_path.marker()["entry"] is None
     assert "widget_query" not in fake_ptb.update.ALL_TYPES
     private_path.start(new)
     assert "widget_query" in fake_ptb.update.ALL_TYPES
-    private_path.stop(new)
-    assert private_path.marker()["entry"] is None
 
 
 def test_the_private_calls_go_through_the_applications_bot(fake_ptb: types.SimpleNamespace) -> None:
@@ -423,6 +424,24 @@ def test_the_loop_runs_on_the_gateway_loop_and_takes_the_taps_there(
         return [verb for verb, _, _ in actions.calls]
 
     assert run(scenario()) == ["send_widget", "answer_widget_query"]
+
+
+def test_a_tap_that_fails_past_its_own_handling_is_logged_by_class(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        async def entry(tap: Tap) -> None:
+            raise KeyError("a detail that must not reach the journal")
+
+        loop = asyncio.get_running_loop()
+        hook = public_path.Hook(lambda: entry, lambda: loop)
+        payload = {"query_id": "9", "chat_id": str(CHAT), "message_id": "41", "data": "details"}
+        await asyncio.to_thread(hook, "telegram", "widget_query", payload)
+        await asyncio.sleep(0.05)
+
+    run(scenario())
+    assert "widget: tap failed: KeyError" in caplog.text
+    assert "must not reach" not in caplog.text
 
 
 def test_a_hook_the_engine_refuses_leaves_the_ticks(caplog: pytest.LogCaptureFixture) -> None:

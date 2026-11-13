@@ -233,3 +233,12 @@ def test_minify_handles_the_style_and_the_script_and_joins_the_tags():
 
 def test_minify_leaves_the_markup_text_between_tags_alone():
     assert htmlmin.minify("<p>a  b</p>") == "<p>a  b</p>"
+
+
+def test_the_words_of_the_cron_packet_redraw_the_status_and_label_the_tabs_first():
+    """Review 13.11: the interface's words come with publicData; the Status tab and the tabs are
+    labelled again when it changes, and the tabs before a missing chatData returns."""
+    source = SOURCE
+    assert "X = P?.x || X; cron(); draw();" in source
+    body = source[source.index("function draw() {") :]
+    assert body.index("tabs.forEach((b, i) => T(b, X[13 + i]))") < body.index("if (!C) return")
