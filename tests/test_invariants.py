@@ -37,7 +37,8 @@ CRON_ONLY_MODULES = ("__main__", "telegram_api", "delivery")
 
 
 def _plugin_sources() -> list[tuple[Path, str]]:
-    files = [ENTRY, *sorted(PACKAGE.glob("*.py"))]
+    # The widget mode's subpackage too (1.2.0-beta.1): it runs in the gateway like the rest.
+    files = [ENTRY, *sorted(PACKAGE.rglob("*.py"))]
     return [(path, path.read_text(encoding="utf-8")) for path in files]
 
 

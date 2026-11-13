@@ -13,6 +13,11 @@ Read-only status dashboard for [Hermes Agent](https://github.com/NousResearch/he
 pinned Telegram message, edited in place by a plugin inside the gateway. No Mini App, no LLM call,
 nothing to press: the pinned bar shows the status line every time the chat is opened.
 
+**Preview, 1.2.0-beta.1 (outside the catalog):** the same screen as one pinned Telegram HTML
+widget in your private chat with the bot, with tabs for Status, Cron and Details, a Refresh button
+and a theme button, beside the message in the topic. Off unless you turn it on; see "The widget
+(preview, 1.2.0-beta.1)" in the plugin's README.
+
 **The full documentation is the plugin's own README:
 [`plugin/telegram_dashboard_probe/README.md`](plugin/telegram_dashboard_probe/README.md).** It says
 how every line is read, what the plugin reads, writes and sends (its Disclosure section), the
