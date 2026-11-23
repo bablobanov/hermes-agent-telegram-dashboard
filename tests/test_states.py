@@ -731,10 +731,11 @@ def test_the_healthy_showcase_with_its_rules_loaded_keeps_its_fifteen_lines() ->
 def test_the_details_read_by_source_with_a_blank_line_between() -> None:
     """Ilya, 09.10: the details were one run of lines. A blank line now parts the sources, in
     the order of the rich form's Details (1.0.0): the plans with the logins and the Gemini
-    refusals, the rules, the memory, Telegram, backup with drift and cron, the Hermes version,
-    then the reasons for "no data" (none here since #14: Gemini without a refusal has no line),
-    the screen itself and the dashboard's own version; a source with nothing to say leaves no
-    blank line of its own."""
+    refusals, the rules, the memory, Telegram, backup with drift, the Hermes version, then the
+    reasons for "no data" (none here since #14: Gemini without a refusal has no line), the
+    screen itself and the dashboard's own version; a source with nothing to say leaves no blank
+    line of its own. 1.1.2: cron's lines left the backup group for the cron quote before
+    Details."""
     from dataclasses import replace
 
     from telegram_dashboard.schema import PlatformRules, RulesSummary
@@ -765,7 +766,10 @@ def test_the_details_read_by_source_with_a_blank_line_between() -> None:
         "Screen",
         "Dashboard",
     ]
-    assert [len(group) for group in groups[1:5]] == [1, 4, 2, 4]
+    assert [len(group) for group in groups[1:5]] == [1, 4, 2, 3]
+    cron = lines.index("> Cron 27 active · 3 paused · ticker 20:58")
+    assert lines.index("> ## 🕒 Cron · 27\u00a0active · 3\u00a0paused · 2\u00a0done") < cron
+    assert cron < lines.index("> ## Details")
     # State 1 has neither Telegram, nor rules, nor memory, nor plans; no state doubles a blank
     # line, opens the block with one or closes it with one.
     for each in STATES:
@@ -813,7 +817,10 @@ def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
         footer = lines.index("> Screen Sep 26 21:00 UTC")
 
         assert len(text) <= TELEGRAM_TEXT_LIMIT
+        # 1.1.2: 55 failures leave no room for a job beside Details, so there is no cron quote
+        # and cron's lines stay in Details, cut at its end as in 1.1.1 (review of 1.1.2).
         assert to_telegram_html(text).count("<blockquote") == 1, (name, length)
+        assert not any(line.startswith("> ## 🕒 Cron") for line in lines), (name, length)
         assert lines[footer - 1 :] == [
             ">",
             "> Screen Sep 26 21:00 UTC",

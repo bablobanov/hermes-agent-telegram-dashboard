@@ -82,12 +82,31 @@ Claude 42% (2h10m) · 67% (3d)           time to its reset of every window, in t
                                         upstream release; 🆕 and its age for a day
                                         after a release came out
 
+🕒 CRON · 27 ACTIVE · 3 PAUSED · 2 DONE  the cron jobs, a collapsed quote in HTML,
+EVERY 15 MIN                            in full in plain text: a line per
+uptime-ping · 21:15                     frequency, the most frequent first, then
+EVERY 30 MIN                            the paused and the done; a job's name,
+inbox-triage · 21:12                    then its next run (the time today, the
+…                                       weekday within a week, else the day)
+⏸ PAUSED
+threads-deliver · Sep 19                a paused or a done job: its day only
+…
+✅ DONE
+once-reminder · Sep 26
+once-migration · Sep 20
+
+Cron 27 active · 3 paused · ticker 20:58
+A paused job does not fire: its date is the one set before the pause.
+                                        cron's lines under the list: the counts
+                                        and the ticker, every failure, the notes
+                                        the list calls for
+
 DETAILS                                 a collapsed quote in HTML, in full in plain
                                         text: a group per source, a blank line
                                         between two (the plans, logins, providers
                                         not configured and Gemini refusals; the
                                         agent's rules; its memory; the Telegram
-                                        channel; backup, drift, the disk and cron;
+                                        channel; backup, drift and the disk;
                                         the Hermes version; every "no data" with
                                         its reason)
 Gemini refusals seen by Hermes: none
@@ -99,7 +118,6 @@ Telegram send errors: none in the log
 ✓ Drift 0 of 481 · checked 08:00
 Disk: 61 GB free of 80                  the partition HERMES_HOME lies on; under
                                         10% of it or 2 GB, ⚠️ here and an event
-Cron 27 active · 3 paused · ticker 20:58
 
 Hermes 0.21.3 of Sep 14, latest 0.21.5 of Sep 24
 2 releases behind · checked Sep 26 21:00
@@ -131,11 +149,11 @@ Cron ⚠️ 1 of 27 failing                 is not well, even one an event alrea
 ```
 
 The limits are a line per provider that has one (`⚠️ Codex 93% (1h20m) · 58% (5d)`,
-`Claude · no data` with its reason in the details). The cron lines sit in the details with backup,
-drift and the disk, and no table of the jobs is drawn: the rich view of 1.1.0 had one ("Rich view: retired
-in 1.1.1" under "The plugin"). In HTML the top line and the headings are bold and the details are
-one collapsed quote; in plain text the headings are upper case and the details are shown in full.
-Both forms come from the same snapshot.
+`Claude · no data` with its reason in the details). The cron jobs are a list of their own before
+the details (1.1.2, "The cron list" under "The cron line"): the rich view of 1.1.0 drew them as a
+table ("Rich view: retired in 1.1.1" under "The plugin"). In HTML the top line and the headings are
+bold, and the cron list and the details are two collapsed quotes; in plain text the headings are
+upper case and both are shown in full. Both forms come from the same snapshot.
 
 The dashboard is one pinned message in the agent's private chat or in a topic of its
 group. The plugin inside the gateway edits it in place every few minutes through the engine's
@@ -645,10 +663,10 @@ in a private chat the number may name one of the new bot's own messages, which t
 overwrites.
 
 **One view, two forms.** The screen is built from blocks (`render_parts`) of one snapshot, as
-text: HTML when the adapter has a verb for it (bold headings, the details in one
-`<blockquote expandable>`), else plain (upper-case headings, the details in full); the limits are
-a line per provider, the cron lines sit in the details with backup and drift, and no job table is
-drawn. The rich view of 0.12.0 to 1.1.0 is retired (below). The top line is bold in the HTML form
+text: HTML when the adapter has a verb for it (bold headings, the cron list and the details in a
+`<blockquote expandable>` each), else plain (upper-case headings, both in full); the limits are a
+line per provider, the cron jobs a line each by how often they run (1.1.2, "The cron list"). The
+rich view of 0.12.0 to 1.1.0 is retired (below). The top line is bold in the HTML form
 and carries its time as `<tg-time unix="…" format="r">Sep 26 21:00 UTC</tg-time>`: Telegram shows "18 minutes
 ago" where the client supports it (Telegram Desktop) and the words inside otherwise (Android), so
 the words are the full date with the zone; the plain form writes them as they are.
@@ -757,7 +775,7 @@ Deploying on a gateway (Hermes 0.22.2 or newer, the floor above):
    | `rich` | `HERMES_DASHBOARD_PROBE_RICH` | does nothing since 1.1.1: the rich view is retired ("Rich view: retired in 1.1.1" under "The plugin"). Set to `1`/`true`/`yes`/`on`, it is named once in the journal at start; the screen is HTML or plain either way |
    | `memory` | `HERMES_DASHBOARD_PROBE_MEMORY` | default on; `0`/`false`/`no`/`off` turns the memory section off, no event and no details lines (the details then say `Memory: off in the dashboard settings`); see "The memory section" |
    | `widget` | (config only, a mapping) | the widget mode, a preview (1.2.0-beta.1, outside the catalog): off unless `enabled: true`; `chat_id` the owner's user id (widgets live in private chats; not a user id, no widget, said once), `period_seconds` default 300 (60..3600), `theme` `telegram`, `midnight`, `ember`, `mono` or `neon` (default `telegram`; a palette is for Telegram's dark theme); see "The widget (preview, 1.2.0-beta.1)" |
-   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name under "Needs attention" and in the details (and in the cron table of the rich view, retired in 1.1.1). Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
+   | `cron_notes` | (config only, a mapping) | job id → label, the owner's name for a cron job: the label replaces the job's name under "Needs attention", in the cron list and in cron's lines under it (and in the cron table of the rich view, retired in 1.1.1). Sanitized like a name (a secret, a path or a chat id typed into it is masked) and whole up to 80 characters; an entry whose id or label is not a non-empty string is skipped, anything but a mapping is ignored with a warning; the fallback tick reads the same mapping from its JSON config; see "The cron line" |
 
    `cron_notes` takes the job's `id` from `cron/jobs.json`; quote an id YAML would read as a
    number:
@@ -835,7 +853,8 @@ Cron ⚠️ ticks failing 2 h           the ticker beats, but every tick ends in
                                     no cron directory, or no jobs.json, on this installation
 ```
 
-The counts open the cron lines of the details: `Cron 27 active · 3 paused · ticker 20:58`, the
+The counts open cron's lines under the cron list (in the details when there is no list, below):
+`Cron 27 active · 3 paused · ticker 20:58`, the
 active jobs (enabled and without a pause marker: scheduled or running; or enabled and parked in
 error), the paused ones and the ticker's last heartbeat.
 
@@ -896,9 +915,10 @@ first.
 
 Severity: a failed run, an undelivered result, a blocked or an overdue job is a warning; a dead
 ticker, or one whose every tick fails, is critical, because nothing scheduled runs. At most
-three cron events on the screen; the line carries the full count; the details name every job
-with its time, its streak and the kind of its error. An event names the job by its label in
-full, as the details do (and the cron table of the rich view did): whole up to 80 characters, a long one wraps on the
+three cron events on the screen; the line carries the full count; cron's lines under the list
+name every job with its time, its streak and the kind of its error. An event names the job by its
+label in full, as the list does (and the cron table of the rich view did): whole up to 80
+characters, a long one wraps on the
 phone (accepted on 23.10). The thresholds are the engine's own: 200 s
 for the heartbeat (three ticks plus slack), 15 minutes for an overdue job. The layered order of
 the checks (ticker alive, record consistent, run recorded, delivery confirmed) follows
@@ -921,35 +941,49 @@ expression (a job shown as "every monday 6am" runs `0 6 * * 1`; `cron_frequency.
 - anything else is `Other`: a step that does not divide its cycle (`*/45` fires at :00 and
   :45), another shape, a malformed or a missing schedule
 
-**The cron fold of the rich screen** (1.0.0 to 1.1.0; retired with the rich view in 1.1.1, its
-renderer kept in `rich.py` for the release that sends it again) comes collapsed after the main
-screen, titled with the counts (`🕒 Cron · 27 active · 3 paused · 2 done`; `done` only when a job completed). It
-opens with the cron lines of the details (the counts and the ticker, every failure), then one
-table in the look of the limits table:
+**The cron list** (1.1.2) comes after the Hermes version line, before the details, in a quote of
+its own that Telegram shows collapsed, titled with the counts (`🕒 Cron · 27 active · 3 paused · 2
+done`; `done` only when a job completed); the plain form shows it in full. The order is the one the
+cron table of the rich screen had (1.0.0 to 1.1.0, retired with the rich view in 1.1.1, its
+renderer kept in `rich.py` for the release that sends it again); the look is the owner's pick from
+a probe on Telegram for Android and Desktop (23.11): a line per job and no table, since a table
+wider than the phone ran off its edge:
 
-- a shaded header row per frequency, ordered from the most frequent by the minutes between two
-  runs (`Once` first, as a one-shot has no second run; `Other` last; one period with two
-  labels, `Every 12 h` and `Twice a day`, by the label), and under it the active jobs of that
-  frequency, what fails now first, then by the next run. Under `Other` a job's schedule follows its name in the
-  engine's own words, set in `<code>` up to 24 characters (`*/30 9-17 * * 1-5`), since the header
-  does not say how often it runs
-- `⏸ Paused` and the paused jobs by their next run, then `✅ Done` and the completed ones, the
+- a bold line per frequency in capitals, ordered from the most frequent by the minutes between two
+  runs (`ONCE` first, as a one-shot has no second run; `OTHER` last; one period with two labels,
+  `Every 12 h` and `Twice a day`, by the label), and under it the active jobs of that frequency,
+  what fails now first, then by the next run. Under `OTHER` a job's schedule follows its name in
+  the engine's own words, up to 24 characters (`stock-alert · */30 9-17 * * 1-5 · Mon 09:00`),
+  since the line above does not say how often it runs
+- `⏸ PAUSED` and the paused jobs by their next run, then `✅ DONE` and the completed ones, the
   latest run first
-- the date right-aligned in one short form: an active job's next run as the time on the
-  screen's day (`21:15`), the weekday and the time within the week ahead (`Sun 02:00`), else the
-  day (`Oct 3`); a paused job's next run and a done job's last run as the day (`Sep 19`); `—`
-  when there is none to read
-- ⚠️ before a job that fails now (a failed or undelivered run, a blocked job) or is overdue, and
-  a line under the table that says what the mark means
+- a job's name, then its date in one short form: an active job's next run as the time on the
+  screen's day (`uptime-ping · 21:15`), the weekday and the time within the week ahead
+  (`Sun 02:00`), else the day (`Oct 3`); a paused job's next run and a done job's last run as the
+  day (`Sep 19`); `—` when there is none to read. In HTML the date is `<code>`, and no-break
+  spaces hold it to the last word of the name: a long name wraps, the date never stands alone
+- ⚠️ before a job that fails now (a failed or undelivered run, a blocked job) or is overdue
 
-A paused job whose next run is already behind keeps that date, and one line under the table
-says why that is no alarm: a paused job does not fire, its date is the one set before the pause
-(decision of 22.10: a mark, never a failure; the line and the status do not change). A job is
-named by its label from `cron_notes`, else by its name; both pass the shared sanitizer and are
-whole up to 80 characters, a schedule up to 24, and a word where Telegram would find a mention,
-a hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>`. A long list is cut
-with how many are left out (`… 5 more`; 60 active, 30 paused, 20 done). The HTML and plain forms
-draw no job table: their details carry the cron lines with backup and drift.
+Under the list, after a blank line, come cron's lines (the counts and the ticker, every failure
+with its time, its streak and the kind of its error), then a line that says what the mark means
+when a job shown carries it. A paused job whose next run is already behind keeps that date, and
+one more line says why that is no alarm: a paused job does not fire, its date is the one set
+before the pause (decision of 22.10: a mark, never a failure; the line and the status do not
+change). A job is named by its label from `cron_notes`, else by its name; both pass the shared
+sanitizer and are whole up to 80 characters, a schedule up to 24, and a word where Telegram would
+find a mention, a hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes to `<code>`; a name
+that starts with `#` is a name, never a heading. The list takes what the screen leaves under
+Telegram's limit after the main screen and the details: a long one is cut with how many jobs are
+left out (`… 5 more`), never after a frequency's line with no job under it, and the details stay
+whole; the list is fitted in UTF-16 units, as Telegram counts a message. When not one job fits
+beside the details (a long run of failures under the list), there is no quote: cron's lines go
+back into the details and are cut at their end, as before 1.1.2. With no list to show (no jobs,
+the jobs file unread, no cron on this installation) there is no quote either, and cron's line
+stays in the details.
+
+The rich screen's fold (1.0.0 to 1.1.0) drew the same rows as one table in the look of the limits
+table, a shaded header row per frequency and the date right-aligned, cut at 60 active, 30 paused
+and 20 done jobs.
 
 ### Connected but deaf: the Telegram line
 
