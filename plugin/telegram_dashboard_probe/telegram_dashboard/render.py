@@ -280,12 +280,12 @@ class _Details:
             current.key = key
             current.joined = current.joined and joined
 
-    def text_groups(self) -> list[list[str]]:
+    def text_groups(self, *, unfold: bool = False) -> list[list[str]]:
         """The groups as the text form separates them: a joined one stays in the one before, a
-        folded one is not here."""
+        folded one is not here unless ``unfold`` (its quote did not fit, ``render_dashboard``)."""
         merged: list[list[str]] = []
         for group in self.groups:
-            if group.folded:
+            if group.folded and not unfold:
                 continue
             if group.joined and merged:
                 merged[-1] = [*merged[-1], *group.lines]
@@ -299,9 +299,9 @@ class _Details:
         parts = (self.screen, self.confirmed, self.data, self.period, self.coverage)
         return [part for part in parts if part]
 
-    def lines(self) -> list[str]:
+    def lines(self, *, unfold: bool = False) -> list[str]:
         groups = [
-            *self.text_groups(),
+            *self.text_groups(unfold=unfold),
             ["## No data", *self.missing] if self.missing else [],
             self.stamps(),
             [self.version] if self.version else [],
@@ -416,11 +416,13 @@ def render_dashboard(
         snapshot, now=now, delivery=delivery, period_seconds=period_seconds, zone=zone
     )
     details = parts.details
-    tail = details.lines()
     # The cron quote between the main screen and Details (1.1.2), its list cut to what the rest
-    # of the screen leaves, so Details stays whole.
-    used = len("\n".join([*parts.lines, *tail]))
-    text = "\n".join([*parts.lines, *_fitted_fold(parts.cron, used), *tail])
+    # of the screen leaves, so Details stays whole. When not one job fits beside it (a long run
+    # of failures under the list), there is no quote: cron's lines go back into Details and the
+    # cut below works as it did in 1.1.1, never above the heading of Details (review of 1.1.2).
+    used = _units("\n".join([*parts.lines, *details.lines()]))
+    fold = _fitted_fold(parts.cron, used)
+    text = "\n".join([*parts.lines, *fold, *details.lines(unfold=not fold)])
     # The screen's stamps and the version close the details (0.9.2, 1.0.0): a cut takes the
     # lines before them, never them.
     closing = details.closing()
@@ -875,21 +877,43 @@ def _schedule_cell(job: CronJob) -> str | None:
 
 def _fitted_fold(fold: CronFold | None, used: int) -> list[str]:
     """The cron quote's lines, its list cut so the screen keeps to ``_SAFE_LIMIT`` beside the
-    ``used`` characters of the rest: whole when it fits, else the most rows that fit and
-    ``… N more`` for the jobs left out, a frequency's line never left without a job under it.
-    When nothing fits, the title, the line of the left out and cron's lines: the screen's own
-    cut takes the end of Details then, never its stamps (``render_dashboard``)."""
+    ``used`` units of the rest: whole when it fits, else the most rows that fit and ``… N more``
+    for the jobs left out, a frequency's line never left without a job under it; nothing, and no
+    quote, when not one job fits (``render_dashboard``). Counted in UTF-16 units, as Telegram
+    counts a message. A row only adds to the length, so the count is found by halves: a list of
+    thousands of jobs costs a few renders of it, not one per job (review of 1.1.2)."""
     if fold is None:
         return []
+    whole = _fold_lines(fold, fold.rows, 0)
+    if used + _units("\n".join(whole)) + 1 <= _SAFE_LIMIT:
+        return whole
     jobs = sum(row.job for row in fold.rows)
-    for count in range(len(fold.rows), -1, -1):
-        kept = list(fold.rows[:count])
-        while kept and not kept[-1].job:
-            kept.pop()
+    low, high = 0, len(fold.rows) - 1  # the most rows that fit; 0 when none does
+    while low < high:
+        middle = (low + high + 1) // 2
+        kept = _kept_rows(fold.rows, middle)
         lines = _fold_lines(fold, kept, jobs - sum(row.job for row in kept))
-        if used + len("\n".join(lines)) + 1 <= _SAFE_LIMIT:
-            break
-    return lines
+        if used + _units("\n".join(lines)) + 1 <= _SAFE_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    kept = _kept_rows(fold.rows, low)
+    if not any(row.job for row in kept):
+        return []
+    return _fold_lines(fold, kept, jobs - sum(row.job for row in kept))
+
+
+def _kept_rows(rows: Sequence[CronRow], count: int) -> list[CronRow]:
+    """The first ``count`` rows, less a frequency's line left at the end with no job under it."""
+    kept = list(rows[:count])
+    while kept and not kept[-1].job:
+        kept.pop()
+    return kept
+
+
+def _units(text: str) -> int:
+    """The length Telegram counts: UTF-16 code units, two for a character past the BMP."""
+    return len(text.encode("utf-16-le")) // 2
 
 
 def _fold_lines(fold: CronFold, rows: Sequence[CronRow], left_out: int) -> list[str]:
