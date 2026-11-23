@@ -6,6 +6,7 @@ incidents, then the line of everything that is not well), one row of what works 
 ✓ Telegram ✓ Backup ✓ Drift ✓ Cron``), one line of what could not be checked, one line per
 provider under "🧠 Limits used" with the time to every reset (plus a line for every model's own
 limit), the Hermes version line after them,
+the cron jobs by how often they run in a block of their own that Telegram shows collapsed (1.1.2),
 and everything that explains a line (ages, counts, reasons, per-source stamps, coverage) in a
 details block that Telegram shows collapsed.
 Nothing is dropped, only moved: a line without a number still names its reason, in the
@@ -13,9 +14,10 @@ details. Work and automation blocks render only when the snapshot carries them; 
 the block is not observed on this installation and nothing is invented for it.
 
 The text is transport-neutral: ``## `` marks a bold line, ``#@`` the top line, ``> `` a details
-line, a blank line parts two blocks, and ``to_telegram_html``/``to_telegram_plain`` turn it into
-what a transport accepts. The rich form (``rich.py``) is built from the same parts
-(``render_parts``), the blocks and the details kept by key.
+line (a run of them one quote: the cron jobs, then Details), a blank line parts two blocks, and
+``to_telegram_html``/``to_telegram_plain`` turn it into what a transport accepts. The rich form
+(``rich.py``) is built from the same parts (``render_parts``), the blocks and the details kept by
+key.
 """
 
 from __future__ import annotations
@@ -24,9 +26,10 @@ import html
 import math
 import re
 import unicodedata
-from collections.abc import Sequence, Set
+from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
+from itertools import groupby
 from typing import Literal
 
 from . import __version__
@@ -34,6 +37,7 @@ from .backup import STALE_SECONDS as BACKUP_STALE_SECONDS
 from .backup import STALE_WORDS as BACKUP_STALE_WORDS
 from .backup import describe_age
 from .context_files import platform_label
+from .cron_frequency import OTHER
 from .cron_jobs import NAME_LIMIT as CRON_NAME_LIMIT
 from .disk import space_words
 from .freshness import DeliveryRecord, classify_message_freshness, message_banner
@@ -42,6 +46,7 @@ from .policy import sanitize_public_text
 from .schema import (
     BackupSummary,
     CronFailure,
+    CronJob,
     CronSummary,
     DashboardSnapshot,
     DiskSummary,
@@ -66,6 +71,7 @@ from .timeparse import (
     format_day,
     format_day_time,
     format_in_zone,
+    format_short,
     format_stamp,
     is_from_the_future,
     parse_timestamp,
@@ -132,6 +138,20 @@ _LOGIN_EXPIRED = "login expired"
 # One-minute resolution on the screen: a stamp within a minute of the data time is the same.
 _STAMP_SLACK_SECONDS = 60.0
 _DETAILS_PREFIX = "> "
+# The cron jobs as a quote of their own before Details (1.1.2, look C of the probe of 23.11, the
+# owner's pick on Android): a bold line per frequency, the most frequent first, then the paused
+# and the done; a row per job, its name, then its next run. The no-break spaces around the dot
+# keep the run with the last word of the name when a long name wraps, and mark the row in the
+# neutral text: every part after one is ``<code>`` in the HTML form (``_job_html``). A sanitized
+# name never holds one (``sanitize_public_text`` folds every space), and no other line does.
+CRON_TITLE = "🕒 Cron"
+_RUN_JOINT = "\u00a0·\u00a0"
+_CRON_PAUSED_HEADER = "⏸ Paused"
+_CRON_DONE_HEADER = "✅ Done"
+CRON_FAILURE_NOTE = f"{WARN_MARK} before a job: its last run failed or it is overdue"
+CRON_PAUSED_NOTE = "A paused job does not fire: its date is the one set before the pause."
+# A cron state without a list: its reason stays in Details, as before 1.1.2.
+_CRON_UNREAD = ("unknown", "unsupported")
 
 _STATUS_LABELS = {
     "normal": "🟢 Healthy",
@@ -213,11 +233,13 @@ def _plural(count: int, one: str, many: str) -> str:
 @dataclass
 class _Group:
     """One source's lines in the details, under the key the rich form titles it by. ``joined``:
-    the text form keeps it in the group before it, with no blank line between them."""
+    the text form keeps it in the group before it, with no blank line between them. ``folded``:
+    the text form carries it in a quote of its own (1.1.2: cron, beside its list), not here."""
 
     key: str
     lines: list[str] = field(default_factory=list)
     joined: bool = False
+    folded: bool = False
 
 
 @dataclass
@@ -237,7 +259,8 @@ class _Details:
     version: str | None = None
     # A blank line between the sources (Ilya, 09.10, 0.11.0), in the order of the rich form's
     # Details (1.0.0): the plans, logins and refusals; the rules; the memory; Telegram; backup,
-    # drift, the disk (1.1.1) and cron; the Hermes version. A source writes into the last group.
+    # drift, the disk (1.1.1) and cron (in the cron quote instead, 1.1.2, when it has a list);
+    # the Hermes version. A source writes into the last group.
     groups: list[_Group] = field(default_factory=lambda: [_Group("limits")])
     missing: list[str] = field(default_factory=list)
 
@@ -257,10 +280,13 @@ class _Details:
             current.key = key
             current.joined = current.joined and joined
 
-    def text_groups(self) -> list[list[str]]:
-        """The groups as the text form separates them: a joined one stays in the one before."""
+    def text_groups(self, *, unfold: bool = False) -> list[list[str]]:
+        """The groups as the text form separates them: a joined one stays in the one before, a
+        folded one is not here unless ``unfold`` (its quote did not fit, ``render_dashboard``)."""
         merged: list[list[str]] = []
         for group in self.groups:
+            if group.folded and not unfold:
+                continue
             if group.joined and merged:
                 merged[-1] = [*merged[-1], *group.lines]
             else:
@@ -273,9 +299,9 @@ class _Details:
         parts = (self.screen, self.confirmed, self.data, self.period, self.coverage)
         return [part for part in parts if part]
 
-    def lines(self) -> list[str]:
+    def lines(self, *, unfold: bool = False) -> list[str]:
         groups = [
-            *self.text_groups(),
+            *self.text_groups(unfold=unfold),
             ["## No data", *self.missing] if self.missing else [],
             self.stamps(),
             [self.version] if self.version else [],
@@ -319,14 +345,37 @@ class ScreenBlock:
 
 
 @dataclass(frozen=True)
+class CronRow:
+    """A row of the cron quote (1.1.2): a frequency's bold line, or a job (``job``), with the
+    failure mark before its name (``marked``) or paused past its date (``past_due``): the notes
+    under the list are read off the rows kept, never off a second cut of it."""
+
+    line: str
+    job: bool = False
+    marked: bool = False
+    past_due: bool = False
+
+
+@dataclass(frozen=True)
+class CronFold:
+    """The cron quote before a cut (1.1.2): its title with the counts, the rows of the list, and
+    the cron group's details lines (the counts with the ticker, every failure) under them."""
+
+    title: str
+    rows: tuple[CronRow, ...]
+    tail: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ScreenParts:
     """One screen before a transport form: the main screen's blocks in order (``## `` a bold
     line, ``#@`` the top line) and the details by source. ``reference`` is the time the ages are
-    counted to."""
+    counted to. ``cron``: the cron quote of the text form (1.1.2), ``None`` without a list."""
 
     blocks: tuple[ScreenBlock, ...]
     details: _Details
     reference: datetime | None
+    cron: CronFold | None = None
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -367,7 +416,13 @@ def render_dashboard(
         snapshot, now=now, delivery=delivery, period_seconds=period_seconds, zone=zone
     )
     details = parts.details
-    text = "\n".join([*parts.lines, *details.lines()])
+    # The cron quote between the main screen and Details (1.1.2), its list cut to what the rest
+    # of the screen leaves, so Details stays whole. When not one job fits beside it (a long run
+    # of failures under the list), there is no quote: cron's lines go back into Details and the
+    # cut below works as it did in 1.1.1 (review of 1.1.2).
+    used = _units("\n".join([*parts.lines, *details.lines()]))
+    fold = _fitted_fold(parts.cron, used)
+    text = "\n".join([*parts.lines, *fold, *details.lines(unfold=not fold)])
     # The screen's stamps and the version close the details (0.9.2, 1.0.0): a cut takes the
     # lines before them, never them.
     closing = details.closing()
@@ -403,6 +458,8 @@ def render_parts(
     limits = _limits_block(snapshot, reference, details, zone)
     _agent_in_details(snapshot, zone, details)
     items = _items(snapshot, reference, zone, details)
+    # Cron's group is the last one now (``_items``): its lines move into the cron quote.
+    cron = _cron_fold(snapshot.cron, details.groups[-1], reference, zone)
     details.section("hermes")
     hermes: tuple[str, ...] = ()
     if snapshot.version is not None:
@@ -418,7 +475,7 @@ def render_parts(
         ScreenBlock("hermes", hermes),
         ScreenBlock("work", _work_lines(snapshot.work)),
     )
-    return ScreenParts(tuple(block for block in blocks if block.lines), details, reference)
+    return ScreenParts(tuple(block for block in blocks if block.lines), details, reference, cron)
 
 
 def _dashboard_banner(banner: str) -> str:
@@ -511,7 +568,8 @@ def _items(
 ) -> list[_Item]:
     """Gateway, Telegram, backup, drift and cron in the order of the ✓ row; a summary that is
     absent adds nothing. Their times, ages and counts go to the details: Telegram's group, then
-    one with backup, drift and the disk (1.1.1, no item of the row), then cron's."""
+    one with backup, drift and the disk (1.1.1, no item of the row), then cron's (the cron
+    quote's lines when it has a list, 1.1.2)."""
     unchecked = _unchecked_sources(snapshot)
     details.section("telegram")
     items = _gateway_items(snapshot.gateway, snapshot.traffic, unchecked)
@@ -738,6 +796,139 @@ def _streak_words(streak: int | None) -> str:
     if streak is None:
         return "streak unknown"
     return "1 run" if streak == 1 else f"{streak} in a row"
+
+
+# ----------------------------------------------------------------------------- the cron quote
+
+
+def _cron_fold(
+    cron: CronSummary | None, group: _Group, reference: datetime | None, zone: tzinfo
+) -> CronFold | None:
+    """The jobs as a list in a quote of their own (1.1.2), cron's details lines under it and no
+    longer in Details; ``None``, and the lines stay in Details, when there is no list to show:
+    no cron summary, a state without data, no jobs."""
+    if cron is None or cron.state in _CRON_UNREAD or not cron.jobs or group.key != "cron":
+        return None
+    group.folded = True
+    active = sorted(
+        (job for job in cron.jobs if job.state == "active"),
+        # ``Once`` first and ``Other`` last; one period with two labels by the label. Stable:
+        # inside a group the summary's order stays, what fails now first (as the rich table).
+        key=lambda job: (job.frequency.period, job.frequency.label),
+    )
+    paused = [job for job in cron.jobs if job.state == "paused"]
+    done = [job for job in cron.jobs if job.state == "done"]
+    rows = _active_rows(active, reference, zone)
+    rows += _set_rows(_CRON_PAUSED_HEADER, paused, lambda job: job.next_run_at, zone)
+    rows += _set_rows(_CRON_DONE_HEADER, done, lambda job: job.last_run_at, zone)
+    return CronFold(_cron_title(cron), tuple(rows), tuple(group.lines))
+
+
+def _cron_title(cron: CronSummary) -> str:
+    """``🕒 Cron · 27 active · 3 paused · 2 done``, the done only when there are any; a no-break
+    space holds each number to its word, so a narrow screen wraps between two counts."""
+    done = sum(job.state == "done" for job in cron.jobs)
+    counts = [(cron.active or 0, "active"), (cron.paused or 0, "paused")]
+    if done:
+        counts.append((done, "done"))
+    return " · ".join([CRON_TITLE, *(f"{count}{_ROW_SPACE}{word}" for count, word in counts)])
+
+
+def _active_rows(
+    jobs: Sequence[CronJob], reference: datetime | None, zone: tzinfo
+) -> list[CronRow]:
+    """A bold line per frequency, in capitals, and its jobs with their next run in the short
+    form; an ``Other`` job names its schedule as well, since its line does not say how often."""
+    rows: list[CronRow] = []
+    for frequency, group in groupby(jobs, key=lambda job: job.frequency):
+        rows.append(CronRow(f"## {frequency.label.upper()}"))
+        for job in group:
+            schedule = _schedule_cell(job) if frequency == OTHER else None
+            rows.append(_job_row(job, format_short(job.next_run_at, reference, zone), schedule))
+    return rows
+
+
+def _set_rows(
+    header: str, jobs: Sequence[CronJob], stamp: Callable[[CronJob], str | None], zone: tzinfo
+) -> list[CronRow]:
+    """The paused or the done jobs under their bold line, each with the day of ``stamp`` only."""
+    if not jobs:
+        return []
+    return [
+        CronRow(f"## {header.upper()}"),
+        *(_job_row(job, format_day(stamp(job), zone)) for job in jobs),
+    ]
+
+
+def _job_row(job: CronJob, date: str | None, schedule: str | None = None) -> CronRow:
+    """``⚠️ name · Sat 22:59``: the job's label in full, marked when it fails now, then its
+    date, ``—`` unread."""
+    name = sanitize_public_text(job.label, limit=CRON_NAME_LIMIT)
+    marked = job.failure is not None
+    cells = [f"{WARN_MARK} {name}" if marked else name, *([schedule] if schedule else [])]
+    line = _RUN_JOINT.join([*cells, date or "—"])
+    return CronRow(line, job=True, marked=marked, past_due=job.paused_past_due)
+
+
+def _schedule_cell(job: CronJob) -> str | None:
+    """The schedule in the engine's words, up to 24 characters; ``None`` without one."""
+    return sanitize_public_text(job.schedule, limit=24) if job.schedule else None
+
+
+def _fitted_fold(fold: CronFold | None, used: int) -> list[str]:
+    """The cron quote's lines, its list cut so the screen keeps to ``_SAFE_LIMIT`` beside the
+    ``used`` units of the rest: whole when it fits, else the most rows that fit and ``… N more``
+    for the jobs left out, a frequency's line never left without a job under it; nothing, and no
+    quote, when not one job fits (``render_dashboard``). Counted in UTF-16 units, as Telegram
+    counts a message. A row only adds to the length, so the count is found by halves: a list of
+    thousands of jobs costs a few renders of it, not one per job (review of 1.1.2)."""
+    if fold is None:
+        return []
+    whole = _fold_lines(fold, fold.rows, 0)
+    if used + _units("\n".join(whole)) + 1 <= _SAFE_LIMIT:
+        return whole
+    jobs = sum(row.job for row in fold.rows)
+    low, high = 0, len(fold.rows) - 1  # the most rows that fit; 0 when none does
+    while low < high:
+        middle = (low + high + 1) // 2
+        kept = _kept_rows(fold.rows, middle)
+        lines = _fold_lines(fold, kept, jobs - sum(row.job for row in kept))
+        if used + _units("\n".join(lines)) + 1 <= _SAFE_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    kept = _kept_rows(fold.rows, low)
+    if not any(row.job for row in kept):
+        return []
+    return _fold_lines(fold, kept, jobs - sum(row.job for row in kept))
+
+
+def _kept_rows(rows: Sequence[CronRow], count: int) -> list[CronRow]:
+    """The first ``count`` rows, less a frequency's line left at the end with no job under it."""
+    kept = list(rows[:count])
+    while kept and not kept[-1].job:
+        kept.pop()
+    return kept
+
+
+def _units(text: str) -> int:
+    """The length Telegram counts: UTF-16 code units, two for a character past the BMP."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _fold_lines(fold: CronFold, rows: Sequence[CronRow], left_out: int) -> list[str]:
+    """The quote in the neutral text: a blank line before it, the bold title, the rows, the line
+    of the left out, then a blank line and cron's lines with the notes the kept rows call for."""
+    body = [f"## {fold.title}", *(row.line for row in rows)]
+    if left_out > 0:
+        body.append(f"… {left_out} more")
+    notes = []
+    if any(row.marked for row in rows):
+        notes.append(CRON_FAILURE_NOTE)
+    if any(row.past_due for row in rows):
+        notes.append(CRON_PAUSED_NOTE)
+    under = [*fold.tail, *notes]
+    return ["", *(_quoted(line) for line in [*body, *([""] if under else []), *under])]
 
 
 def _rules_in_details(rules: RulesSummary, zone: tzinfo, details: _Details) -> None:
@@ -1452,7 +1643,9 @@ def to_telegram_plain(text: str) -> str:
     for line in text.split("\n"):
         _, content = _split_details(line)
         top = _TOP_LINE.fullmatch(content)
-        if top is not None:
+        if _RUN_JOINT in content:
+            out.append(content)  # a job of the cron quote: ``#weekly`` is its name, no heading
+        elif top is not None:
             out.append(top.group(2) + _UPDATED + top.group(3))
         elif content.startswith("#"):
             out.append(content.lstrip("#").strip().upper())
@@ -1465,7 +1658,8 @@ def to_telegram_html(text: str) -> str:
     """Escape for ``parse_mode=HTML``: headings become bold lines, the top line too with its
     stamp a ``<tg-time>`` (``_top_html``), a run of details lines becomes one ``<blockquote
     expandable>``, which Telegram shows collapsed, and a file name or a ``/command`` becomes
-    ``<code>`` (``_code_spans``)."""
+    ``<code>`` (``_code_spans``). Two quotes in a row (1.1.2: cron, then Details) are parted by
+    their own frames: the blank line between them is not drawn."""
     out: list[str] = []
     quote: list[str] = []
 
@@ -1474,24 +1668,43 @@ def to_telegram_html(text: str) -> str:
             out.append("<blockquote expandable>" + "\n".join(quote) + "</blockquote>")
             quote.clear()
 
-    for line in text.split("\n"):
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
         is_details, content = _split_details(line)
         if is_details:
             quote.append(_html_line(content))
-        else:
-            flush()
+            continue
+        between = bool(quote) and not content and _opens_quote(lines, index + 1)
+        flush()
+        if not between:
             out.append(_html_line(content))
     flush()
     return "\n".join(out)
 
 
+def _opens_quote(lines: Sequence[str], index: int) -> bool:
+    """Whether the line at ``index`` is a details line; past the end it is not."""
+    return index < len(lines) and _split_details(lines[index])[0]
+
+
 def _html_line(line: str) -> str:
+    if _RUN_JOINT in line:
+        return _job_html(line)
     top = _TOP_LINE.fullmatch(line)
     if top is not None:
         return _top_html(top)
     if line.startswith("#"):
         return f"<b>{_code_spans(html.escape(line.lstrip('#').lstrip()))}</b>"
     return _code_spans(html.escape(line))
+
+
+def _job_html(line: str) -> str:
+    """A job of the cron quote (1.1.2): its name escaped and coded as every word, never a
+    heading (a ``#weekly`` job is a name), every part after a no-break joint in ``<code>``: the
+    next run, and the schedule of an ``Other`` job before it."""
+    name, *cells = line.split(_RUN_JOINT)
+    coded = (f"<code>{html.escape(cell)}</code>" for cell in cells)
+    return _RUN_JOINT.join([_code_spans(html.escape(name)), *coded])
 
 
 def _top_html(top: re.Match[str]) -> str:

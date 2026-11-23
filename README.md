@@ -27,18 +27,21 @@ settings, compatibility and the tests. The catalog page shows the same file.
 - the account limits of each provider with the time to every reset (Claude and Codex through the
   Hermes usage facade, others from a local source of your own)
 - the Hermes version the gateway runs against the latest upstream release
+- folded, the cron jobs by how often they run, each with its next run, the ticker and every
+  failing job (1.1.2)
 - folded, the details: whether the agent sees its rules, whether its memory keeps what it
-  writes, the cron counts, the ticker and every failing job, the free space on the disk
-  `HERMES_HOME` lies on (an event when it runs low), the reasons and the times
+  writes, the free space on the disk `HERMES_HOME` lies on (an event when it runs low), the
+  reasons and the times
 
 ## Screenshots
 
 Demo data, rendered by the plugin's own code at 1.1.1 and sent to a test topic; Telegram for Android,
 the details open on Telegram Desktop. The time in the top line is a Telegram time entity: each client
-writes it itself, in its own language (Russian here). 1.1.0 also drew the limits as a table and the
-cron jobs in a section of their own (the rich view): it sent that through a private call of the
-engine's Telegram adapter, which the catalog review asked to remove, and it comes back once Hermes
-has a public way to send a pre-built rich message
+writes it itself, in its own language (Russian here). 1.1.2 adds the cron jobs as a folded list of
+their own before the details; these screens are of 1.1.1, without it. 1.1.0 drew the limits and the
+cron jobs as tables (the rich view): it sent that through a private call of the engine's Telegram
+adapter, which the catalog review asked to remove, and it comes back once Hermes has a public way
+to send a pre-built rich message
 ([NousResearch/hermes-agent#151881](https://github.com/NousResearch/hermes-agent/issues/151881)).
 
 | | | |
