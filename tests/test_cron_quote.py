@@ -187,3 +187,50 @@ def test_the_notes_follow_the_rows_kept() -> None:
 
     assert f"> {CRON_FAILURE_NOTE}" not in lines and f"> {CRON_PAUSED_NOTE}" not in lines
     assert lines[lines.index("> ## ONCE") - 1] == f"> ## 🕒 Cron · 2{NB}active · 0{NB}paused"
+
+
+def test_a_long_run_of_failures_leaves_no_quote_and_details_whole_as_in_1_1_1() -> None:
+    """Review of 1.1.2: every job failing, each named in 80 characters. Cron's lines under the
+    list left no room for a job, and the cut ate Details up to its heading, its stamps glued to
+    the cron quote. Not one job fits now: no quote, cron's lines in Details, cut at its end."""
+    names = [f"{i:02d} " + "n" * 77 for i in range(30)]
+    jobs = tuple(
+        CronJob(
+            f"j{i}", name, "active", None, "2026-09-25T08:00:00Z", None, "run", frequency=EVERY_15
+        )
+        for i, name in enumerate(names)
+    )
+    failing = tuple(
+        CronFailure(f"j{i}", name, "run", at="2026-09-25T07:05:00Z", streak=3, reason="auth")
+        for i, name in enumerate(names)
+    )
+    cron = replace(CRON, jobs=jobs, active=30, paused=0, failing=failing)
+    text = render_dashboard(_snapshot(cron), now=NOW)
+    lines = text.splitlines()
+
+    assert len(text) <= 3900
+    assert not any(line.startswith("> ## 🕒 Cron") for line in lines)
+    assert lines.index("> Cron 30 active · 0 paused · ticker 07:19") > lines.index("> ## Details")
+    assert lines[-1] == f"> Dashboard {__version__}"
+    assert to_telegram_html(text).count("<blockquote expandable>") == 1
+
+
+def test_the_list_is_measured_as_telegram_counts_it() -> None:
+    """A character past the BMP is two UTF-16 units to Telegram: names full of emoji still keep
+    the screen within the limit."""
+    jobs = tuple(
+        CronJob(
+            f"j{i}",
+            f"🚀🚀🚀 job {i:03d} 🛰🛰🛰",
+            "active",
+            None,
+            "2026-09-25T08:00:00Z",
+            frequency=EVERY_15,
+        )
+        for i in range(300)
+    )
+    cron = replace(CRON, jobs=jobs, state="ok", active=300, paused=0, failing=())
+    text = render_dashboard(_snapshot(cron), now=NOW)
+
+    assert len(text.encode("utf-16-le")) // 2 <= 3900
+    assert any(line.startswith("> 🚀🚀🚀 job") for line in text.splitlines())

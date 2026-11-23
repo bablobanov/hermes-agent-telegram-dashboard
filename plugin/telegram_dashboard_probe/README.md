@@ -952,8 +952,11 @@ find a mention, a hashtag or a cashtag (`@ops`, `report-#weekly`, `$BTC`) goes t
 that starts with `#` is a name, never a heading. The list takes what the screen leaves under
 Telegram's limit after the main screen and the details: a long one is cut with how many jobs are
 left out (`… 5 more`), never after a frequency's line with no job under it, and the details stay
-whole unless they do not fit on their own (then their end is cut, as before). With no list to show (no jobs, the jobs file unread, no cron on this installation) there
-is no quote, and cron's line stays in the details, as before 1.1.2.
+whole; the length is counted in UTF-16 units, as Telegram counts it. When not one job fits beside
+the details (a long run of failures under the list), there is no quote: cron's lines go back into
+the details and are cut at their end, as before 1.1.2. With no list to show (no jobs, the jobs
+file unread, no cron on this installation) there is no quote either, and cron's line stays in the
+details.
 
 The rich screen's fold (1.0.0 to 1.1.0) drew the same rows as one table in the look of the limits
 table, a shaded header row per frequency and the date right-aligned, cut at 60 active, 30 paused

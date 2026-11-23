@@ -817,8 +817,10 @@ def test_a_cut_at_a_blank_line_of_the_details_keeps_one_quote() -> None:
         footer = lines.index("> Screen Sep 26 21:00 UTC")
 
         assert len(text) <= TELEGRAM_TEXT_LIMIT
-        # 1.1.2: the cron quote, its 55 failures under the list, then Details, cut at its end.
-        assert to_telegram_html(text).count("<blockquote") == 2, (name, length)
+        # 1.1.2: 55 failures leave no room for a job beside Details, so there is no cron quote
+        # and cron's lines stay in Details, cut at its end as in 1.1.1 (review of 1.1.2).
+        assert to_telegram_html(text).count("<blockquote") == 1, (name, length)
+        assert not any(line.startswith("> ## 🕒 Cron") for line in lines), (name, length)
         assert lines[footer - 1 :] == [
             ">",
             "> Screen Sep 26 21:00 UTC",
