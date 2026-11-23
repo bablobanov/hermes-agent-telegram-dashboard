@@ -419,7 +419,7 @@ def render_dashboard(
     # The cron quote between the main screen and Details (1.1.2), its list cut to what the rest
     # of the screen leaves, so Details stays whole. When not one job fits beside it (a long run
     # of failures under the list), there is no quote: cron's lines go back into Details and the
-    # cut below works as it did in 1.1.1, never above the heading of Details (review of 1.1.2).
+    # cut below works as it did in 1.1.1 (review of 1.1.2).
     used = _units("\n".join([*parts.lines, *details.lines()]))
     fold = _fitted_fold(parts.cron, used)
     text = "\n".join([*parts.lines, *fold, *details.lines(unfold=not fold)])
